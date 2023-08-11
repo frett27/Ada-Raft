@@ -2,26 +2,50 @@ with Raft; use Raft;
 
 package Raft.Server is
 
-  MAX_LOG : constant TransactionLogIndex := 100;
+  MAX_LOG : constant TransactionLogIndex := 2;
 
-  type RaftState is (FOLLOWER, CANDIDATE, LEADER);
+  type RaftStateEnum is (FOLLOWER, CANDIDATE, LEADER);
+
+  -- State for all nodes (persisted)
+  type RaftState is record
+    -- persisted
+    Current_Term : Term;
+    Voted_For    : ServerID;
+    Log          : TLog (TransactionLogIndex'First .. MAX_LOG);
+  end record;
+
+  type AllServerLogIndex is array (ServerRange) of TransactionLogIndex;
+
+  -- volatile leader additional states
+  type RaftLeaderState is record
+    Next_Index  : AllServerLogIndex;
+    Match_Index : AllServerLogIndex;
+  end record;
 
   type RaftServerStruct is tagged record
 
-    Current_Raft_State : RaftState := FOLLOWER;
+    Current_Raft_State : RaftStateEnum := FOLLOWER;
 
     Current_Id : ServerID;
 
-    Current_Term : Term;
-    Voted_For    : ServerID;
+    State : RaftState;
 
-    Log : TLog (1 .. MAX_LOG);
-
+    -- volatile
     Commit_Index : TransactionLogIndex := TransactionLogIndex'First;
-
     Last_Applied : TransactionLogIndex := TransactionLogIndex'First;
 
+    -- leader specific
+    -- reinited after election
+    --  for each server, index of the next log entry
+    --  to send to that server (initialized to leader
+    --  last log index + 1)
+    Leader_Additional_State : RaftLeaderState;
+
   end record;
+
+  procedure Save_State_To_File (State : RaftServerStruct; FileName : String);
+  procedure Load_State_From_File
+   (Filename : String; State : out RaftServerStruct);
 
   procedure Apply_Commit_Index (RSS : in out RaftServerStruct);
 
@@ -40,12 +64,5 @@ package Raft.Server is
     Candidate_ID  : in     ServerID; Last_Log_Index : in TransactionLogIndex;
     Last_Log_Term : in     TransactionLogIndex; CurrentTerm : out Term;
     VotedGranted  :    out Boolean);
-
-  type AllServerLogIndex is array (ServerRange) of TransactionLogIndex;
-
-  type RaftLeaderState is record
-    Next_Index  : AllServerLogIndex;
-    Match_Index : AllServerLogIndex;
-  end record;
 
 end Raft.Server;

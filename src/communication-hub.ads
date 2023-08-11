@@ -2,11 +2,13 @@ with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
 
 package Communication.Hub is
 
+    --- this is local communication, without any network involved
     type LocalHub is new Net_Hub with private;
 
     procedure Send
        (L        : in out LocalHub; Sender : in Net_Link;
         Hostname : in     Unbounded_String; Message : in Unbounded_String);
+    
     procedure Register
        (L        : in out LocalHub; Hostname : in Unbounded_String;
         Callback : in     Message_Callback);
@@ -19,10 +21,10 @@ private
     end record;
     type Hub_Entry_Array is array (Positive range <>) of Hub_Entry;
 
-    N       : constant Positive := 100;
+    N : constant Positive := 100;
 
     type LocalHub is new Net_Hub with record
-        Last    : Natural  := 0;
+        Last    : Natural := 0;
         Entries : Hub_Entry_Array (1 .. N);
     end record;
 

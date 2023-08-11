@@ -66,7 +66,7 @@ begin
     Create_Link
        (NHAccess, To_Unbounded_String ("L2"), L2_CallBack'Unrestricted_Access,
         L2);
-
+   
     -- send a message from L1 to L2
     Send
        (L1, To_Unbounded_String ("L2"),

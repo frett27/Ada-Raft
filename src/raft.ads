@@ -1,8 +1,10 @@
 package Raft is
+  
 
   type ServerID is new Natural;
+  
 
-  ServerNumber : constant ServerID := 4;
+  ServerNumber : constant ServerID := 3;
 
   subtype ServerRange is ServerID range 1 .. ServerNumber;
 
@@ -10,16 +12,15 @@ package Raft is
 
   type AppendEntries_RPC is interface;
 
+  -- position in the log
   type TransactionLogIndex is new Natural;
 
+  -- command definition and implementation
   type Command is new Natural;
 
-  type Command_Term_Entry is record
-    C : Command;
-    T : Term;
-  end record;
+  type TLog is array (TransactionLogIndex range <>) of Command;
 
-  type TLog is array (TransactionLogIndex range <>) of Command_Term_Entry;
+  type TLog_Access is access all TLog;
 
   procedure Append_Entries
    (ARPC          : in out AppendEntries_RPC; Leader_Term : in Term;

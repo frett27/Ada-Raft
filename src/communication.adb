@@ -9,6 +9,7 @@ package body Communication is
     begin
         Link :=
            Net_Link'(HostName => HostName, Message_CB => Callback, H => H);
+        H.Register (Hostname => HostName, Callback => Callback);
     end Create_Link;
 
     procedure Send
