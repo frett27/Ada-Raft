@@ -1,4 +1,4 @@
-name = "raft"
+name = "tests_raft"
 description = ""
 version = "0.1.0-dev"
 
@@ -7,9 +7,12 @@ maintainers = ["Patrice Freydiere <frett27@gmail.com>"]
 maintainers-logins = ["frett27"]
 licenses = "MIT OR Apache-2.0 WITH LLVM-exception"
 website = ""
-tags = []
 
-# executables = ["testcommunication"]
+executables = ["tests_raft"]
 
+[[depends-on]]
+aunit = "*"
+raft = "*"
 
-
+[[pins]]
+raft = { path='..' }
