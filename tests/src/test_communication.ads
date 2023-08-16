@@ -1,5 +1,6 @@
 with AUnit; use AUnit;
 with AUnit.Test_Cases; use AUnit.Test_Cases;
+with Communication; use Communication;
 
 package Test_Communication is 
 
@@ -13,5 +14,14 @@ package Test_Communication is
 
   -- Test Routines:
   procedure Test_Send_Message (T : in out Test_Cases.Test_Case'Class);
+
+  -- Test Buffer Serialization
+  procedure Test_In_Memory_Buffer(T : in out Test_Cases.Test_Case'Class);
+
+
+ type DummyMessage is new Request_Message_Type with record
+    Dummy : Integer := 666;
+    end record;
+
 
 end Test_Communication;

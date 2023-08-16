@@ -13,18 +13,20 @@ package Raft.Node is
   -- isolate them to persist them
   type Raft_Node_State is record
     -- persisted
-    Current_Term : Term;
-    Voted_For    : ServerID;
-    Log          : TLog (TransactionLogIndex'First .. MAX_LOG);
-    Log_Upper_Bound : TransactionLogIndex;
-  end record; 
+    Current_Term    : Term;
+    Voted_For       : ServerID := 0;
+    Log             : TLog (TransactionLogIndex'First .. MAX_LOG);
+    Log_Upper_Bound : TransactionLogIndexPointer;
+  end record;
 
-  type AllServerLogIndex is array (ServerRange) of TransactionLogIndex;
+  type AllServerLogIndex is array (ServerRange) of TransactionLogIndexPointer;
 
   -- volatile leader additional states
   type Raft_Leader_Additional_State is record
-    Next_Index  : AllServerLogIndex;
-    Match_Index : AllServerLogIndex;
+    Next_Index  : AllServerLogIndex :=
+     (others => UNDEFINED_TRANSACTION_LOG_INDEX);
+    Match_Index : AllServerLogIndex :=
+     (others => UNDEFINED_TRANSACTION_LOG_INDEX);
   end record;
 
   type RaftServerStruct is record
@@ -37,11 +39,13 @@ package Raft.Node is
     Node_State : Raft_Node_State;
 
     -- volatile for all states
-    Commit_Index : TransactionLogIndex := TransactionLogIndex'First;
-    Last_Applied : TransactionLogIndex := TransactionLogIndex'First;
+    Commit_Index : TransactionLogIndexPointer :=
+     UNDEFINED_TRANSACTION_LOG_INDEX;
+    Last_Applied : TransactionLogIndexPointer :=
+     UNDEFINED_TRANSACTION_LOG_INDEX;
 
     -- leader specific implementation
-    State_Implementation : Raft_Leader_Additional_State;
+    Leader_State : Raft_Leader_Additional_State;
 
   end record;
 
@@ -58,6 +62,10 @@ package Raft.Node is
     Timer_Instance : Timer_Type;
   end record;
 
+  -- this message is triggered periodically (3 time the Heart Beat), 
+  -- this permit to relaunch some elements
+  type Timer_Periodic is new Message_Type with null record;
+
   -- this function is called when a timer expires
   type Cancel_Timer is
    access procedure
@@ -66,64 +74,78 @@ package Raft.Node is
    access procedure
     (RSS : in out RaftServerStruct; Timer_Instance : Timer_Type);
 
-  type Raft_Server_Struct_Access is not null access all RaftServerStruct;
+  type Message_Sending is
+   access procedure
+    (RSS : in out RaftServerStruct; To_ServerID_Or_All : ServerID;
+     M   :        Message_Type'Class);
+
+  type Raft_Server_Struct_Access is access all RaftServerStruct;
 
   -- raft state machine, defined the state behaviour for each state
   type Raft_State_Machine is abstract tagged record
 
     MState : Raft_Server_Struct_Access;
 
-    Timer_Cancel : Cancel_Timer;
-    Timer_Start  : Start_Timer;
+    -- Note : to refactor, theses pointers should be in the machine without
+    -- extra informations given to the state (to limit complexity)
+    Timer_Cancel    : Cancel_Timer;
+    Timer_Start     : Start_Timer;
+    Sending_Message : Message_Sending;
 
   end record;
 
   -- handle an external message on the given machine state
   procedure Handle_Message_Machine_State
    (Machine_State : in out Raft_State_Machine; M : in Message_Type'Class;
-    New_Raft_State_Machine : out RaftWishedStateEnum) is abstract;
+    New_Raft_State_Machine :    out RaftWishedStateEnum) is abstract;
 
   type Raft_State_Machine_Wide_Access is access all Raft_State_Machine'Class;
 
   type Raft_State_Machine_Leader is new Raft_State_Machine with null record;
 
--- handle an external message on the given machine state
+  -- handle an external message on the given machine state
   overriding procedure Handle_Message_Machine_State
-   (Machine_State : in out Raft_State_Machine_Leader; M : in Message_Type'Class;
-    New_Raft_State_Machine : out RaftWishedStateEnum);
+   (Machine_State          : in out Raft_State_Machine_Leader;
+    M                      : in     Message_Type'Class;
+    New_Raft_State_Machine :    out RaftWishedStateEnum);
 
+  type Array_Of_ServerId_Booleans is array (ServerRange) of Boolean;
 
-  type Raft_State_Machine_Candidat is new Raft_State_Machine with null record;
-    overriding procedure Handle_Message_Machine_State
-   (Machine_State : in out Raft_State_Machine_Candidat; M : in Message_Type'Class;
-    New_Raft_State_Machine : out RaftWishedStateEnum);
-
+  type Raft_State_Machine_Candidat is new Raft_State_Machine with record
+    Server_Vote_Responses : Array_Of_ServerId_Booleans := (others => False);
+    Server_Vote_Responses_Status : Array_Of_ServerId_Booleans := (others => False);
+  end record;
+  overriding procedure Handle_Message_Machine_State
+   (Machine_State          : in out Raft_State_Machine_Candidat;
+    M                      : in     Message_Type'Class;
+    New_Raft_State_Machine :    out RaftWishedStateEnum);
 
   type Raft_State_Machine_Follower is new Raft_State_Machine with null record;
-    overriding procedure Handle_Message_Machine_State
-   (Machine_State : in out Raft_State_Machine_Follower; M : in Message_Type'Class;
-    New_Raft_State_Machine : out RaftWishedStateEnum);
+  overriding procedure Handle_Message_Machine_State
+   (Machine_State          : in out Raft_State_Machine_Follower;
+    M                      : in     Message_Type'Class;
+    New_Raft_State_Machine :    out RaftWishedStateEnum);
 
   -- machine handle all the state (and the switch between elements)
   type Raft_Machine is record
-    State                 : aliased RaftServerStruct;
-    
-    MState_Leader         : aliased Raft_State_Machine_Leader;
-    MState_Candidate      : aliased Raft_State_Machine_Candidat;
-    MState_Follower       : aliased Raft_State_Machine_Follower;
+    State : aliased RaftServerStruct;
+
+    MState_Leader    : aliased Raft_State_Machine_Leader;
+    MState_Candidate : aliased Raft_State_Machine_Candidat;
+    MState_Follower  : aliased Raft_State_Machine_Follower;
 
     Current_Machine_State : Raft_State_Machine_Wide_Access;
   end record;
 
   type Raft_Machine_Access is access all Raft_Machine;
 
-   procedure Handle_Message
-     (Machine : in out Raft_Machine_Access; M : in Message_Type'Class);
+  procedure Handle_Message
+   (Machine : in out Raft_Machine_Access; M : in Message_Type'Class);
 
-   procedure Init_Machine
-     (Machine : in out Raft_Machine_Access; SID : ServerID; Timer_Start : Start_Timer;
-      Timer_Cancel :        Cancel_Timer);
-
+  procedure Create_Machine
+   (Machine         : out Raft_Machine_Access; SID : ServerID;
+    Timer_Start     :     Start_Timer; Timer_Cancel : Cancel_Timer;
+    Sending_Message :     Message_Sending);
 
   --  type RaftServer is
   --    new RaftServerStruct and AppendEntries_RPC and RequestVote_RPC with

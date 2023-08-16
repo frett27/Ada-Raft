@@ -1,4 +1,3 @@
-
 package body Communication.Hub is
 
     procedure Register
@@ -25,5 +24,6 @@ package body Communication.Hub is
             end if;
         end loop;
     end Send;
+
 
 end Communication.Hub;
