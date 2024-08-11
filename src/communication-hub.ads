@@ -6,9 +6,9 @@ package Communication.Hub is
     type LocalHub is new Net_Hub with private;
 
     procedure Send
-       (L        : in out LocalHub; Sender : in Net_Link;
-        Hostname : in     Unbounded_String; Message : in Unbounded_String);
-    
+       (L       : in out LocalHub; Sender, To : in Net_Link;
+        Message : in     Stream_Element_Array);
+
     procedure Register
        (L        : in out LocalHub; Hostname : in Unbounded_String;
         Callback : in     Message_Callback);
@@ -20,13 +20,13 @@ private
         Hostname : Unbounded_String;
         Callback : Message_Callback;
     end record;
-    
+
     type Hub_Entry_Array is array (Positive range <>) of Hub_Entry;
 
     -- max registration
     N : constant Positive := 100;
 
-    type LocalHub is new Net_Hub with record 
+    type LocalHub is new Net_Hub with record
         Last    : Natural := 0;
         Entries : Hub_Entry_Array (1 .. N);
     end record;

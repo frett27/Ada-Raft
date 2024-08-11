@@ -1,5 +1,6 @@
 package Raft is
 
+
   type ServerID is new Natural;
 
   ALL_SERVER_SENDING : ServerID := 0;
@@ -13,7 +14,6 @@ package Raft is
   No_Term : No_Or_Term := -1;
 
   --  type AppendEntries_RPC is interface;
-
   -- position in the log
 
   type TransactionLogIndexPointer is new Natural;

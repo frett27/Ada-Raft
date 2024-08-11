@@ -7,6 +7,9 @@ package Raft.Node.Messages is
         Leader_Term    : Term;
         Leader_ID      : ServerID;
 
+        -- message sent to
+        To : ServerID;
+
         Prev_Log_Index : TransactionLogIndexPointer;
         Prev_Log_Term  : No_Or_Term;
 
@@ -19,6 +22,7 @@ package Raft.Node.Messages is
     type Append_Entries_Response is new Response_Message_Type with record
         T       : Term;
         SID: ServerId;
+        Match_Index: TransactionLogIndexPointer;
         Success : Boolean;
     end record;
 

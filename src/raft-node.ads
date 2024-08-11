@@ -4,7 +4,7 @@ with Communication;         use Communication;
 
 package Raft.Node is
 
-  MAX_LOG : constant TransactionLogIndex := 2;
+  MAX_LOG : constant TransactionLogIndex := 20;
 
   type RaftStateEnum is (FOLLOWER, CANDIDATE, LEADER);
   type RaftWishedStateEnum is (FOLLOWER, CANDIDATE, LEADER, NO_CHANGES);
@@ -49,8 +49,10 @@ package Raft.Node is
 
   end record;
 
+  -- save the state to a file
   procedure Save_State_To_File (State : RaftServerStruct; FileName : String);
 
+  -- load the state from a file
   procedure Load_State_From_File
    (Filename : String; State : out RaftServerStruct);
 
@@ -128,6 +130,7 @@ package Raft.Node is
 
   -- machine handle all the state (and the switch between elements)
   type Raft_Machine is record
+
     State : aliased RaftServerStruct;
 
     MState_Leader    : aliased Raft_State_Machine_Leader;
@@ -135,6 +138,7 @@ package Raft.Node is
     MState_Follower  : aliased Raft_State_Machine_Follower;
 
     Current_Machine_State : Raft_State_Machine_Wide_Access;
+    
   end record;
 
   type Raft_Machine_Access is access all Raft_Machine;

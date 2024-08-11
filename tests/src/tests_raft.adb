@@ -2,6 +2,7 @@ With Raft_Test_Suite;
 with AUnit.Run;
 with AUnit.Reporter.Text;
 
+-- this is the main test suite
 procedure Tests_Raft is
    procedure Run is new AUnit.Run.Test_Runner (Raft_Test_Suite.Suite);
    Reporter : AUnit.Reporter.Text.Text_Reporter;

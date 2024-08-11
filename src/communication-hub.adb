@@ -12,15 +12,14 @@ package body Communication.Hub is
     end Register;
 
     procedure Send
-       (L        : in out LocalHub; Sender : in Net_Link;
-        Hostname : in     Unbounded_String; Message : in Unbounded_String)
+       (L        : in out LocalHub; Sender, To : in Net_Link;
+        Message : in Stream_Element_Array)
     is
     begin
         for i in 1 .. L.Last + 1 loop
-            if L.Entries (i).Hostname = Hostname
-               and then Hostname /= Sender.HostName
+            if L.Entries (i).Hostname = To.HostName                
             then
-                L.Entries (i).Callback (Sender.HostName, Message);
+                L.Entries (i).Callback (Sender, Message);
             end if;
         end loop;
     end Send;

@@ -2,6 +2,7 @@ with Raft;                  use Raft;
 with Communication;         use Communication;
 with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
 
+-- this is the raft interface to network message passing
 package Raft.Comm is
 
     type ServerId_NetLink is array (ServerRange) of Net_Link;
@@ -15,8 +16,10 @@ package Raft.Comm is
            Message_Received : in Message_Type'Class);
 
     procedure Create
-       (SA        :    ServerId_NetLink; NH : Net_Hub_Access;
-        Call_Back : in Message_Received; NetBinding : out NetHub_Binding);
+       (SA        :    ServerId_NetLink; 
+        NH : Net_Hub_Access;
+        Call_Back : in Message_Received;
+        NetBinding : out NetHub_Binding);
 
     procedure Send
        (SA :    NetHub_Binding_Access; From_SID : ServerID; To_SID : ServerID;

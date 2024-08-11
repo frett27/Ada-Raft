@@ -70,6 +70,7 @@ package body Raft.Node is
 
          Machine.Current_Machine_State := Machine.MState_Follower'Access;
 
+         -- state is by reference, to be shared between state machine implemention
          Machine.MState_Candidate.MState          := Machine.State'Access;
          Machine.MState_Candidate.Timer_Start     := Timer_Start;
          Machine.MState_Candidate.Timer_Cancel    := Timer_Cancel;
@@ -88,7 +89,7 @@ package body Raft.Node is
       end;
    end Create_Machine;
 
-   procedure Start_TimerElection
+   procedure Start_TimerElection_Entering_Candidate_State
      (Machine_State : in out Raft_State_Machine_Candidat) with
      Pre => Machine_State.MState.Current_Raft_State = CANDIDATE
    is
@@ -123,7 +124,7 @@ package body Raft.Node is
                   Vote : Request_Vote_Request :=
                     (Candidate_Term =>
                        Machine_State.MState.Node_State.Current_Term,
-                     Candidate_Id   => Machine_State.MState.Current_Id,
+                     Candidate_ID   => Machine_State.MState.Current_Id,
                      Last_Log_Index =>
                        Machine_State.MState.Node_State.Log_Upper_Bound,
                      Last_Log_Term  => Last_term);
@@ -135,7 +136,7 @@ package body Raft.Node is
          end;
       end loop;
 
-   end Start_TimerElection;
+   end Start_TimerElection_Entering_Candidate_State;
 
    procedure Check_Request_Term
      (Machine   : in out Raft_Machine_Access; M : in Message_Type'Class;
@@ -182,6 +183,13 @@ package body Raft.Node is
       A : access Raft_State_Machine'Class := Machine.Current_Machine_State;
    begin
 
+      Put_Line
+        (A.MState.Current_Id'Image & " -> State: " &
+         RaftStateEnum'Image (A.MState.Current_Raft_State));
+      Put_Line
+        (A.MState.Current_Id'Image & " -> Received_message: " &
+         Ada.Tags.Expanded_Name (M'Tag));
+
       Check_Request_Term (Machine, M, New_State);
 
       if Ada.Tags.Is_Descendant_At_Same_Level (M'Tag, Request_Message_Type'Tag)
@@ -193,6 +201,7 @@ package body Raft.Node is
 
       -- respond to vote request
       if M'Tag = Request_Vote_Request'Tag then
+         put_line ("Request vote received");
          --  1. Reply false if term < currentTerm (§5.1)
          --  2. If votedFor is null or candidateId, and candidate’s log is at
          --  least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
@@ -206,8 +215,9 @@ package body Raft.Node is
                   Vote_Server_ID => Machine.State.Current_Id,
                   T              => Machine.State.Node_State.Current_Term);
                Machine.Current_Machine_State.Sending_Message
-                 (Machine.Current_Machine_State.MState.all, Req.Candidate_Id,
+                 (Machine.Current_Machine_State.MState.all, Req.Candidate_ID,
                   Res);
+               Put_Line ("Vote not granted");
                return;
             end if;
 
@@ -215,7 +225,7 @@ package body Raft.Node is
               ServerRange'First
               or else
                 Machine.Current_Machine_State.MState.Node_State.Voted_For =
-                Req.Candidate_Id
+                Req.Candidate_ID
             then
                declare
                   Last_term : No_Or_Term := No_Term;
@@ -245,7 +255,8 @@ package body Raft.Node is
                         T => Machine.State.Node_State.Current_Term);
                      Machine.Current_Machine_State.Sending_Message
                        (Machine.Current_Machine_State.MState.all,
-                        Req.Candidate_Id, Res);
+                        Req.Candidate_ID, Res);
+                     Put_Line ("Vote granted");
                      return;
                   end if;
                end;
@@ -258,6 +269,10 @@ package body Raft.Node is
 
       -- other state specific messages, delegate to state
       A.Handle_Message_Machine_State (M, New_State);
+
+      Put_Line
+        (A.MState.Current_Id'Image & " -> New_State: " &
+         RaftWishedStateEnum'Image (New_State));
 
       -- handle the state changes
       case New_State is
@@ -276,7 +291,9 @@ package body Raft.Node is
             Machine.Current_Machine_State.MState.Current_Raft_State :=
               CANDIDATE;
 
-            Start_TimerElection (Machine.MState_Candidate);
+            -- increment term
+            Start_TimerElection_Entering_Candidate_State
+              (Machine.MState_Candidate);
 
          when LEADER =>
 
@@ -313,17 +330,23 @@ package body Raft.Node is
                   -- create the leader message for vote
                   A : Append_Entries_Request :=
                     Append_Entries_Request'
-                      (Leader_Term    => Machine.State.Node_State.Current_Term,
-                       Leader_ID      => Machine.State.Current_Id,
-                       Prev_Log_Index => Prev, Prev_Log_Term => T,
-                       Entries        => (others => (C => 0, T => 1)),
-                       Entries_Last   => UNDEFINED_TRANSACTION_LOG_INDEX,
-                       Leader_Commit  => Machine.State.Commit_Index);
+                      (Leader_Term   => Machine.State.Node_State.Current_Term,
+                       Leader_ID     => Machine.State.Current_Id,
+                       To => Machine.State.Current_Id, Prev_Log_Index => Prev,
+                       Prev_Log_Term => T,
+                       Entries       => (others => (C => 0, T => 1)),
+                       Entries_Last  => UNDEFINED_TRANSACTION_LOG_INDEX,
+                       Leader_Commit => Machine.State.Commit_Index);
                begin
                   for i in ServerRange loop
-                     Machine.Current_Machine_State.Sending_Message
-                       (Machine.Current_Machine_State.MState.all, I, A);
-
+                     declare
+                        Peer_Request : Append_Entries_Request := A;
+                     begin
+                        -- change destination
+                        Peer_Request.To := i;
+                        Machine.Current_Machine_State.Sending_Message
+                          (Machine.Current_Machine_State.MState.all, i, A);
+                     end;
                   end loop;
                end;
             end;
@@ -335,48 +358,103 @@ package body Raft.Node is
    ----------------------------------------------------
    -- States
 
-
-   procedure Handle_AppendEntries_Request(Machine_State : in out Raft_State_Machine'Class;
-                                          M             : in     Append_Entries_Request'Class;
-                                          New_Raft_State_Machine : out RaftWishedStateEnum) is
+   -- peers receiving the append entries request, handles it
+   -- both candidate and follower can receive this message
+   procedure Handle_AppendEntries_Request
+     (Machine_State          : in out Raft_State_Machine'Class;
+      M                      : in     Append_Entries_Request'Class;
+      New_Raft_State_Machine :    out RaftWishedStateEnum)
+   is
    begin
+
       if M.Leader_Term < Machine_State.MState.Node_State.Current_Term then
-         declare 
-            Response : Append_Entries_Response := 
-                  (Success => False, 
-                  SID => Machine_State.MState.Current_Id,
-                  T => Machine_State.MState.Node_State.Current_Term);
+         -- note : step down is handled in general
+         declare
+            Response : Append_Entries_Response :=
+              (Success     => False, SID => Machine_State.MState.Current_Id,
+               Match_Index => UNDEFINED_TRANSACTION_LOG_INDEX,
+               T           => Machine_State.MState.Node_State.Current_Term);
          begin
             -- ignore the message
-            Machine_State.Sending_Message(Machine_State.MState.all, M.Leader_ID, Response);
-            return;            
+            Machine_State.Sending_Message
+              (Machine_State.MState.all, M.Leader_ID, Response);
+            return;
          end;
       end if;
 
       -- check if log contains an entry at PrevLogTerm whose index matches PrevLogIndex
-      if M.Prev_Log_Index > Machine_State.MState.Node_State.Log_Upper_Bound 
-         or else Machine_State.MState.Node_State.Log(M.Prev_Log_Index).T /= Term(M.Prev_Log_Term)
+      if M.Prev_Log_Index > Machine_State.MState.Node_State.Log_Upper_Bound
+        or else Machine_State.MState.Node_State.Log (M.Prev_Log_Index).T /=
+          Term (M.Prev_Log_Term)
       then
-         declare 
-            Response : Append_Entries_Response := 
-                  (Success => False, 
-                  SID => Machine_State.MState.Current_Id,
-                  T => Machine_State.MState.Node_State.Current_Term);
+         declare
+            Response : Append_Entries_Response :=
+              (Success     => False, SID => Machine_State.MState.Current_Id,
+               Match_Index => UNDEFINED_TRANSACTION_LOG_INDEX,
+               T           => Machine_State.MState.Node_State.Current_Term);
          begin
             -- ignore the message
-            Machine_State.Sending_Message(Machine_State.MState.all, M.Leader_ID, Response);
-            return;            
+            Machine_State.Sending_Message
+              (Machine_State.MState.all, M.Leader_ID, Response);
+            return;
          end;
       end if;
 
       -- from given entries, check if there are inconsistencies
+      declare
+         To_Update_Index_on_Log : TransactionLogIndexPointer :=
+           M.Prev_Log_Index;
+         Entries_To_Add         : TAddLog;
+         Entries_Length         : TransactionLogIndexPointer :=
+           UNDEFINED_TRANSACTION_LOG_INDEX;
+         Match_Index            : TransactionLogIndexPointer :=
+           UNDEFINED_TRANSACTION_LOG_INDEX;
+      begin
+         for I in M.Entries'First .. M.Entries_Last loop
+            To_Update_Index_on_Log :=
+              TransactionLogIndexPointer'Succ (To_Update_Index_on_Log);
 
+            if To_Update_Index_on_Log <=
+              Machine_State.MState.Node_State.Log_Upper_Bound
+              and then
+                Machine_State.MState.Node_State.Log (To_Update_Index_on_Log)
+                  .T /=
+                Term (M.Entries (I).T)
+            then
+               -- there is an inconsistency, go down to previous match term
+               while To_Update_Index_on_Log > 0
+                 and then
+                   Machine_State.MState.Node_State.Log (To_Update_Index_on_Log)
+                     .T /=
+                   Term (M.Entries (I).T)
+               loop
+                  -- found the term, go down
+                  To_Update_Index_on_Log :=
+                    TransactionLogIndexPointer'Pred (To_Update_Index_on_Log);
+               end loop;
 
+               Machine_State.MState.Node_State.Log (To_Update_Index_on_Log) :=
+                 M.Entries (I);
+            end if;
+         end loop;
 
+         Machine_State.MState.Commit_Index :=
+           TransactionLogIndexPointer'Min
+             (M.Leader_Commit, To_Update_Index_on_Log);
+
+         -- send response
+         declare
+            Response : Append_Entries_Response :=
+              (Success     => True, SID => Machine_State.MState.Current_Id,
+               Match_Index => Match_Index,
+               T           => Machine_State.MState.Node_State.Current_Term);
+         begin
+            Machine_State.Sending_Message
+              (Machine_State.MState.all, M.Leader_ID, Response);
+         end;
+      end;
 
    end Handle_AppendEntries_Request;
-
-
 
    -- handle an external message on the given machine state
    overriding procedure Handle_Message_Machine_State
@@ -397,10 +475,10 @@ package body Raft.Node is
             return;
 
          end if;
-
       end if;
 
       raise Program_Error;
+
    end Handle_Message_Machine_State;
 
    overriding procedure Handle_Message_Machine_State
@@ -417,7 +495,7 @@ package body Raft.Node is
          if Timer_Timeout (M).Timer_Instance = Election_Timer then
 
             -- restart election
-            Start_TimerElection (Machine_State);
+            Start_TimerElection_Entering_Candidate_State (Machine_State);
             return;
 
          end if;
@@ -426,7 +504,7 @@ package body Raft.Node is
             RVR : Request_Vote_Response := Request_Vote_Response (M);
             Positive_Response_Count : Natural               := 0;
          begin
-            Machine_State.Server_Vote_Responses (RVR.Vote_Server_ID) := true;
+            Machine_State.Server_Vote_Responses (RVR.Vote_Server_ID) := True;
             Machine_State.Server_Vote_Responses_Status (RVR.Vote_Server_ID) :=
               RVR.Vote_Granted;
 
@@ -463,6 +541,46 @@ package body Raft.Node is
    is
    begin
       New_Raft_State_Machine := NO_CHANGES;
+
+      -- messages handled by the leaders
+
+      if M'Tag = Append_Entries_Response'Tag then
+         -- stepDown handled before
+         declare
+            Res : Append_Entries_Response := Append_Entries_Response (M);
+         begin
+
+            --   if (reply.success) {
+            --        server.matchIndex[reply.from] = Math.max(server.matchIndex[reply.from],
+            --                                                 reply.matchIndex);
+            --        server.nextIndex[reply.from] = reply.matchIndex + 1;
+            --      } else {
+            --        server.nextIndex[reply.from] = Math.max(1, server.nextIndex[reply.from] - 1);
+            --      }
+
+            if Res.Success then
+               Machine_State.MState.Leader_State.Match_Index (Res.SID) :=
+                 TransactionLogIndexPointer'Max
+                   (Machine_State.MState.Leader_State.Match_Index (Res.SID),
+                    Res.Match_Index);
+
+               Machine_State.MState.Leader_State.Next_Index (Res.SID) :=
+                 TransactionLogIndexPointer'Succ
+                   (Machine_State.MState.Leader_State.Match_Index (Res.SID));
+
+            else
+               Machine_State.MState.Leader_State.Next_Index (Res.SID) :=
+                 TransactionLogIndexPointer'Max
+                   (TransactionLogIndex'First,
+                    TransactionLogIndex'Pred
+                      (Machine_State.MState.Leader_State.Next_Index
+                         (Res.SID)));
+
+            end if;
+
+         end;
+
+      end if;
 
    end Handle_Message_Machine_State;
 
