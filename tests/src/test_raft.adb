@@ -48,15 +48,16 @@ package body Test_Raft is
     SState : Raft_Node_State :=
      Raft_Node_State'
       (Current_Term => Term (1), Voted_For => ServerID (2), Log => Transaction,
-       Log_Upper_Bound_Strict  => 0);
+       Log_Upper_Bound_Strict => 0);
 
     LState : Raft_Leader_Additional_State :=
      (Next_Index_Strict  => (1 => 0, 2 => 0, 3 => 0),
       Match_Index_Strict => (1 => 0, 2 => 0, 3 => 0));
 
     S : Raft.Node.RaftServerStruct :=
-     (Current_Raft_State => LEADER, Current_Id => 1, Node_State => SState,
-      Commit_Index_Strict       => 0, Last_Applied_Strict => 0, Leader_State => LState);
+     (Current_Raft_State  => LEADER, Current_Id => 1, Node_State => SState,
+      Commit_Index_Strict => 0, Last_Applied_Strict => 0,
+      Leader_State        => LState);
 
     S2 : Raft.Node.RaftServerStruct;
   begin
@@ -154,8 +155,7 @@ package body Test_Raft is
       (SID => 2, Timer => Heartbeat_Timer, Counter => 0),
       (SID => 3, Timer => Heartbeat_Timer, Counter => 0));
 
-    LEADER_TIMER_COUNTER_INCREMENT    : constant Positive := 15;
-    
+    ELECTION_TIMER_COUNTER_INCREMENT  : constant Positive := 15;
     HEARTBEAT_TIMER_COUNTER_INCREMENT : constant Positive := 4;
 
     procedure Set_Timer
@@ -211,7 +211,7 @@ package body Test_Raft is
       Put_Line (" Counter: " & Timer_Type'Image (Timer_Instance));
       declare
         Counter : Natural :=
-         LEADER_TIMER_COUNTER_INCREMENT +
+         ELECTION_TIMER_COUNTER_INCREMENT +
          Natural (Ada.Numerics.Float_Random.Random (Gen) * 3.0);
       begin
         if (Timer_Instance = Heartbeat_Timer) then
@@ -400,22 +400,21 @@ package body Test_Raft is
       NHB_Message_Received'Unrestricted_Access, B);
 
     declare
-      T_HeartBeat_Timeout : Timer_Timeout :=
-       (Timer_Instance => Heartbeat_Timer);
+      T_Election_Timeout : Timer_Timeout :=
+       (Timer_Instance => Election_Timer);
     begin
 
       Put_Line ("MAIN : HeartBeat Time out");
       delay 1.0;
 
-      Handle_Message (M1, T_HeartBeat_Timeout);
-      --  Handle_Message (M2, T_HeartBeat_Timeout);
-      --  Handle_Message (M3, T_HeartBeat_Timeout);
+      Handle_Message (M1, T_Election_Timeout);      
     end;
 
     Put_Line (">> Sending messages");
     Send_Pushed_Message;
     Put_Line (">>Messages sent");
-    for j in 1 .. 10 loop
+
+    for j in 1 .. 50 loop
       for i in Timers'Range loop
         Put_Line
          ("Timer " & Timer_Type'Image (Timers (i).Timer) & " counter: " &

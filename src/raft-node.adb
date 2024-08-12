@@ -41,6 +41,10 @@ package body Raft.Node is
    ----------------------------------------------------
    -- Machine handling
 
+   -- forward
+   procedure Switch_To_State
+     (Machine : in out Raft_Machine_Access; New_State : RaftWishedStateEnum);
+
    procedure Create_Machine
      (Machine         : out Raft_Machine_Access; SID : ServerID;
       Timer_Start     :     Start_Timer; Timer_Cancel : Cancel_Timer;
@@ -103,9 +107,6 @@ package body Raft.Node is
       Machine_State.MState.Node_State.Voted_For    :=
         Machine_State.MState.Current_Id;
 
-      -- restart election
-      Machine_State.Timer_Cancel (Machine_State.MState.all, Election_Timer);
-      Machine_State.Timer_Start (Machine_State.MState.all, Election_Timer);
 
       for I in ServerRange loop
          declare
@@ -149,9 +150,7 @@ package body Raft.Node is
    begin
       if Ada.Tags.Is_Descendant_At_Same_Level (M'Tag, Request_Message_Type'Tag)
       then
-         -- a request received, reset the heart beat
-         A.Timer_Start (A.MState.all, Heartbeat_Timer);
-
+         
          -- check the term
          if M'Tag = Request_Vote_Request'Tag then
             declare
@@ -193,11 +192,13 @@ package body Raft.Node is
               FOLLOWER;
 
             Machine.Current_Machine_State.Timer_Cancel
-              (Machine.Current_Machine_State.MState.all, Leader_Heartbeat_Timer);
+              (Machine.Current_Machine_State.MState.all, Heartbeat_Timer);
+
+            Machine.Current_Machine_State.Timer_Cancel
+              (Machine.Current_Machine_State.MState.all, Election_Timer);
 
             Machine.Current_Machine_State.Timer_Start
-              (Machine.Current_Machine_State.MState.all, Leader_Heartbeat_Timer);
-              
+              (Machine.Current_Machine_State.MState.all, Election_Timer);
 
          when CANDIDATE =>
             put_line
@@ -272,6 +273,11 @@ package body Raft.Node is
                   end loop;
                end;
             end;
+
+            -- start the heart beat timer
+            Machine.Current_Machine_State.Timer_Start
+              (Machine.Current_Machine_State.MState.all, Heartbeat_Timer);
+
          when NO_CHANGES =>
             null;
       end case;
@@ -299,9 +305,14 @@ package body Raft.Node is
 
       if Ada.Tags.Is_Descendant_At_Same_Level (M'Tag, Request_Message_Type'Tag)
       then
-         -- a request received, reset the heart beat
+
+         -- a request received, reset the election timer
+         Machine.Current_Machine_State.Timer_Cancel
+           (Machine.Current_Machine_State.MState.all, Election_Timer);
+
          Machine.Current_Machine_State.Timer_Start
-           (Machine.Current_Machine_State.MState.all, Heartbeat_Timer);
+           (Machine.Current_Machine_State.MState.all, Election_Timer);
+
       end if;
 
       -- respond to vote request
@@ -451,9 +462,9 @@ package body Raft.Node is
          -- note : step down is handled in general
          declare
             Response : Append_Entries_Response :=
-              (Success     => False, SID => Machine_State.MState.Current_Id,
+              (Success => False, SID => Machine_State.MState.Current_Id,
                Match_Index_Strict => TransactionLogIndex'First,
-               T           => Machine_State.MState.Node_State.Current_Term);
+               T => Machine_State.MState.Node_State.Current_Term);
          begin
             -- ignore the message
             Machine_State.Sending_Message
@@ -478,15 +489,17 @@ package body Raft.Node is
 
       -- prev log index may not be defined
 
-      if M.Prev_Log_Index_Strict > Machine_State.MState.Node_State.Log_Upper_Bound_Strict
-        or else Machine_State.MState.Node_State.Log (M.Prev_Log_Index_Strict).T /=
+      if M.Prev_Log_Index_Strict >
+        Machine_State.MState.Node_State.Log_Upper_Bound_Strict
+        or else
+          Machine_State.MState.Node_State.Log (M.Prev_Log_Index_Strict).T /=
           Term (M.Prev_Log_Term)
       then
          declare
             Response : Append_Entries_Response :=
-              (Success     => False, SID => Machine_State.MState.Current_Id,
+              (Success => False, SID => Machine_State.MState.Current_Id,
                Match_Index_Strict => TransactionLogIndex'First,
-               T           => Machine_State.MState.Node_State.Current_Term);
+               T => Machine_State.MState.Node_State.Current_Term);
          begin
             -- ignore the message
             Machine_State.Sending_Message
@@ -500,10 +513,8 @@ package body Raft.Node is
          To_Update_Index_on_Log : TransactionLogIndex :=
            M.Prev_Log_Index_Strict;
          Entries_To_Add         : TAddLog;
-         Entries_Length         : TransactionLogIndex :=
-           TransactionLogIndex'First;
-         Match_Index            : TransactionLogIndex :=
-           TransactionLogIndex'First;
+         Entries_Length : TransactionLogIndex := TransactionLogIndex'First;
+         Match_Index : TransactionLogIndex := TransactionLogIndex'First;
       begin
          for I in M.Entries'First .. M.Entries_Last loop
             To_Update_Index_on_Log :=
@@ -540,9 +551,9 @@ package body Raft.Node is
          -- send response
          declare
             Response : Append_Entries_Response :=
-              (Success     => True, SID => Machine_State.MState.Current_Id,
+              (Success => True, SID => Machine_State.MState.Current_Id,
                Match_Index_Strict => Match_Index,
-               T           => Machine_State.MState.Node_State.Current_Term);
+               T => Machine_State.MState.Node_State.Current_Term);
          begin
             Machine_State.Sending_Message
               (Machine_State.MState.all, M.Leader_ID, Response);
@@ -562,7 +573,7 @@ package body Raft.Node is
 
       if M'Tag = Timer_Timeout'Tag then
          -- heartbeat timeout ?
-         if Timer_Timeout (M).Timer_Instance = Heartbeat_Timer then
+         if Timer_Timeout (M).Timer_Instance = Election_Timer then
 
             -- become candidate
             New_Raft_State_Machine := CANDIDATE;
@@ -641,7 +652,6 @@ package body Raft.Node is
 
    end Handle_Message_Machine_State;
 
-
    overriding procedure Handle_Message_Machine_State
      (Machine_State          : in out Raft_State_Machine_Leader;
       M                      : in     Message_Type'Class;
@@ -667,14 +677,17 @@ package body Raft.Node is
             --      }
 
             if Res.Success then
-               Machine_State.MState.Leader_State.Match_Index_Strict (Res.SID) :=
+               Machine_State.MState.Leader_State.Match_Index_Strict
+                 (Res.SID) :=
                  TransactionLogIndex'Max
-                   (Machine_State.MState.Leader_State.Match_Index_Strict (Res.SID),
+                   (Machine_State.MState.Leader_State.Match_Index_Strict
+                      (Res.SID),
                     Res.Match_Index_Strict);
 
                Machine_State.MState.Leader_State.Next_Index_Strict (Res.SID) :=
                  TransactionLogIndex'Succ
-                   (Machine_State.MState.Leader_State.Match_Index_Strict (Res.SID));
+                   (Machine_State.MState.Leader_State.Match_Index_Strict
+                      (Res.SID));
 
             else
                Machine_State.MState.Leader_State.Next_Index_Strict (Res.SID) :=
@@ -687,10 +700,71 @@ package body Raft.Node is
             end if;
 
          end;
+      elsif M'Tag = Timer_Timeout'Tag then
+         -- heartbeat timeout ?
+
+         if Timer_Timeout (M).Timer_Instance = Heartbeat_Timer then
+            -- send heartbeat to all using append rpc
+
+            -- restart the heartbeat timer
+            Machine_State.Timer_Start
+              (Machine_State.MState.all, Heartbeat_Timer);
+
+            ---------------------------------------------------------------------------
+
+            declare
+               Prev : TransactionLogIndex := TransactionLogIndex'First;
+               T    : Term := Machine_State.MState.Node_State.Current_Term;
+            begin
+
+               if Machine_State.MState.Node_State.Log_Upper_Bound_Strict /=
+                 TransactionLogIndex'First
+               then
+                  -- there are entries
+                  T :=
+
+                    Machine_State.MState.Node_State.Log
+                      (TransactionLogIndex'Pred
+                         (Machine_State.MState.Node_State.Log_Upper_Bound_Strict))
+                      .T;
+               end if;
+               -- From election, sending an empty appendEntries to all
+               -- to be reviewed
+               declare
+                  -- create the leader message heart beat
+                  A : Append_Entries_Request :=
+                    Append_Entries_Request'
+                      (Leader_Term           =>
+                         Machine_State.MState.Node_State.Current_Term,
+                       Leader_ID => Machine_State.MState.Current_Id,
+                       Prev_Log_Index_Strict => Prev, Prev_Log_Term => T,
+                       Entries               => (others => (C => 0, T => 1)),
+                       Entries_Last          =>
+                         TransactionLogIndex'First, -- no elements
+                       Leader_Commit_Strict  =>
+                         Machine_State.MState.Commit_Index_Strict);
+               begin
+                  for i in ServerRange loop
+                     if i /= Machine_State.MState.Current_Id then
+                        declare
+                           Peer_Request : Append_Entries_Request := A;
+                        begin
+                           -- change destination
+                           Machine_State.Sending_Message
+                             (Machine_State.MState.all, i, A);
+                           -- deallocate entries (pointer)
+
+                        end;
+                     end if;
+                  end loop;
+               end;
+            end;
+            ----------------------------------------------------------------------
+
+         end if;
 
       end if;
 
    end Handle_Message_Machine_State;
-
 
 end Raft.Node;
