@@ -87,6 +87,8 @@ package body Raft.Node is
          Machine.MState_Leader.Timer_Cancel    := Timer_Cancel;
          Machine.MState_Leader.Sending_Message := Sending_Message;
 
+         Switch_To_State (Machine, FOLLOWER);
+
       end;
    end Create_Machine;
 
@@ -189,6 +191,14 @@ package body Raft.Node is
             Machine.Current_Machine_State := Machine.MState_Follower'Access;
             Machine.Current_Machine_State.MState.Current_Raft_State :=
               FOLLOWER;
+
+            Machine.Current_Machine_State.Timer_Cancel
+              (Machine.Current_Machine_State.MState.all, Leader_Heartbeat_Timer);
+
+            Machine.Current_Machine_State.Timer_Start
+              (Machine.Current_Machine_State.MState.all, Leader_Heartbeat_Timer);
+              
+
          when CANDIDATE =>
             put_line
               ("[Switching to candidate state for " &
