@@ -3,7 +3,8 @@ package Raft is
 
   type ServerID is new Natural;
 
-  ALL_SERVER_SENDING : ServerID := 0;
+  ALL_SERVER_SENDING : constant ServerID := 0;
+  NULL_SERVER : constant ServerID := 0;
 
   ServerNumber : constant ServerID := 3;
   subtype ServerRange is ServerID range 1 .. ServerNumber;
@@ -16,12 +17,8 @@ package Raft is
   --  type AppendEntries_RPC is interface;
   -- position in the log
 
-  type TransactionLogIndexPointer is new Natural;
-  UNDEFINED_TRANSACTION_LOG_INDEX : constant TransactionLogIndexPointer := 0;
-
-  subtype TransactionLogIndex is
-   TransactionLogIndexPointer range 1 .. TransactionLogIndexPointer'Last;
-
+  type TransactionLogIndex is new Natural;
+  
   -- command definition and implementation
   type Command is new Natural;
 

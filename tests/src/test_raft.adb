@@ -12,6 +12,11 @@ with Ada.Text_IO;           use Ada.Text_IO;
 with AUnit;                 use AUnit;
 with AUnit.Assertions;      use AUnit.Assertions;
 
+with Ada.Exceptions;
+with Ada.IO_Exceptions;
+
+with Ada.Numerics.Float_Random;
+
 package body Test_Raft is
 
   use Assertions;
@@ -43,15 +48,15 @@ package body Test_Raft is
     SState : Raft_Node_State :=
      Raft_Node_State'
       (Current_Term => Term (1), Voted_For => ServerID (2), Log => Transaction,
-       Log_Upper_Bound => 0);
+       Log_Upper_Bound_Strict  => 0);
 
     LState : Raft_Leader_Additional_State :=
-     (Next_Index  => (1 => 0, 2 => 0, 3 => 0),
-      Match_Index => (1 => 0, 2 => 0, 3 => 0));
+     (Next_Index_Strict  => (1 => 0, 2 => 0, 3 => 0),
+      Match_Index_Strict => (1 => 0, 2 => 0, 3 => 0));
 
     S : Raft.Node.RaftServerStruct :=
      (Current_Raft_State => LEADER, Current_Id => 1, Node_State => SState,
-      Commit_Index       => 0, Last_Applied => 0, Leader_State => LState);
+      Commit_Index_Strict       => 0, Last_Applied_Strict => 0, Leader_State => LState);
 
     S2 : Raft.Node.RaftServerStruct;
   begin
@@ -140,6 +145,7 @@ package body Test_Raft is
 
     InMemoryStream : aliased Message_Buffer;
 
+    --- timers
     Timers : array (1 .. 6) of Timer_Holder :=
      ((SID => 1, Timer => Election_Timer, Counter => 0),
       (SID => 2, Timer => Election_Timer, Counter => 0),
@@ -148,8 +154,9 @@ package body Test_Raft is
       (SID => 2, Timer => Heartbeat_Timer, Counter => 0),
       (SID => 3, Timer => Heartbeat_Timer, Counter => 0));
 
-    LEADER_TIMER_COUNTER_INCREMENT    : constant Positive := 10;
-    HEARTBEAT_TIMER_COUNTER_INCREMENT : constant Positive := 3;
+    LEADER_TIMER_COUNTER_INCREMENT    : constant Positive := 15;
+    
+    HEARTBEAT_TIMER_COUNTER_INCREMENT : constant Positive := 4;
 
     procedure Set_Timer
      (SID : ServerID; Timer : Timer_Type; newCounter : Natural)
@@ -194,6 +201,8 @@ package body Test_Raft is
       return False;
     end Decrement_Timer_Counter;
 
+    Gen : Ada.Numerics.Float_Random.Generator;
+
     procedure Ask_For_Timer_Start
      (RSS : in out RaftServerStruct; Timer_Instance : Timer_Type)
     is
@@ -201,7 +210,9 @@ package body Test_Raft is
       Put_Line ("Ask_For_Timer_Start from " & ServerID'Image (RSS.Current_Id));
       Put_Line (" Counter: " & Timer_Type'Image (Timer_Instance));
       declare
-        Counter : Natural := LEADER_TIMER_COUNTER_INCREMENT;
+        Counter : Natural :=
+         LEADER_TIMER_COUNTER_INCREMENT +
+         Natural (Ada.Numerics.Float_Random.Random (Gen) * 3.0);
       begin
         if (Timer_Instance = Heartbeat_Timer) then
           Counter := HEARTBEAT_TIMER_COUNTER_INCREMENT;
@@ -230,13 +241,47 @@ package body Test_Raft is
 
       declare
       begin
-        ServerID'Write (InMemoryStream'Access, RSS.Current_Id);
-        ServerID'Write (InMemoryStream'Access, To_ServerID_Or_All);
-        Message_Type'Write (InMemoryStream'Access, M);
+        ServerID'Output (InMemoryStream'Access, RSS.Current_Id);
+        ServerID'Output (InMemoryStream'Access, To_ServerID_Or_All);
+        Message_Type'Class'Output (InMemoryStream'Access, M);
+
       end;
 
       -- Send (B'Unchecked_Access, RSS.Current_Id, To_ServerID_Or_All, M);
     end Sending;
+
+    procedure Send_Pushed_Message is
+    begin
+      loop
+        declare
+          SID_From : ServerID := ServerID'Input (InMemoryStream'Access);
+
+          SID_To : ServerID := ServerID'Input (InMemoryStream'Access);
+          M      : Message_Type'Class :=
+           Message_Type'Class'Input (InMemoryStream'Access);
+        begin
+          put_line
+           ("Sending " & ServerId'Image (SID_From) & " to " &
+            ServerID'Image (SID_To));
+          Send (B'Unchecked_Access, SID_From, SID_To, M);
+        exception
+          when E : others =>
+            Put_Line
+             ("Send Message Error: " &
+              Ada.Exceptions.Exception_Information (E));
+            return;
+        end;
+      end loop;
+    exception
+      when E : Ada.IO_Exceptions.End_Error =>
+        Put_Line ("No more message");
+        return;
+      when E : others                      =>
+        Put_Line
+         ("Send_Pushed_Message: " & Ada.Exceptions.Exception_Information (E));
+        return;
+
+    end Send_Pushed_Message;
 
     --  procedure Send_Pushed_Message is
     --    SID_From : ServerID;
@@ -363,10 +408,13 @@ package body Test_Raft is
       delay 1.0;
 
       Handle_Message (M1, T_HeartBeat_Timeout);
-      Handle_Message (M2, T_HeartBeat_Timeout);
-      Handle_Message (M3, T_HeartBeat_Timeout);
+      --  Handle_Message (M2, T_HeartBeat_Timeout);
+      --  Handle_Message (M3, T_HeartBeat_Timeout);
     end;
 
+    Put_Line (">> Sending messages");
+    Send_Pushed_Message;
+    Put_Line (">>Messages sent");
     for j in 1 .. 10 loop
       for i in Timers'Range loop
         Put_Line
@@ -379,13 +427,17 @@ package body Test_Raft is
            Decrement_Timer_Counter (Timers (i).SID, Timers (i).Timer, 1);
           if timeout then
             Put_Line
-             ("Timer " & Timer_Type'Image (Timers (i).Timer) & " expired");
+             ("Timer " & Timer_Type'Image (Timers (i).Timer) &
+              " expired for " & Timers (i).SID'Image);
             Raft.Comm.Send
              (B'Unchecked_Access, Timers (i).SID, Timers (i).SID,
               Timer_Timeout'(Timer_Instance => Timers (i).Timer));
           end if;
         end;
       end loop;
+      Put_Line (">> Sending messages");
+      Send_Pushed_Message;
+      Put_Line (">>Messages sent");
       delay 1.0;
     end loop;
   end Test_Leader_Election;

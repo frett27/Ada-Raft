@@ -7,30 +7,27 @@ package Raft.Node.Messages is
         Leader_Term    : Term;
         Leader_ID      : ServerID;
 
-        -- message sent to
-        To : ServerID;
-
-        Prev_Log_Index : TransactionLogIndexPointer;
-        Prev_Log_Term  : No_Or_Term;
+        Prev_Log_Index_Strict : TransactionLogIndex;
+        Prev_Log_Term  : Term;
 
         Entries       : TAddLog;
-        Entries_Last : TransactionLogIndexPointer;
+        Entries_Last : TransactionLogIndex;
 
-        Leader_Commit : TransactionLogIndexPointer;
+        Leader_Commit_Strict : TransactionLogIndex;
     end record;
 
     type Append_Entries_Response is new Response_Message_Type with record
         T       : Term;
         SID: ServerId;
-        Match_Index: TransactionLogIndexPointer;
+        Match_Index_Strict: TransactionLogIndex;
         Success : Boolean;
     end record;
 
     type Request_Vote_Request is new Request_Message_Type with record
         Candidate_Term : Term;
         Candidate_ID   : ServerID;
-        Last_Log_Index : TransactionLogIndex;
-        Last_Log_Term  : No_Or_Term;
+        Last_Log_Index_Strict : TransactionLogIndex;
+        Last_Log_Term  : Term;
     end record;
 
     type Request_Vote_Response is new Response_Message_Type with record

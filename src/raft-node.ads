@@ -9,6 +9,7 @@ package Raft.Node is
   type RaftStateEnum is (FOLLOWER, CANDIDATE, LEADER);
   type RaftWishedStateEnum is (FOLLOWER, CANDIDATE, LEADER, NO_CHANGES);
 
+
   -- State for all nodes (persisted)
   -- isolate them to persist them
   type Raft_Node_State is record
@@ -16,17 +17,17 @@ package Raft.Node is
     Current_Term    : Term;
     Voted_For       : ServerID := 0;
     Log             : TLog (TransactionLogIndex'First .. MAX_LOG);
-    Log_Upper_Bound : TransactionLogIndexPointer;
+    Log_Upper_Bound_Strict : TransactionLogIndex;
   end record;
 
-  type AllServerLogIndex is array (ServerRange) of TransactionLogIndexPointer;
+  type AllServerLogIndex is array (ServerRange) of TransactionLogIndex;
 
   -- volatile leader additional states
   type Raft_Leader_Additional_State is record
-    Next_Index  : AllServerLogIndex :=
-     (others => UNDEFINED_TRANSACTION_LOG_INDEX);
-    Match_Index : AllServerLogIndex :=
-     (others => UNDEFINED_TRANSACTION_LOG_INDEX);
+    Next_Index_Strict : AllServerLogIndex :=
+     (others =>  TransactionLogIndex'First);
+    Match_Index_Strict : AllServerLogIndex :=
+     (others => TransactionLogIndex'First);
   end record;
 
   type RaftServerStruct is record
@@ -39,10 +40,8 @@ package Raft.Node is
     Node_State : Raft_Node_State;
 
     -- volatile for all states
-    Commit_Index : TransactionLogIndexPointer :=
-     UNDEFINED_TRANSACTION_LOG_INDEX;
-    Last_Applied : TransactionLogIndexPointer :=
-     UNDEFINED_TRANSACTION_LOG_INDEX;
+    Commit_Index_Strict : TransactionLogIndex := TransactionLogIndex'First;
+    Last_Applied_Strict : TransactionLogIndex := TransactionLogIndex'First;
 
     -- leader specific implementation
     Leader_State : Raft_Leader_Additional_State;
@@ -113,12 +112,12 @@ package Raft.Node is
 
   type Array_Of_ServerId_Booleans is array (ServerRange) of Boolean;
 
-  type Raft_State_Machine_Candidat is new Raft_State_Machine with record
+  type Raft_State_Machine_Candidate is new Raft_State_Machine with record
     Server_Vote_Responses : Array_Of_ServerId_Booleans := (others => False);
     Server_Vote_Responses_Status : Array_Of_ServerId_Booleans := (others => False);
   end record;
   overriding procedure Handle_Message_Machine_State
-   (Machine_State          : in out Raft_State_Machine_Candidat;
+   (Machine_State          : in out Raft_State_Machine_Candidate;
     M                      : in     Message_Type'Class;
     New_Raft_State_Machine :    out RaftWishedStateEnum);
 
@@ -134,11 +133,11 @@ package Raft.Node is
     State : aliased RaftServerStruct;
 
     MState_Leader    : aliased Raft_State_Machine_Leader;
-    MState_Candidate : aliased Raft_State_Machine_Candidat;
+    MState_Candidate : aliased Raft_State_Machine_Candidate;
     MState_Follower  : aliased Raft_State_Machine_Follower;
 
     Current_Machine_State : Raft_State_Machine_Wide_Access;
-    
+
   end record;
 
   type Raft_Machine_Access is access all Raft_Machine;
