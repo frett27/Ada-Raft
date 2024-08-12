@@ -138,6 +138,8 @@ package body Test_Raft is
     NetHub   : aliased LocalHub;
     NHAccess : Net_Hub_Access := NetHub'Unchecked_Access;
 
+    InMemoryStream : aliased Message_Buffer;
+
     Timers : array (1 .. 6) of Timer_Holder :=
      ((SID => 1, Timer => Election_Timer, Counter => 0),
       (SID => 2, Timer => Election_Timer, Counter => 0),
@@ -226,8 +228,26 @@ package body Test_Raft is
         Ada.Tags.Expanded_Name (M'Tag) & " to " &
         ServerID'Image (To_ServerID_Or_All));
 
-      Send (B'Unchecked_Access, RSS.Current_Id, To_ServerID_Or_All, M);
+      declare
+      begin
+        ServerID'Write (InMemoryStream'Access, RSS.Current_Id);
+        ServerID'Write (InMemoryStream'Access, To_ServerID_Or_All);
+        Message_Type'Write (InMemoryStream'Access, M);
+      end;
+
+      -- Send (B'Unchecked_Access, RSS.Current_Id, To_ServerID_Or_All, M);
     end Sending;
+
+    --  procedure Send_Pushed_Message is
+    --    SID_From : ServerID;
+    --    SID_To   : ServerID;
+    --    M        : Message_Type'Class;
+    --  begin
+    --    ServerID'Read (InMemoryStream'Access, SID_From);
+    --    ServerID'Read (InMemoryStream'Access, SID_To);
+    --    Message_Type'Read (InMemoryStream'Access, M);
+    --    Send (B'Unchecked_Access, SID_From, SID_To, M);
+    --  end Send_Pushed_Message;
 
     procedure L1_CallBack (NL : in Net_Link; Message : in Stream_Element_Array)
     is
@@ -241,8 +261,8 @@ package body Test_Raft is
 
       begin
         Put_Line
-         (" 1: " & M1.State.Current_Raft_State'Image & " L1_CallBack received message " &
-          Ada.tags.Expanded_Name (M'Tag));
+         (" 1: " & M1.State.Current_Raft_State'Image &
+          " L1_CallBack received message " & Ada.tags.Expanded_Name (M'Tag));
         --  Put_Line ("HostName_From: " & To_String (HostName (NL)));
         --  Put_Line ("Message: " & To_String (From_Message (Message)));
         Handle_Message (M1, M);
@@ -261,8 +281,8 @@ package body Test_Raft is
 
       begin
         Put_Line
-         (" 2: " & M1.State.Current_Raft_State'Image & " L2_CallBack received message " &
-          Ada.tags.Expanded_Name (M'Tag));
+         (" 2: " & M1.State.Current_Raft_State'Image &
+          " L2_CallBack received message " & Ada.tags.Expanded_Name (M'Tag));
         --  Put_Line ("HostName_From: " & To_String (HostName (NL)));
         --  Put_Line ("Message: " & To_String (From_Message (Message)));
         Handle_Message (M2, M);
@@ -281,8 +301,8 @@ package body Test_Raft is
 
       begin
         Put_Line
-         (" 3: " & M1.State.Current_Raft_State'Image & " L3_CallBack received message " &
-          Ada.tags.Expanded_Name (M'Tag));
+         (" 3: " & M1.State.Current_Raft_State'Image &
+          " L3_CallBack received message " & Ada.tags.Expanded_Name (M'Tag));
         --  Put_Line ("HostName_From: " & To_String (HostName (NL)));
         --  Put_Line ("Message: " & To_String (From_Message (Message)));
         Handle_Message (M3, M);
@@ -304,6 +324,8 @@ package body Test_Raft is
     Put_Line ("Starting Election Test ===============================");
     Put_Line
      ("==============================================================");
+
+    Create (InMemoryStream);
 
     -- connect the hosts to the hub
     Create_Link
@@ -345,7 +367,7 @@ package body Test_Raft is
       Handle_Message (M3, T_HeartBeat_Timeout);
     end;
 
-    for j in 1 .. 100 loop
+    for j in 1 .. 10 loop
       for i in Timers'Range loop
         Put_Line
          ("Timer " & Timer_Type'Image (Timers (i).Timer) & " counter: " &

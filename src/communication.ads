@@ -1,12 +1,19 @@
 with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
 with Ada.Streams;           use Ada.Streams;
+with Ada.Unchecked_Deallocation;
 
 package Communication is
 
     -- package defined message abstract type
-
     type Message_Type is tagged null record;
     type Message_Wide_Access is access all Message_Type'Class;
+
+    procedure Free is new Ada.Unchecked_Deallocation (
+        Message_Type'Class, 
+        Message_Wide_Access);
+
+
+
 
     type Request_Message_Type is new Message_Type with null record;
     type Response_Message_Type is new Message_Type with null record;
@@ -19,6 +26,10 @@ package Communication is
     -- manage associated properties for the connection to host
     -- net link is coupled with Net_Hub
     type Net_Link is private;
+
+
+    
+
 
     type Message_Callback is
        access procedure (NL : in Net_Link; Message : in Stream_Element_Array);
@@ -71,6 +82,8 @@ package Communication is
     procedure From_Stream_Element_Array
        (A : Stream_Element_Array; MB : out Message_Buffer);
 
+
+
 private
 
     type Net_Hub is abstract tagged null record;
@@ -81,12 +94,14 @@ private
         H          : Net_Hub_Access;
     end record;
 
-    MAX_MESSAGE_BUFFER : constant Stream_Element_Offset := 1_000;
+    MAX_MESSAGE_BUFFER : constant Stream_Element_Offset := 1_000_000;
     type Message_Buffer is new Root_Stream_Type with record
-        Buffer : Stream_Element_Array (1 .. MAX_MESSAGE_BUFFER);
-        From   : Stream_Element_Offset := 1;
+        Buffer : Stream_Element_Array (0 .. MAX_MESSAGE_BUFFER - 1);
+        From   : Stream_Element_Offset := 0;
         -- to in an exclusive range
-        To     : Stream_Element_Offset := 1;
+        To     : Stream_Element_Offset := 0;
     end record;
+
+    
 
 end Communication;
