@@ -6,15 +6,14 @@ with Ada.Text_IO.Text_Streams;
 -- definition of messages
 with Raft.Messages; use Raft.Messages;
 
-with Ada.Tags;           use Ada.Tags;
+with Ada.Tags; use Ada.Tags;
 
 package body Raft.Node is
 
    --------------------------------------------------------------------------
    -- persistent state handling
 
-   procedure Save_State_To_File (State : RaftNodeStruct; FileName : String)
-   is
+   procedure Save_State_To_File (State : RaftNodeStruct; FileName : String) is
 
       F : File_Type;
       S : Ada.Text_IO.Text_Streams.Stream_Access;
@@ -27,8 +26,6 @@ package body Raft.Node is
       Close (F);
 
    end Save_State_To_File;
-
-
 
    procedure Load_State_From_File
      (Filename : String; State : out RaftNodeStruct)
@@ -45,17 +42,16 @@ package body Raft.Node is
    ----------------------------------------------------
    -- Machine handling
 
-
    procedure Create_Machine
-     (Machine         : out Raft_Machine_Access; SID : ServerID_Type;
+     (Machine         : out Raft_Node_Access; SID : ServerID_Type;
       Timer_Start     :     Start_Timer; Timer_Cancel : Cancel_Timer;
       Sending_Message :     Message_Sending)
    is
    begin
-      Machine := new Raft_Machine;
+      Machine := new Raft_Node;
 
       declare
-         RStruct : Raft_Server_Struct_Access := Machine.State'Access;
+         RStruct : RaftNodeStruct_Access := Machine.State'Access;
          --  M_State : Raft_State_Machine_Follower :=
          --    Raft_State_Machine_Follower'
          --     (MState => Machine.State'Access, Timer_Start => Timer_Start,
@@ -110,7 +106,8 @@ package body Raft.Node is
 
       for I in ServerRange loop
          declare
-            Last_term : Term_Type := Machine_State.MState.Node_State.Current_Term;
+            Last_term : Term_Type :=
+              Machine_State.MState.Node_State.Current_Term;
          begin
             if Machine_State.MState.Node_State.Log_Upper_Bound_Strict /=
               TransactionLogIndex_Type'First
@@ -143,7 +140,7 @@ package body Raft.Node is
    end Start_TimerElection_Entering_Candidate_State;
 
    procedure Check_Request_Term
-     (Machine   : in out Raft_Machine_Access; M : in Message_Type'Class;
+     (Machine   : in out Raft_Node_Access; M : in Message_Type'Class;
       New_State : in out RaftWishedStateEnum)
    is
       A : access Raft_State_Machine'Class := Machine.Current_Machine_State;
@@ -178,8 +175,11 @@ package body Raft.Node is
       end if;
    end Check_Request_Term;
 
+   procedure Handle_Leader_Send_Append_Entries
+     (Machine_State : in out Raft_State_Machine_Leader);
+
    procedure Switch_To_State
-     (Machine : in out Raft_Machine_Access; New_State : RaftWishedStateEnum)
+     (Machine : in out Raft_Node_Access; New_State : RaftWishedStateEnum)
    is
    begin
       case New_State is
@@ -224,59 +224,64 @@ package body Raft.Node is
             -- define the leader state,
             -- all is unknown first
             Machine.State.Leader_State :=
-              (Next_Index_Strict  => (others => TransactionLogIndex_Type'First),
-               Match_Index_Strict => (others => TransactionLogIndex_Type'First));
+              (Next_Index_Strict  =>
+                 (others => Machine.State.Node_State.Log_Upper_Bound_Strict),
+               Match_Index_Strict =>
+                 (others => TransactionLogIndex_Type'First));
 
-            declare
-               Prev : TransactionLogIndex_Type := TransactionLogIndex_Type'First;
-               T    : Term_Type := Machine.State.Node_State.Current_Term;
-            begin
+            Handle_Leader_Send_Append_Entries (Machine.MState_Leader);
 
-               if Machine.State.Node_State.Log_Upper_Bound_Strict /=
-                 TransactionLogIndex_Type'First
-               then
-                  -- there are entries
-                  T :=
+            --  declare
+            --     Prev : TransactionLogIndex_Type :=
+            --       TransactionLogIndex_Type'First;
+            --     T    : Term_Type := Machine.State.Node_State.Current_Term;
+            --  begin
 
-                    Machine.State.Node_State.Log
-                      (TransactionLogIndex_Type'Pred
-                         (Machine.State.Node_State.Log_Upper_Bound_Strict))
-                      .T;
-               end if;
+            --     if Machine.State.Node_State.Log_Upper_Bound_Strict /=
+            --       TransactionLogIndex_Type'First
+            --     then
+            --        -- there are entries
+            --        T :=
 
-               -- From election, sending an empty appendEntries to all
-               declare
-                  -- create the leader message heart beat
-                  A : Append_Entries_Request :=
-                    Append_Entries_Request'
-                      (Leader_Term => Machine.State.Node_State.Current_Term,
-                       Leader_ID             => Machine.State.Current_Id,
-                       Prev_Log_Index_Strict => Prev, Prev_Log_Term => T,
-                       Entries               => (others => (C => 0, T => 1)),
-                       Entries_Last_Strict   =>
-                         TransactionLogIndex_Type'First, -- no elements
-                       Leader_Commit_Strict  =>
-                         Machine.State.Commit_Index_Strict);
-               begin
-                  for i in ServerRange loop
-                     if i /= Machine.State.Current_Id then
-                        declare
-                           Peer_Request : Append_Entries_Request := A;
-                        begin
-                           -- change destination
-                           Machine.Current_Machine_State.Sending_Message
-                             (Machine.Current_Machine_State.MState.all, i, A);
-                           -- deallocate entries (pointer)
+            --          Machine.State.Node_State.Log
+            --            (TransactionLogIndex_Type'Pred
+            --               (Machine.State.Node_State.Log_Upper_Bound_Strict))
+            --            .T;
+            --     end if;
 
-                        end;
-                     end if;
-                  end loop;
-               end;
-            end;
+            --     -- From election, sending an empty appendEntries to all
+            --     declare
+            --        -- create the leader message heart beat
+            --        A : Append_Entries_Request :=
+            --          Append_Entries_Request'
+            --            (Leader_Term => Machine.State.Node_State.Current_Term,
+            --             Leader_ID             => Machine.State.Current_Id,
+            --             Prev_Log_Index_Strict => Prev, Prev_Log_Term => T,
+            --             Entries               => (others => (C => 0, T => 1)),
+            --             Entries_Last_Strict   =>
+            --               TransactionLogIndex_Type'First, -- no elements
+            --             Leader_Commit_Strict  =>
+            --               Machine.State.Commit_Index_Strict);
+            --     begin
+            --        for i in ServerRange loop
+            --           if i /= Machine.State.Current_Id then
+            --              declare
+            --                 Peer_Request : Append_Entries_Request := A;
+            --              begin
+            --                 -- change destination
+            --                 Machine.Current_Machine_State.Sending_Message
+            --                   (Machine.Current_Machine_State.MState.all, i, A);
+            --                 -- deallocate entries (pointer)
 
-            -- start the heart beat timer
-            Machine.Current_Machine_State.Timer_Start
-              (Machine.Current_Machine_State.MState.all, Heartbeat_Timer);
+            --              end;
+            --           end if;
+            --        end loop;
+            --     end;
+            --  end;
+
+            --  -- start the heart beat timer
+            --  Machine.Current_Machine_State.Timer_Start
+            --    (Machine.Current_Machine_State.MState.all, Heartbeat_Timer);
 
          when NO_CHANGES =>
             null;
@@ -285,7 +290,7 @@ package body Raft.Node is
 
    --- General message handling
    procedure Handle_Message
-     (Machine : in out Raft_Machine_Access; M : in Message_Type'Class)
+     (Machine : in out Raft_Node_Access; M : in Message_Type'Class)
    is
       New_State : RaftWishedStateEnum             := NO_CHANGES;
       A : access Raft_State_Machine'Class := Machine.Current_Machine_State;
@@ -375,7 +380,8 @@ package body Raft.Node is
 
                -- check the candidate is as up to date
                declare
-                  Last_term : Term_Type := Machine.State.Node_State.Current_Term;
+                  Last_term : Term_Type :=
+                    Machine.State.Node_State.Current_Term;
                begin
                   if Machine.Current_Machine_State.MState.Node_State
                       .Log_Upper_Bound_Strict /=
@@ -455,17 +461,21 @@ package body Raft.Node is
    procedure Handle_AppendEntries_Request
      (Machine_State : in out Raft_State_Machine'Class;
       M             : in     Append_Entries_Request'Class)
-   
+
    is
 
    begin
 
       if M.Leader_Term < Machine_State.MState.Node_State.Current_Term then
+         put_line
+           ("[ on " & Machine_State.MState.Current_Id'Image &
+            " , leader term is lower than this one ]");
          declare
+
             -- reply false of the leader term is lower than this one
             Response : Append_Entries_Response :=
               (Success => False, SID => Machine_State.MState.Current_Id,
-               Match_Index_Strict => TransactionLogIndex_Type'First,
+               Matching_Index_Strict => TransactionLogIndex_Type'First,
                T => Machine_State.MState.Node_State.Current_Term);
          begin
             -- ignore the message
@@ -480,27 +490,38 @@ package body Raft.Node is
         ("[AppendEntriesRequest] for " &
          Machine_State.MState.Current_Id'Image &
          " Checking if log contains an entry at PrevLogTerm whose index matches PrevLogIndex");
-      put_line ("PrevLogIndex from Message: " & M.Prev_Log_Index_Strict'Image);
-      put_line ("PrevLogTerm from message: " & M.Prev_Log_Term'Image);
       put_line
-        ("Machine LogUpperBound: " &
-         Machine_State.MState.Node_State.Log_Upper_Bound_Strict'Image);
-      for i in Machine_State.MState.Node_State.Log'Range loop
-         put_line ("Log: " & Machine_State.MState.Node_State.Log (i).T'Image);
-      end loop;
+        ("[PrevLogIndex from Message: " & M.Prev_Log_Index_Strict'Image & "]");
+      put_line ("[PrevLogTerm from message: " & M.Prev_Log_Term'Image & "]");
+      put_line
+        ("[Machine " & Machine_State.MState.Current_Id'Image &
+         " LogUpperBound: " &
+         Machine_State.MState.Node_State.Log_Upper_Bound_Strict'Image & "]");
 
-      -- prev log index may not be defined
+      -- dump logs
+      put_line ("[Logs for " & Machine_State.MState.Current_Id'Image & "]");
+      for i in Machine_State.MState.Node_State.Log'Range loop
+         put
+           (" (" & Machine_State.MState.Node_State.Log (i).C'Image & "," &
+            Machine_State.MState.Node_State.Log (i).T'Image & ")");
+      end loop;
+      new_line;
 
       if M.Prev_Log_Index_Strict >
         Machine_State.MState.Node_State.Log_Upper_Bound_Strict
         or else
-          Machine_State.MState.Node_State.Log (M.Prev_Log_Index_Strict).T /=
-          Term_Type (M.Prev_Log_Term)
+        (M.Prev_Log_Index_Strict > TransactionLogIndex_Type'First
+         and then
+           Machine_State.MState.Node_State.Log
+             (TransactionLogIndex_Type'Pred (M.Prev_Log_Index_Strict))
+             .T /=
+           Term_Type (M.Prev_Log_Term))
       then
+
          declare
             Response : Append_Entries_Response :=
               (Success => False, SID => Machine_State.MState.Current_Id,
-               Match_Index_Strict => TransactionLogIndex_Type'First,
+               Matching_Index_Strict => TransactionLogIndex_Type'First,
                T => Machine_State.MState.Node_State.Current_Term);
          begin
             -- ignore the message
@@ -508,63 +529,116 @@ package body Raft.Node is
               (Machine_State.MState.all, M.Leader_ID, Response);
             return;
          end;
+
       end if;
 
       -- from given entries, check if there are inconsistencies
       declare
-         To_Update_Index_on_Log : TransactionLogIndex_Type  :=
-           M.Prev_Log_Index_Strict;
-         Entries_To_Add         : TAddLog_Type;
-         Entries_Length : TransactionLogIndex_Type := TransactionLogIndex_Type'First;
-         Match_Index : TransactionLogIndex_Type := TransactionLogIndex_Type'First;
+         Entries_To_Add : TAddLog_Type;
+         Entries_Length : TransactionLogIndex_Type :=
+           TransactionLogIndex_Type'First;
+         Match_Index    : TransactionLogIndex_Type :=
+           TransactionLogIndex_Type'First;
+         Response_Value : Boolean                  := True;
       begin
-         for I in M.Entries'First .. M.Entries_Last_Strict loop
-            To_Update_Index_on_Log :=
-              TransactionLogIndex_Type'Succ (To_Update_Index_on_Log);
 
-            if To_Update_Index_on_Log <=
-              Machine_State.MState.Node_State.Log_Upper_Bound_Strict
-              and then
-                Machine_State.MState.Node_State.Log (To_Update_Index_on_Log)
-                  .T /=
-                Term_Type (M.Entries (I).T)
-            then
-               -- there is an inconsistency, go down to previous match term
-               while To_Update_Index_on_Log > 0
-                 and then
-                   Machine_State.MState.Node_State.Log (To_Update_Index_on_Log)
-                     .T /=
-                   Term_Type (M.Entries (I).T)
+         if M.Entries_Last_Strict = TransactionLogIndex_Type'First then
+            put_line
+              ("[No entries to add for " &
+               Machine_State.MState.Current_Id'Image & "]");
+            Match_Index := M.Prev_Log_Index_Strict;
+         else
+
+            declare
+               To_Update_Index_on_Local_Log : TransactionLogIndex_Type :=
+                 M.Prev_Log_Index_Strict;
+            begin
+
+               put_line
+                 ("[Adding entries from " & M.Entries'First'Image & " to " &
+                  TransactionLogIndex_Type'Image
+                    (TransactionLogIndex_Type'Pred (M.Entries_Last_Strict)) &
+                  " ]");
+
+               Match_Index := To_Update_Index_on_Local_Log;
+
+               for I in
+                 M.Entries'First ..
+                   TransactionLogIndex_Type'Pred (M.Entries_Last_Strict)
                loop
-                  -- found the term, go down
-                  To_Update_Index_on_Log :=
-                    TransactionLogIndex_Type'Pred (To_Update_Index_on_Log);
-               end loop;
 
-               Machine_State.MState.Node_State.Log (To_Update_Index_on_Log) :=
-                 M.Entries (I);
-            end if;
+                  if To_Update_Index_on_Local_Log <
+                    Machine_State.MState.Node_State.Log_Upper_Bound_Strict
+                    and then
+                      Machine_State.MState.Node_State.Log
+                        (To_Update_Index_on_Local_Log)
+                        .T /=
+                      Term_Type (M.Entries (I).T)
+                  then
+                     Response_Value := Response_Value and False;
+                  end if;
+
+                  -- update
+                  Machine_State.MState.Node_State.Log
+                    (To_Update_Index_on_Local_Log) :=
+                    M.Entries (I);
+                  put_line
+                    ("[Updated entry " & To_Update_Index_on_Local_Log'Image &
+                     " with " & M.Entries (I).T'Image & " on " &
+                     Machine_State.MState.Current_Id'Image & "]");
+
+                  Machine_State.MState.Node_State.Log_Upper_Bound_Strict :=
+                    TransactionLogIndex_Type'Succ
+                      (To_Update_Index_on_Local_Log);
+
+                  To_Update_Index_on_Local_Log :=
+                    TransactionLogIndex_Type'Succ
+                      (To_Update_Index_on_Local_Log);
+
+                  Match_Index := To_Update_Index_on_Local_Log;
+
+               end loop;
+            end;
+         end if;
+
+         -- dump logs
+         put_line
+           ("[Logs after update for " & Machine_State.MState.Current_Id'Image &
+            "]");
+         for i in Machine_State.MState.Node_State.Log'Range loop
+            put
+              (" (" & Machine_State.MState.Node_State.Log (i).C'Image & "," &
+               Machine_State.MState.Node_State.Log (i).T'Image & ")");
          end loop;
+         new_line;
 
          Machine_State.MState.Commit_Index_Strict :=
            TransactionLogIndex_Type'Min
-             (M.Leader_Commit_Strict, To_Update_Index_on_Log);
+             (M.Leader_Commit_Strict,
+              Machine_State.MState.Node_State.Log_Upper_Bound_Strict);
 
          -- send response
          declare
             Response : Append_Entries_Response :=
-              (Success => True, SID => Machine_State.MState.Current_Id,
-               Match_Index_Strict => Match_Index,
+              (Success               => Response_value,
+               SID                   => Machine_State.MState.Current_Id,
+               Matching_Index_Strict => Match_Index,
                T => Machine_State.MState.Node_State.Current_Term);
          begin
+            put_line
+              ("[Append_entries Response for " &
+               Machine_State.MState.Current_Id'Image & "]");
+            put_line
+              ("[     Matching_Index_Strict: " & Match_Index'Image & "]");
+            put_line ("[     Success: " & Response_value'Image & "]");
+
             Machine_State.Sending_Message
               (Machine_State.MState.all, M.Leader_ID, Response);
+
          end;
       end;
 
    end Handle_AppendEntries_Request;
-
-
 
    overriding procedure Handle_Message_Machine_State
      (Machine_State          : in out Raft_State_Machine_Candidate;
@@ -637,27 +711,54 @@ package body Raft.Node is
       --      }
 
       if Res.Success then
+         put_line
+           ("[ leader " & Machine_State.MState.Current_Id'Image &
+            " got a success response from " & Res.SID'Image & "]");
+
          Machine_State.MState.Leader_State.Match_Index_Strict (Res.SID) :=
            TransactionLogIndex_Type'Max
              (Machine_State.MState.Leader_State.Match_Index_Strict (Res.SID),
-              Res.Match_Index_Strict);
+              Res.Matching_Index_Strict);
+         put_line
+           ("[ leader " & Machine_State.MState.Current_Id'Image &
+            " updated matchIndex_strict to " &
+            Machine_State.MState.Leader_State.Match_Index_Strict (Res.SID)'
+              Image &
+            " for " & Res.SID'Image & "]");
 
          Machine_State.MState.Leader_State.Next_Index_Strict (Res.SID) :=
-           TransactionLogIndex_Type'Succ
-             (Machine_State.MState.Leader_State.Match_Index_Strict (Res.SID));
+           Machine_State.MState.Leader_State.Match_Index_Strict (Res.SID);
+         put_line
+           ("[ leader " & Machine_State.MState.Current_Id'Image &
+            " updated nextIndex_strict to " &
+            Machine_State.MState.Leader_State.Next_Index_Strict (Res.SID)'
+              Image &
+            " for " & Res.SID'Image & "]");
 
       else
+         put_line
+           ("[ leader " & Machine_State.MState.Current_Id'Image &
+            " got a failure response from " & Res.SID'Image & "]");
          Machine_State.MState.Leader_State.Next_Index_Strict (Res.SID) :=
            TransactionLogIndex_Type'Max
              (TransactionLogIndex_Type'First,
               TransactionLogIndex_Type'Pred
                 (Machine_State.MState.Leader_State.Next_Index_Strict
                    (Res.SID)));
+         put_line
+           ("[ leader " & Machine_State.MState.Current_Id'Image &
+            " updated nextIndex_strict to " &
+            Machine_State.MState.Leader_State.Next_Index_Strict (Res.SID)'
+              Image &
+            " for " & Res.SID'Image & "]");
 
       end if;
    end Handle_Leader_Append_Entries_Response;
 
-
+   procedure Handle_Leader_Send_Command
+     (Machine_State : in out Raft_State_Machine_Leader;
+      RSC           : in     Request_Send_Command) with
+     Pre => Machine_State.MState.Current_Raft_State = LEADER;
 
    overriding procedure Handle_Message_Machine_State
      (Machine_State          : in out Raft_State_Machine_Leader;
@@ -683,64 +784,25 @@ package body Raft.Node is
          if Timer_Timeout (M).Timer_Instance = Heartbeat_Timer then
             -- send heartbeat to all using append rpc
 
-
             -- restart the heartbeat timer
             Machine_State.Timer_Start
               (Machine_State.MState.all, Heartbeat_Timer);
 
             ---------------------------------------------------------------------------
 
-            declare
-               Prev : TransactionLogIndex_Type := TransactionLogIndex_Type'First;
-               T    : Term_Type := Machine_State.MState.Node_State.Current_Term;
-            begin
+            Handle_Leader_Send_Append_Entries (Machine_State);
 
-               if Machine_State.MState.Node_State.Log_Upper_Bound_Strict /=
-                 TransactionLogIndex_Type'First
-               then
-                  -- there are entries
-                  T :=
-                    Machine_State.MState.Node_State.Log
-                      (TransactionLogIndex_Type'Pred
-                         (Machine_State.MState.Node_State
-                            .Log_Upper_Bound_Strict))
-                      .T;
-               end if;
-               -- From election, sending an empty appendEntries to all
-               -- to be reviewed
-               declare
-                  -- create the leader message heart beat
-                  A : Append_Entries_Request :=
-                    Append_Entries_Request'
-                      (Leader_Term           =>
-                         Machine_State.MState.Node_State.Current_Term,
-                       Leader_ID => Machine_State.MState.Current_Id,
-                       Prev_Log_Index_Strict => Prev, Prev_Log_Term => T,
-                       Entries               => (others => (C => 0, T => 1)),
-                       Entries_Last_Strict   =>
-                         TransactionLogIndex_Type'First, -- no elements
-                       Leader_Commit_Strict  =>
-                         Machine_State.MState.Commit_Index_Strict);
-               begin
-                  for i in ServerRange loop
-                     if i /= Machine_State.MState.Current_Id then
-                        declare
-                           Peer_Request : Append_Entries_Request := A;
-                        begin
-                           -- change destination
-                           Machine_State.Sending_Message
-                             (Machine_State.MState.all, i, A);
-                           -- deallocate entries (pointer)
-
-                        end;
-                     end if;
-                  end loop;
-               end;
-            end;
             ----------------------------------------------------------------------
 
          end if;
 
+      elsif M'Tag = Request_Send_Command'Tag then
+         -- handle send command
+         declare
+            RSC : Request_Send_Command := Request_Send_Command (M);
+         begin
+            Handle_Leader_Send_Command (Machine_State, RSC);
+         end;
       else
          -- unsupported message type for leader
          put_line
@@ -750,7 +812,7 @@ package body Raft.Node is
 
    end Handle_Message_Machine_State;
 
-    -- handle an external message on the given machine state
+   -- handle an external message on the given machine state
    overriding procedure Handle_Message_Machine_State
      (Machine_State          : in out Raft_State_Machine_Follower;
       M                      : in     Message_Type'Class;
@@ -784,5 +846,160 @@ package body Raft.Node is
 
    end Handle_Message_Machine_State;
 
+   procedure Handle_Leader_Send_Append_Entries
+     (Machine_State : in out Raft_State_Machine_Leader)
+   is
+
+      T : Term_Type := Machine_State.MState.Node_State.Current_Term;
+
+      -- From election, sending an empty appendEntries to all
+      -- to be reviewed
+   begin
+      -- Send AppendEntries RPCs to all other servers
+      if Machine_State.MState.Node_State.Log_Upper_Bound_Strict /=
+        TransactionLogIndex_Type'First
+      then
+         -- there are entries
+         T :=
+           Machine_State.MState.Node_State.Log
+             (TransactionLogIndex_Type'Pred
+                (Machine_State.MState.Node_State.Log_Upper_Bound_Strict))
+             .T;
+      end if;
+
+      for Server in ServerRange loop
+         if Server /= Machine_State.MState.Current_Id then
+            declare
+               AER : Append_Entries_Request;
+
+               Leader_Next_Index_Strict   : TransactionLogIndex_Type :=
+                 Machine_State.MState.Leader_State.Next_Index_Strict
+                   (Machine_State.MState.Current_Id);
+               -- the leader knowledge on the node next index
+               Prev_Node_Log_Index_Strict : TransactionLogIndex_Type :=
+                 Machine_State.MState.Leader_State.Next_Index_Strict (Server);
+
+            begin
+               put_line
+                 ("[Leader Next Index: " & Leader_Next_Index_Strict'Image &
+                  "]");
+               put_line
+                 ("[Node " & Server'Image & " Prev Log Index: " &
+                  Prev_Node_Log_Index_Strict'Image & "]");
+               if Leader_Next_Index_Strict > Prev_Node_Log_Index_Strict then
+                  declare
+                     Entries : TAddLog_Type := (others => (C => 0, T => 0));
+                     Number_of_entries_To_Send : Natural      :=
+                       Natural (Leader_Next_Index_Strict) -
+                       Natural (Prev_Node_Log_Index_Strict);
+                  begin
+                     for i in 0 .. Number_of_entries_To_Send - 1 loop
+                        declare
+                           LogIndex : TransactionLogIndex_Type :=
+                             TransactionLogIndex_Type
+                               (Natural (Prev_Node_Log_Index_Strict) + i);
+                        begin
+                           Entries
+                             (TransactionLogIndex_Type
+                                (Natural (TransactionLogIndex_Type'First) +
+                                 i)) :=
+                             Machine_State.MState.Node_State.Log (LogIndex);
+                        end;
+                     end loop;
+
+                     AER :=
+                       (Leader_Term           =>
+                          Machine_State.MState.Node_State.Current_Term,
+                        Leader_ID => Machine_State.MState.Current_Id,
+                        Prev_Log_Index_Strict => Prev_Node_Log_Index_Strict,
+                        Prev_Log_Term         => T, Entries => Entries,
+                        Entries_Last_Strict   =>
+                          TransactionLogIndex_Type
+                            (Natural (TransactionLogIndex_Type'First) +
+                             Number_of_entries_To_Send),
+                        Leader_Commit_Strict  =>
+                          Machine_State.MState.Commit_Index_Strict);
+
+                     put_line
+                       ("[Sent Entries to Node " &
+                        ServerID_Type'Image (Server) & "]");
+                     put ("[Entries: ");
+                     for i in 0 .. Number_of_entries_To_Send loop
+                        put
+                          (Entries
+                             (TransactionLogIndex_Type
+                                (Natural (TransactionLogIndex_Type'First) + i))
+                             .C'
+                             Image);
+                     end loop;
+                     put_line ("]");
+
+                     Machine_State.Sending_Message
+                       (Machine_State.MState.all, Server, AER);
+                  end;
+               else
+                  put_line
+                    ("[From Leader, Node " & Server'Image &
+                     " already has the latest entries]");
+                  AER :=
+                    (Leader_Term           =>
+                       Machine_State.MState.Node_State.Current_Term,
+                     Leader_ID             => Machine_State.MState.Current_Id,
+                     Prev_Log_Index_Strict => Prev_Node_Log_Index_Strict,
+                     Prev_Log_Term         => T,
+                     Entries               => (others => (C => 0, T => 0)),
+                     Entries_Last_Strict   => TransactionLogIndex_Type'First,
+                     Leader_Commit_Strict  =>
+                       Machine_State.MState.Commit_Index_Strict);
+
+                  Machine_State.Sending_Message
+                    (Machine_State.MState.all, Server, AER);
+               end if;
+
+            end;
+         end if;
+      end loop;
+
+      -- Start or reset the heartbeat timer
+      Machine_State.Timer_Cancel (Machine_State.MState.all, Heartbeat_Timer);
+      Machine_State.Timer_Start (Machine_State.MState.all, Heartbeat_Timer);
+   end Handle_Leader_Send_Append_Entries;
+
+   procedure Handle_Leader_Send_Command
+     (Machine_State : in out Raft_State_Machine_Leader;
+      RSC           : in     Request_Send_Command)
+   is
+      New_Log_Entry : Command_And_Term_Entry_Type;
+      New_Index     : TransactionLogIndex_Type;
+   begin
+      -- Add new entry to leader's log
+      New_Log_Entry :=
+        (C => RSC.Command, T => Machine_State.MState.Node_State.Current_Term);
+      put_line
+        ("[ leader " & Machine_State.MState.Current_Id'Image &
+         " got a send command from " & RSC.Command'Image & "]");
+
+      New_Index := Machine_State.MState.Node_State.Log_Upper_Bound_Strict;
+
+      Machine_State.MState.Node_State.Log (New_Index) := New_Log_Entry;
+
+      Machine_State.MState.Node_State.Log_Upper_Bound_Strict :=
+        TransactionLogIndex_Type'Succ (New_Index);
+
+      -- Update leader's nextIndex and matchIndex for itself
+      Machine_State.MState.Leader_State.Next_Index_Strict
+        (Machine_State.MState.Current_Id) :=
+        TransactionLogIndex_Type'Succ (New_Index);
+      Machine_State.MState.Leader_State.Match_Index_Strict
+        (Machine_State.MState.Current_Id) :=
+        New_Index;
+
+      Handle_Leader_Send_Append_Entries (Machine_State);
+
+      put_line
+        ("[ leader " & Machine_State.MState.Current_Id'Image &
+         " handled command " & RSC.Command'Image & "]");
+
+   end Handle_Leader_Send_Command;
 
 end Raft.Node;

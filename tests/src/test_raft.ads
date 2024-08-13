@@ -16,7 +16,7 @@ package Test_Raft is
 
   -- Test Routines:
   procedure Test_Storing_State (T : in out Test_Cases.Test_Case'Class);
-  procedure Test_Init_Raft_Machine (T : in out Test_Cases.Test_Case'Class);
+  procedure Test_Init_Raft_Node (T : in out Test_Cases.Test_Case'Class);
   procedure Test_All_States (T : in out Test_Cases.Test_Case'Class);
 
   -- Protocols tests

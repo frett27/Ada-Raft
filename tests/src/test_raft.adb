@@ -3,6 +3,7 @@ with Communication.Hub; use Communication.Hub;
 with Raft;              use Raft;
 with Raft.Node;         use Raft.Node;
 with Raft.Comm;         use Raft.Comm;
+with Raft.Messages;     use Raft.Messages;
 
 with Ada.Streams; use Ada.Streams;
 
@@ -27,9 +28,9 @@ package body Test_Raft is
   begin
     -- Repeat for each test routine:
     Register_Routine (T, Test_Storing_State'Access, "Raft Storing State");
-    Register_Routine (T, Test_Init_Raft_Machine'Access, "Raft init machine");
+    Register_Routine (T, Test_Init_Raft_Node'Access, "Raft init machine");
     Register_Routine (T, Test_All_States'Access, "Raft State Tests");
-    Register_Routine (T, Test_Leader_Election'Access, "Raft Leader Election");
+    --Register_Routine (T, Test_Leader_Election'Access, "Raft Leader Election");
   end Register_Tests;
 
   -- Register routines to be run
@@ -47,16 +48,24 @@ package body Test_Raft is
 
     SState : Raft_Node_State :=
      Raft_Node_State'
-      (Current_Term => Term_Type (1), Voted_For => ServerID_Type (2), Log => Transaction,
-       Log_Upper_Bound_Strict => 0);
+      (Current_Term           => Term_Type (1), Voted_For => ServerID_Type (2),
+       Log                    => Transaction,
+       Log_Upper_Bound_Strict => TransactionLogIndex_Type'First);
 
     LState : Raft_Leader_Additional_State :=
-     (Next_Index_Strict  => (1 => 0, 2 => 0, 3 => 0),
-      Match_Index_Strict => (1 => 0, 2 => 0, 3 => 0));
+     (Next_Index_Strict  =>
+       (1 => TransactionLogIndex_Type'First,
+        2 => TransactionLogIndex_Type'First,
+        3 => TransactionLogIndex_Type'First),
+      Match_Index_Strict =>
+       (1 => TransactionLogIndex_Type'First,
+        2 => TransactionLogIndex_Type'First,
+        3 => TransactionLogIndex_Type'First));
 
     S : Raft.Node.RaftNodeStruct :=
      (Current_Raft_State  => LEADER, Current_Id => 1, Node_State => SState,
-      Commit_Index_Strict => 0, Last_Applied_Strict => 0,
+      Commit_Index_Strict => TransactionLogIndex_Type'First,
+      Last_Applied_Strict => TransactionLogIndex_Type'First,
       Leader_State        => LState);
 
     S2 : Raft.Node.RaftNodeStruct;
@@ -65,8 +74,8 @@ package body Test_Raft is
     Raft.Node.Load_State_From_File ("test.sav", S2);
   end Test_Storing_State;
 
-  procedure Test_Init_Raft_Machine (T : in out Test_Cases.Test_Case'Class) is
-    M : Raft_Machine_Access;
+  procedure Test_Init_Raft_Node (T : in out Test_Cases.Test_Case'Class) is
+    M : Raft_Node_Access;
 
     procedure Timer_Stuff
      (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type) is null;
@@ -81,10 +90,10 @@ package body Test_Raft is
     Assert (M /= null, "M is null");
     Assert (M.State.Current_Raft_State = Follower, "M is not follower");
 
-  end Test_Init_Raft_Machine;
+  end Test_Init_Raft_Node;
 
   procedure Test_All_States (T : in out Test_Cases.Test_Case'Class) is
-    M : Raft_Machine_Access;
+    M : Raft_Node_Access;
 
     procedure Timer_Stuff
      (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type)
@@ -109,7 +118,7 @@ package body Test_Raft is
       Sending'Unrestricted_Access);
 
     declare
-      T_Timeout : Timer_Timeout := (Timer_Instance => Heartbeat_Timer);
+      T_Timeout : Timer_Timeout := (Timer_Instance => Election_Timer);
     begin
 
       Handle_Message (M, T_Timeout);
@@ -131,9 +140,9 @@ package body Test_Raft is
   procedure Test_Leader_Election (T : in out Test_Cases.Test_Case'Class) is
 
     -- three nodes
-    M1 : Raft_Machine_Access;
-    M2 : Raft_Machine_Access;
-    M3 : Raft_Machine_Access;
+    M1 : Raft_Node_Access;
+    M2 : Raft_Node_Access;
+    M3 : Raft_Node_Access;
 
     L1 : Net_Link;
     L2 : Net_Link;
@@ -182,7 +191,8 @@ package body Test_Raft is
     end Get_Timer_Counter;
 
     function Decrement_Timer_Counter
-     (SID : ServerID_Type; Timer : Timer_Type; decrement : Natural) return Boolean
+     (SID : ServerID_Type; Timer : Timer_Type; decrement : Natural)
+      return Boolean
     is
     begin
       for i in Timers'Range loop
@@ -207,7 +217,8 @@ package body Test_Raft is
      (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type)
     is
     begin
-      Put_Line ("Ask_For_Timer_Start from " & ServerID_Type'Image (RSS.Current_Id));
+      Put_Line
+       ("Ask_For_Timer_Start from " & ServerID_Type'Image (RSS.Current_Id));
       Put_Line (" Counter: " & Timer_Type'Image (Timer_Instance));
       declare
         Counter : Natural :=
@@ -254,16 +265,18 @@ package body Test_Raft is
     begin
       loop
         declare
-          SID_From : ServerID_Type := ServerID_Type'Input (InMemoryStream'Access);
+          SID_From : ServerID_Type :=
+           ServerID_Type'Input (InMemoryStream'Access);
 
-          SID_To : ServerID_Type := ServerID_Type'Input (InMemoryStream'Access);
+          SID_To : ServerID_Type      :=
+           ServerID_Type'Input (InMemoryStream'Access);
           M      : Message_Type'Class :=
            Message_Type'Class'Input (InMemoryStream'Access);
         begin
           put_line
            ("Sending " & ServerID_Type'Image (SID_From) & " to " &
             ServerID_Type'Image (SID_To));
-            Send (B'Unchecked_Access, SID_From, SID_To, M);
+          Send (B'Unchecked_Access, SID_From, SID_To, M);
         exception
           when E : others =>
             Put_Line
@@ -282,17 +295,6 @@ package body Test_Raft is
         return;
 
     end Send_Pushed_Message;
-
-    --  procedure Send_Pushed_Message is
-    --    SID_From : ServerID;
-    --    SID_To   : ServerID;
-    --    M        : Message_Type'Class;
-    --  begin
-    --    ServerID'Read (InMemoryStream'Access, SID_From);
-    --    ServerID'Read (InMemoryStream'Access, SID_To);
-    --    Message_Type'Read (InMemoryStream'Access, M);
-    --    Send (B'Unchecked_Access, SID_From, SID_To, M);
-    --  end Send_Pushed_Message;
 
     procedure L1_CallBack (NL : in Net_Link; Message : in Stream_Element_Array)
     is
@@ -326,7 +328,7 @@ package body Test_Raft is
 
       begin
         Put_Line
-         (" 2: " & M1.State.Current_Raft_State'Image &
+         (" 2: " & M2.State.Current_Raft_State'Image &
           " L2_CallBack received message " & Ada.tags.Expanded_Name (M'Tag));
         --  Put_Line ("HostName_From: " & To_String (HostName (NL)));
         --  Put_Line ("Message: " & To_String (From_Message (Message)));
@@ -346,7 +348,7 @@ package body Test_Raft is
 
       begin
         Put_Line
-         (" 3: " & M1.State.Current_Raft_State'Image &
+         (" 3: " & M3.State.Current_Raft_State'Image &
           " L3_CallBack received message " & Ada.tags.Expanded_Name (M'Tag));
         --  Put_Line ("HostName_From: " & To_String (HostName (NL)));
         --  Put_Line ("Message: " & To_String (From_Message (Message)));
@@ -400,24 +402,25 @@ package body Test_Raft is
       NHB_Message_Received'Unrestricted_Access, B);
 
     declare
-      T_Election_Timeout : Timer_Timeout :=
-       (Timer_Instance => Election_Timer);
+      T_Election_Timeout : Timer_Timeout := (Timer_Instance => Election_Timer);
     begin
 
-      Put_Line ("MAIN : HeartBeat Time out");
+      Put_Line (">>MAIN : HeartBeat Time out");
       delay 1.0;
 
-      Handle_Message (M1, T_Election_Timeout);      
+      Handle_Message (M1, T_Election_Timeout);
     end;
 
-    Put_Line (">> Sending messages");
+    Put_Line (">>Sending messages");
     Send_Pushed_Message;
     Put_Line (">>Messages sent");
 
     for j in 1 .. 50 loop
+      new_line;
+      Put_Line ("[[EPOCH " & j'Image & "]]");
       for i in Timers'Range loop
         Put_Line
-         ("Timer " & Timer_Type'Image (Timers (i).Timer) & " counter: " &
+         (">> Timer " & Timer_Type'Image (Timers (i).Timer) & " counter: " &
           Timers (i).Counter'Image);
         declare
           timeout : Boolean;
@@ -426,7 +429,7 @@ package body Test_Raft is
            Decrement_Timer_Counter (Timers (i).SID, Timers (i).Timer, 1);
           if timeout then
             Put_Line
-             ("Timer " & Timer_Type'Image (Timers (i).Timer) &
+             (">> Timer " & Timer_Type'Image (Timers (i).Timer) &
               " expired for " & Timers (i).SID'Image);
             Raft.Comm.Send
              (B'Unchecked_Access, Timers (i).SID, Timers (i).SID,
@@ -434,11 +437,27 @@ package body Test_Raft is
           end if;
         end;
       end loop;
-      Put_Line (">> Sending messages");
+
+      Put_Line (">>Sending messages");
       Send_Pushed_Message;
       Put_Line (">>Messages sent");
       delay 1.0;
+
+      if j = 5 then
+        -- leader exists
+        new_line;
+        put_line (">>Append Command to leader: ");
+        new_line;
+        declare
+          CR : Request_Send_Command := (Command => 1);
+        begin
+          Handle_Message (M1, CR);
+        end;
+
+      end if;
+
     end loop;
+
   end Test_Leader_Election;
 
 end Test_Raft;

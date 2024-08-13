@@ -15,9 +15,10 @@ package Raft.Node is
   type Raft_Node_State is record
     -- persisted
     Current_Term           : Term_Type;
-    Voted_For              : ServerID_Type := 0;
+    Voted_For              : ServerID_Type            := 0;
     Log : TLog_Type (TransactionLogIndex_Type'First .. MAX_LOG);
-    Log_Upper_Bound_Strict : TransactionLogIndex_Type;
+    Log_Upper_Bound_Strict : TransactionLogIndex_Type :=
+     TransactionLogIndex_Type'First;
   end record;
 
   type AllServerLogIndex is array (ServerRange) of TransactionLogIndex_Type;
@@ -71,23 +72,21 @@ package Raft.Node is
 
   -- this function is called when a timer expires
   type Cancel_Timer is
-   access procedure
-    (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type);
+   access procedure (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type);
   type Start_Timer is
-   access procedure
-    (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type);
+   access procedure (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type);
 
   type Message_Sending is
    access procedure
     (RSS : in out RaftNodeStruct; To_ServerID_Or_All : ServerID_Type;
      M   :        Message_Type'Class);
 
-  type Raft_Server_Struct_Access is access all RaftNodeStruct;
+  type RaftNodeStruct_Access is access all RaftNodeStruct;
 
   -- raft state machine, defined the state behaviour for each state
   type Raft_State_Machine is abstract tagged record
 
-    MState : Raft_Server_Struct_Access;
+    MState : RaftNodeStruct_Access;
 
     -- Note : to refactor, theses pointers should be in the machine without
     -- extra informations given to the state (to limit complexity)
@@ -131,47 +130,33 @@ package Raft.Node is
     New_Raft_State_Machine :    out RaftWishedStateEnum);
 
   -- machine handle all the state (and the switch between elements)
-  type Raft_Machine is record
+  type Raft_Node is record
 
+    -- implement the state of the node
     State : aliased RaftNodeStruct;
 
     MState_Leader    : aliased Raft_State_Machine_Leader;
     MState_Candidate : aliased Raft_State_Machine_Candidate;
     MState_Follower  : aliased Raft_State_Machine_Follower;
 
+    -- Reference the current machine state implementation
     Current_Machine_State : Raft_State_Machine_Wide_Access;
 
   end record;
 
-  type Raft_Machine_Access is access all Raft_Machine;
+  type Raft_Node_Access is access all Raft_Node;
 
   procedure Handle_Message
-   (Machine : in out Raft_Machine_Access; M : in Message_Type'Class);
+   (Machine : in out Raft_Node_Access; M : in Message_Type'Class);
 
   procedure Create_Machine
-   (Machine         : out Raft_Machine_Access; SID : ServerID_Type;
+   (Machine         : out Raft_Node_Access; SID : ServerID_Type;
     Timer_Start     :     Start_Timer; Timer_Cancel : Cancel_Timer;
     Sending_Message :     Message_Sending);
 
---  type RaftServer is
---    new RaftNodeStruct and AppendEntries_RPC and RequestVote_RPC with
---      null record;
-
---  -- Append entries implementation
---  overriding procedure Append_Entries
---   (ARPC : in out RaftServer; Leader_Term : in Term; Leader_ID : in ServerID;
---    Prev_Log_Index : in     TransactionLogIndex; Prev_Log_Term : in Term;
---    Entries        : in     TLog; Leader_Commit : TransactionLogIndex;
---    Returned_Term  :    out Term; Success : out Boolean);
-
---  -- Request vote implementation
---  overriding procedure Request_Vote
---   (RRPC          : in out RaftServer; Candidate_Term : in Term;
---    Candidate_ID  : in     ServerID; Last_Log_Index : in TransactionLogIndex;
---    Last_Log_Term : in     TransactionLogIndex; CurrentTerm : out Term;
---    VotedGranted  :    out Boolean);
-
 private
+
+  -- handle an append entries request (implementation for candidate and follower)
   procedure Handle_AppendEntries_Request
    (Machine_State : in out Raft_State_Machine'Class;
     M             : in     Append_Entries_Request'Class) with
@@ -179,11 +164,7 @@ private
     Machine_State.MState.Current_Raft_State = CANDIDATE
     or else Machine_State.MState.Current_Raft_State = FOLLOWER;
 
-  --  procedure Handle_RequestVote_Request
-  --   (Machine_State : in out Raft_State_Machine'Class;
-  --    M             : in     RequestVote_Request'Class);
-
   procedure Switch_To_State
-   (Machine : in out Raft_Machine_Access; New_State : RaftWishedStateEnum);
+   (Machine : in out Raft_Node_Access; New_State : RaftWishedStateEnum);
 
 end Raft.Node;

@@ -15,7 +15,7 @@ package Raft is
   type No_Or_Term_Type is new Integer range -1 .. Integer (Term_Type'Last);
   No_Term : No_Or_Term_Type := -1;
 
-  type TransactionLogIndex_Type is new Natural;
+  type TransactionLogIndex_Type is new Positive;
 
   -- command definition and implementation
   type Command_Type is new Natural;
