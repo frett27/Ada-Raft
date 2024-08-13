@@ -764,12 +764,13 @@ package body Raft.Node is
                                .Match_Index_Strict
                                (Server) >
                              Machine_State.MState.Commit_Index_Strict
-                                  and then
-                                   -- Log is in current term
-                                    Machine_State.MState.Node_State.Log
-                                    (TransactionLogIndex_Type'Pred(Log_Index))
-                                    .T =
-                                  Machine_State.MState.Node_State.Current_Term
+                             and then
+                              -- Log is in current term
+
+                               Machine_State.MState.Node_State.Log
+                                 (TransactionLogIndex_Type'Pred (Log_Index))
+                                 .T =
+                               Machine_State.MState.Node_State.Current_Term
 
                            then
                               count_match_index :=
@@ -781,8 +782,9 @@ package body Raft.Node is
 
                end loop;
 
-               if count_match_index >
-                 Natural (ServerRange'Last - ServerRange'First + 1) / 2
+               -- majority of nodes (except for the leader)
+               if count_match_index >=
+                 Natural (ServerRange'Last - ServerRange'First + 1 - 1) / 2
                then
                   Machine_State.MState.Commit_Index_Strict :=
                     TransactionLogIndex_Type'Succ (C);
