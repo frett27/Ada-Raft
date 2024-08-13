@@ -13,6 +13,8 @@ In this implementation, we separate the execution engine (handling messages and 
 Timers are handled externally, this permit to make some edge and limit cases, to better tests the implementation.
 
 
+
+
 # Communication sub systems
 
 All Nodes are referenced with IDS for communication. These ids are the reference in all communications.
@@ -31,9 +33,9 @@ Handle all the state and handle transition changing procedures
 ```mermaid
 classDiagram
 
-	class RaftMachine {
+	class RaftNode {
 	
-        State : aliased RaftServerStruct;
+        State : aliased RaftNodeStruct;
 
         MState_Leader    : aliased Raft_State_Machine_Leader;
         MState_Candidate : aliased Raft_State_Machine_Candidat;
@@ -42,11 +44,11 @@ classDiagram
         Current_Machine_State : Raft_State_Machine_Wide_Access;
     }
     
-    RaftMachine ..> Raft_State_Machine_Leader
-    RaftMachine ..> Raft_State_Machine_Follower
-    RaftMachine ..> Raft_State_Machine_Candidate
+    RaftNode ..> Raft_State_Machine_Leader
+    RaftNode ..> Raft_State_Machine_Follower
+    RaftNode ..> Raft_State_Machine_Candidate
     
-    class RaftServerStruct {
+    class RaftNodeStruct {
         Current_Raft_State : RaftStateEnum;
 
         -- id of the current server
@@ -64,8 +66,8 @@ classDiagram
         Leader_State : Raft_Leader_Additional_State;
     }
     
-    RaftMachine --> RaftServerStruct
-    RaftServerStruct --> Raft_Node_State
+    RaftNode --> RaftNodeStruct
+    RaftNodeStruct --> Raft_Node_State
     class Raft_Node_State {
         -- persisted
         Current_Term    : Term;
@@ -75,7 +77,7 @@ classDiagram
     }
     
     class Raft_State_Machine {
-    	 MState : Raft_Server_Struct_Access;
+    	 MState : RaftNodeStruct_Access;
 
         -- Note : to refactor, theses pointers should be in the machine without
         -- extra informations given to the state (to limit complexity)
@@ -87,7 +89,7 @@ classDiagram
 
     }
     
-    Raft_State_Machine ..> RaftServerStruct
+    Raft_State_Machine ..> RaftNodeStruct
     
     Raft_State_Machine_Leader <|-- Raft_State_Machine
     Raft_State_Machine_Follower <|-- Raft_State_Machine

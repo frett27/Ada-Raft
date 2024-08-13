@@ -42,12 +42,12 @@ package body Test_Raft is
   -- Test Routines:
   procedure Test_Storing_State (T : in out Test_Cases.Test_Case'Class) is
 
-    Transaction : TLog (TransactionLogIndex'First .. MAX_LOG) :=
+    Transaction : TLog_Type (TransactionLogIndex_Type'First .. MAX_LOG) :=
      (others => (T => 0, C => 0));
 
     SState : Raft_Node_State :=
      Raft_Node_State'
-      (Current_Term => Term (1), Voted_For => ServerID (2), Log => Transaction,
+      (Current_Term => Term_Type (1), Voted_For => ServerID_Type (2), Log => Transaction,
        Log_Upper_Bound_Strict => 0);
 
     LState : Raft_Leader_Additional_State :=
@@ -71,7 +71,7 @@ package body Test_Raft is
     procedure Timer_Stuff
      (RSS : in out RaftServerStruct; Timer_Instance : Timer_Type) is null;
     procedure Sending
-     (RSS : in out RaftServerStruct; To_ServerID_Or_All : ServerID;
+     (RSS : in out RaftServerStruct; To_ServerID_Or_All : ServerID_Type;
       M   :        Message_Type'Class) is null;
 
   begin
@@ -94,13 +94,13 @@ package body Test_Raft is
     end Timer_Stuff;
 
     procedure Sending
-     (RSS : in out RaftServerStruct; To_ServerID_Or_All : ServerID;
+     (RSS : in out RaftServerStruct; To_ServerID_Or_All : ServerID_Type;
       M   :        Message_Type'Class)
     is
     begin
       Put_Line
        ("Sending " & Ada.Tags.Expanded_Name (M'Tag) & " to " &
-        ServerID'Image (To_ServerID_Or_All));
+        ServerID_Type'Image (To_ServerID_Or_All));
     end Sending;
 
   begin
@@ -122,7 +122,7 @@ package body Test_Raft is
   end Test_All_States;
 
   type Timer_Holder is record
-    SID     : ServerID;
+    SID     : ServerID_Type;
     Timer   : Timer_Type;
     Counter : Natural := 0;
   end record;
@@ -159,7 +159,7 @@ package body Test_Raft is
     HEARTBEAT_TIMER_COUNTER_INCREMENT : constant Positive := 4;
 
     procedure Set_Timer
-     (SID : ServerID; Timer : Timer_Type; newCounter : Natural)
+     (SID : ServerID_Type; Timer : Timer_Type; newCounter : Natural)
     is
     begin
       for i in Timers'Range loop
@@ -170,7 +170,7 @@ package body Test_Raft is
     end Set_Timer;
 
     function Get_Timer_Counter
-     (SID : ServerID; Timer : Timer_Type) return Natural
+     (SID : ServerID_Type; Timer : Timer_Type) return Natural
     is
     begin
       for i in Timers'Range loop
@@ -182,7 +182,7 @@ package body Test_Raft is
     end Get_Timer_Counter;
 
     function Decrement_Timer_Counter
-     (SID : ServerID; Timer : Timer_Type; decrement : Natural) return Boolean
+     (SID : ServerID_Type; Timer : Timer_Type; decrement : Natural) return Boolean
     is
     begin
       for i in Timers'Range loop
@@ -207,7 +207,7 @@ package body Test_Raft is
      (RSS : in out RaftServerStruct; Timer_Instance : Timer_Type)
     is
     begin
-      Put_Line ("Ask_For_Timer_Start from " & ServerID'Image (RSS.Current_Id));
+      Put_Line ("Ask_For_Timer_Start from " & ServerID_Type'Image (RSS.Current_Id));
       Put_Line (" Counter: " & Timer_Type'Image (Timer_Instance));
       declare
         Counter : Natural :=
@@ -230,19 +230,19 @@ package body Test_Raft is
     end Ask_For_Cancel_Timer;
 
     procedure Sending
-     (RSS : in out RaftServerStruct; To_ServerID_Or_All : ServerID;
+     (RSS : in out RaftServerStruct; To_ServerID_Or_All : ServerID_Type;
       M   :        Message_Type'Class)
     is
     begin
       Put_Line
        (RSS.Current_Id'Image & ": " & "Sending " &
         Ada.Tags.Expanded_Name (M'Tag) & " to " &
-        ServerID'Image (To_ServerID_Or_All));
+        ServerID_Type'Image (To_ServerID_Or_All));
 
       declare
       begin
-        ServerID'Output (InMemoryStream'Access, RSS.Current_Id);
-        ServerID'Output (InMemoryStream'Access, To_ServerID_Or_All);
+        ServerID_Type'Output (InMemoryStream'Access, RSS.Current_Id);
+        ServerID_Type'Output (InMemoryStream'Access, To_ServerID_Or_All);
         Message_Type'Class'Output (InMemoryStream'Access, M);
 
       end;
@@ -254,16 +254,16 @@ package body Test_Raft is
     begin
       loop
         declare
-          SID_From : ServerID := ServerID'Input (InMemoryStream'Access);
+          SID_From : ServerID_Type := ServerID_Type'Input (InMemoryStream'Access);
 
-          SID_To : ServerID := ServerID'Input (InMemoryStream'Access);
+          SID_To : ServerID_Type := ServerID_Type'Input (InMemoryStream'Access);
           M      : Message_Type'Class :=
            Message_Type'Class'Input (InMemoryStream'Access);
         begin
           put_line
-           ("Sending " & ServerId'Image (SID_From) & " to " &
-            ServerID'Image (SID_To));
-          Send (B'Unchecked_Access, SID_From, SID_To, M);
+           ("Sending " & ServerID_Type'Image (SID_From) & " to " &
+            ServerID_Type'Image (SID_To));
+            Send (B'Unchecked_Access, SID_From, SID_To, M);
         exception
           when E : others =>
             Put_Line
@@ -355,7 +355,7 @@ package body Test_Raft is
     end L3_CallBack;
 
     procedure NHB_Message_Received
-     (NH      : in NetHub_Binding_Access; SID : ServerID;
+     (NH      : in NetHub_Binding_Access; SID : ServerID_Type;
       Message : in Message_Type'Class)
     is
     begin

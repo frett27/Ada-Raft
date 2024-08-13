@@ -11,7 +11,7 @@ package body Raft.Comm is
     end Create;
 
     procedure Send
-       (SA :    NetHub_Binding_Access; From_SID : ServerID; To_SID : ServerID;
+       (SA :    NetHub_Binding_Access; From_SID : ServerID_Type; To_SID : ServerID_Type;
         Message : in Message_Type'Class)
     is
         From_Host : Net_Link := SA.Server_Address_Translation (From_SID);
