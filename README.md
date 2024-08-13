@@ -4,13 +4,17 @@ Ada Raft
 First Toy Implementation of the raft protocol, 
 Only the first section is currently in progress.
 
-This project is not usable in production, and implementation is in progress.
+Disclamer :
+
+This project is NOT Working yet, and not fully qualified.
+This project is not currently usable in production, 
+implementation is in progress.
+
 
 Messages are currently not sent using network, but with a message serialization on each Epoch (permitting to test more efficiently).
 A first architecture / implementation is done, may be changed in the future.
 
-Some documentation is available here: [doc](doc)
-
+Some documentation is available here, and will be improve with implementation: [doc](doc)
 
 1st goals :
 
