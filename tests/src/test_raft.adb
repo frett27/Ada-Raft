@@ -30,7 +30,7 @@ package body Test_Raft is
     Register_Routine (T, Test_Storing_State'Access, "Raft Storing State");
     Register_Routine (T, Test_Init_Raft_Node'Access, "Raft init machine");
     Register_Routine (T, Test_All_States'Access, "Raft State Tests");
-    --Register_Routine (T, Test_Leader_Election'Access, "Raft Leader Election");
+    Register_Routine (T, Test_Leader_Election'Access, "Raft Leader Election");
   end Register_Tests;
 
   -- Register routines to be run
@@ -443,15 +443,50 @@ package body Test_Raft is
       Put_Line (">>Messages sent");
       delay 1.0;
 
-      if j = 5 then
-        -- leader exists
-        new_line;
-        put_line (">>Append Command to leader: ");
-        new_line;
+      -- force leader election
+      if j = 13 then
         declare
-          CR : Request_Send_Command := (Command => 1);
+          T_Election_Timeout : Timer_Timeout :=
+           (Timer_Instance => Election_Timer);
         begin
-          Handle_Message (M1, CR);
+
+          Put_Line (">>MAIN : HeartBeat Time out for M2");
+
+          Handle_Message (M2, T_Election_Timeout);
+        end;
+
+      end if;
+
+      if j > 5 and j mod 5 = 0 then
+        -- leader must exists
+        declare
+          MLeader : Raft_Node_Access;
+        begin
+          if M1.State.Current_Raft_State = Leader then
+            Put_Line ("Leader: " & M1.State.Current_Id'Image);
+            MLeader := M1;
+          elsif M2.State.Current_Raft_State = Leader then
+            Put_Line ("Leader: " & M2.State.Current_Id'Image);
+            MLeader := M2;
+          elsif M3.State.Current_Raft_State = Leader then
+            Put_Line ("Leader: " & M3.State.Current_Id'Image);
+            MLeader := M3;
+          else
+            Put_Line ("No leader");
+            raise Program_Error;
+          end if;
+
+          Put_Line
+           ("Leader: " & ServerID_Type'Image (MLeader.State.Current_Id));
+
+          new_line;
+          put_line (">>Append Command to leader: ");
+          new_line;
+          declare
+            CR : Request_Send_Command := (Command => 1);
+          begin
+            Handle_Message (MLeader, CR);
+          end;
         end;
 
       end if;

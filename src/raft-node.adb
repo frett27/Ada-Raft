@@ -93,7 +93,7 @@ package body Raft.Node is
       end;
    end Create_Machine;
 
-   procedure Start_TimerElection_Entering_Candidate_State
+   procedure Start_Election_Entering_Candidate_State
      (Machine_State : in out Raft_State_Machine_Candidate) with
      Pre => Machine_State.MState.Current_Raft_State = CANDIDATE
    is
@@ -137,7 +137,7 @@ package body Raft.Node is
          end;
       end loop;
 
-   end Start_TimerElection_Entering_Candidate_State;
+   end Start_Election_Entering_Candidate_State;
 
    procedure Check_Request_Term
      (Machine   : in out Raft_Node_Access; M : in Message_Type'Class;
@@ -191,6 +191,8 @@ package body Raft.Node is
             Machine.Current_Machine_State.MState.Current_Raft_State :=
               FOLLOWER;
 
+            Machine.Current_Machine_State.MState.Node_State.Voted_For := 0;
+
             Machine.Current_Machine_State.Timer_Cancel
               (Machine.Current_Machine_State.MState.all, Heartbeat_Timer);
 
@@ -208,9 +210,24 @@ package body Raft.Node is
             Machine.Current_Machine_State.MState.Current_Raft_State :=
               CANDIDATE;
 
+            -- reset votes
+            Machine.MState_Candidate.Server_Vote_Responses :=
+              (others => False);
+            Machine.MState_Candidate.Server_Vote_Responses_Status :=
+              (others => False);
+
+
+            Machine.Current_Machine_State.Timer_Cancel
+              (Machine.Current_Machine_State.MState.all, Heartbeat_Timer);
+
+            Machine.Current_Machine_State.Timer_Cancel
+              (Machine.Current_Machine_State.MState.all, Election_Timer);
+
+            Machine.Current_Machine_State.Timer_Start
+              (Machine.Current_Machine_State.MState.all, Election_Timer);
+
             -- increment term
-            Start_TimerElection_Entering_Candidate_State
-              (Machine.MState_Candidate);
+            Start_Election_Entering_Candidate_State (Machine.MState_Candidate);
 
          when LEADER =>
             put_line
@@ -229,59 +246,14 @@ package body Raft.Node is
                Match_Index_Strict =>
                  (others => TransactionLogIndex_Type'First));
 
+            -- Start or reset the heartbeat timer
+            Machine.Current_Machine_State.Timer_Cancel
+              (Machine.Current_Machine_State.MState.all, Heartbeat_Timer);
+
+            Machine.Current_Machine_State.Timer_Start
+              (Machine.Current_Machine_State.MState.all, Heartbeat_Timer);
+
             Handle_Leader_Send_Append_Entries (Machine.MState_Leader);
-
-            --  declare
-            --     Prev : TransactionLogIndex_Type :=
-            --       TransactionLogIndex_Type'First;
-            --     T    : Term_Type := Machine.State.Node_State.Current_Term;
-            --  begin
-
-            --     if Machine.State.Node_State.Log_Upper_Bound_Strict /=
-            --       TransactionLogIndex_Type'First
-            --     then
-            --        -- there are entries
-            --        T :=
-
-            --          Machine.State.Node_State.Log
-            --            (TransactionLogIndex_Type'Pred
-            --               (Machine.State.Node_State.Log_Upper_Bound_Strict))
-            --            .T;
-            --     end if;
-
-            --     -- From election, sending an empty appendEntries to all
-            --     declare
-            --        -- create the leader message heart beat
-            --        A : Append_Entries_Request :=
-            --          Append_Entries_Request'
-            --            (Leader_Term => Machine.State.Node_State.Current_Term,
-            --             Leader_ID             => Machine.State.Current_Id,
-            --             Prev_Log_Index_Strict => Prev, Prev_Log_Term => T,
-            --             Entries               => (others => (C => 0, T => 1)),
-            --             Entries_Last_Strict   =>
-            --               TransactionLogIndex_Type'First, -- no elements
-            --             Leader_Commit_Strict  =>
-            --               Machine.State.Commit_Index_Strict);
-            --     begin
-            --        for i in ServerRange loop
-            --           if i /= Machine.State.Current_Id then
-            --              declare
-            --                 Peer_Request : Append_Entries_Request := A;
-            --              begin
-            --                 -- change destination
-            --                 Machine.Current_Machine_State.Sending_Message
-            --                   (Machine.Current_Machine_State.MState.all, i, A);
-            --                 -- deallocate entries (pointer)
-
-            --              end;
-            --           end if;
-            --        end loop;
-            --     end;
-            --  end;
-
-            --  -- start the heart beat timer
-            --  Machine.Current_Machine_State.Timer_Start
-            --    (Machine.Current_Machine_State.MState.all, Heartbeat_Timer);
 
          when NO_CHANGES =>
             null;
@@ -336,6 +308,7 @@ package body Raft.Node is
               ("[ " & A.MState.Current_Id'Image & " -> check term " &
                Req.Candidate_Term'Image & " with " &
                A.MState.Node_State.Current_Term'Image & " ]");
+
             if Req.Candidate_Term < Machine.State.Node_State.Current_Term then
 
                put_line
@@ -640,6 +613,7 @@ package body Raft.Node is
 
    end Handle_AppendEntries_Request;
 
+   -- General Message handling
    overriding procedure Handle_Message_Machine_State
      (Machine_State          : in out Raft_State_Machine_Candidate;
       M                      : in     Message_Type'Class;
@@ -656,7 +630,15 @@ package body Raft.Node is
             put_line ("Election Timeout for candidate, retrigger a vote");
 
             -- restart election
-            Start_TimerElection_Entering_Candidate_State (Machine_State);
+            Start_Election_Entering_Candidate_State (Machine_State);
+
+            -- Start or reset the election timer
+            Machine_State.Timer_Cancel
+              (Machine_State.MState.all, Election_Timer);
+
+            Machine_State.Timer_Start
+              (Machine_State.MState.all, Election_Timer);
+
             return;
 
          end if;
@@ -842,6 +824,9 @@ package body Raft.Node is
       end if;
 
       -- unsupported message on state
+      Put_Line
+        ("Message unsupported for follower :" &
+         Ada.Tags.Expanded_Name (M'Tag));
       raise Program_Error;
 
    end Handle_Message_Machine_State;
@@ -960,9 +945,6 @@ package body Raft.Node is
          end if;
       end loop;
 
-      -- Start or reset the heartbeat timer
-      Machine_State.Timer_Cancel (Machine_State.MState.all, Heartbeat_Timer);
-      Machine_State.Timer_Start (Machine_State.MState.all, Heartbeat_Timer);
    end Handle_Leader_Send_Append_Entries;
 
    procedure Handle_Leader_Send_Command
