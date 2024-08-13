@@ -23,8 +23,8 @@ Be able to use it on several nodes
 - [X] Basic Raft Algorithm
 - [X] Leader election
 - [X] Log replication
-- [ ] Commit broadcast
-- [ ] Log compaction
+- [ ] Client Handling / Commit broadcast
+- [ ] Log compaction / Snapshots
 - [ ] Testing - (Formal Validation ?)
 
 

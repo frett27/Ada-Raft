@@ -444,7 +444,7 @@ package body Test_Raft is
       delay 1.0;
 
       -- force leader election
-      if j = 13 then
+      if j = 13 or j = 17 or j = 21 then
         declare
           T_Election_Timeout : Timer_Timeout :=
            (Timer_Instance => Election_Timer);
@@ -480,7 +480,7 @@ package body Test_Raft is
            ("Leader: " & ServerID_Type'Image (MLeader.State.Current_Id));
 
           new_line;
-          put_line (">>Append Command to leader: ");
+          put_line ("********* >>Append Command to leader: ");
           new_line;
           declare
             CR : Request_Send_Command := (Command => 1);
