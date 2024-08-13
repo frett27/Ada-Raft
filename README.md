@@ -6,14 +6,14 @@ Only the first section is currently in progress.
 
 
 
-  [X] Basic Raft Algorithm
-  [X] Leader election
-  [X] Log replication
-  [ ] Commit broadcast
-  [ ] Log compaction
-  [ ] Testing - Formal Validation
+- [X] Basic Raft Algorithm
+- [X] Leader election
+- [X] Log replication
+- [ ] Commit broadcast
+- [ ] Log compaction
+- [ ] Testing - Formal Validation
 
 
 Further devs :
 
-  [ ] Membership changes
+- [ ] Membership changes
