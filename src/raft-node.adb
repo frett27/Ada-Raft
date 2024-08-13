@@ -13,7 +13,7 @@ package body Raft.Node is
    --------------------------------------------------------------------------
    -- persistent state handling
 
-   procedure Save_State_To_File (State : RaftServerStruct; FileName : String)
+   procedure Save_State_To_File (State : RaftNodeStruct; FileName : String)
    is
 
       F : File_Type;
@@ -21,7 +21,7 @@ package body Raft.Node is
    begin
       Create (F, Out_File, FileName);
       S := Text_Streams.Stream (F);
-      RaftServerStruct'Output (S, State);
+      RaftNodeStruct'Output (S, State);
 
       Flush (F);
       Close (F);
@@ -31,14 +31,14 @@ package body Raft.Node is
 
 
    procedure Load_State_From_File
-     (Filename : String; State : out RaftServerStruct)
+     (Filename : String; State : out RaftNodeStruct)
    is
       F : File_Type;
       S : Ada.Text_IO.Text_Streams.Stream_Access;
    begin
       Open (F, In_File, Filename);
       S     := Text_Streams.Stream (F);
-      State := RaftServerStruct'Input (S);
+      State := RaftNodeStruct'Input (S);
       Close (F);
    end Load_State_From_File;
 

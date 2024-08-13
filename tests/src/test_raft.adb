@@ -54,12 +54,12 @@ package body Test_Raft is
      (Next_Index_Strict  => (1 => 0, 2 => 0, 3 => 0),
       Match_Index_Strict => (1 => 0, 2 => 0, 3 => 0));
 
-    S : Raft.Node.RaftServerStruct :=
+    S : Raft.Node.RaftNodeStruct :=
      (Current_Raft_State  => LEADER, Current_Id => 1, Node_State => SState,
       Commit_Index_Strict => 0, Last_Applied_Strict => 0,
       Leader_State        => LState);
 
-    S2 : Raft.Node.RaftServerStruct;
+    S2 : Raft.Node.RaftNodeStruct;
   begin
     Raft.Node.Save_State_To_File (S, "test.sav");
     Raft.Node.Load_State_From_File ("test.sav", S2);
@@ -69,9 +69,9 @@ package body Test_Raft is
     M : Raft_Machine_Access;
 
     procedure Timer_Stuff
-     (RSS : in out RaftServerStruct; Timer_Instance : Timer_Type) is null;
+     (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type) is null;
     procedure Sending
-     (RSS : in out RaftServerStruct; To_ServerID_Or_All : ServerID_Type;
+     (RSS : in out RaftNodeStruct; To_ServerID_Or_All : ServerID_Type;
       M   :        Message_Type'Class) is null;
 
   begin
@@ -87,14 +87,14 @@ package body Test_Raft is
     M : Raft_Machine_Access;
 
     procedure Timer_Stuff
-     (RSS : in out RaftServerStruct; Timer_Instance : Timer_Type)
+     (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type)
     is
     begin
       null;
     end Timer_Stuff;
 
     procedure Sending
-     (RSS : in out RaftServerStruct; To_ServerID_Or_All : ServerID_Type;
+     (RSS : in out RaftNodeStruct; To_ServerID_Or_All : ServerID_Type;
       M   :        Message_Type'Class)
     is
     begin
@@ -204,7 +204,7 @@ package body Test_Raft is
     Gen : Ada.Numerics.Float_Random.Generator;
 
     procedure Ask_For_Timer_Start
-     (RSS : in out RaftServerStruct; Timer_Instance : Timer_Type)
+     (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type)
     is
     begin
       Put_Line ("Ask_For_Timer_Start from " & ServerID_Type'Image (RSS.Current_Id));
@@ -222,7 +222,7 @@ package body Test_Raft is
     end Ask_For_Timer_Start;
 
     procedure Ask_For_Cancel_Timer
-     (RSS : in out RaftServerStruct; Timer_Instance : Timer_Type)
+     (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type)
     is
     begin
       -- cancel
@@ -230,7 +230,7 @@ package body Test_Raft is
     end Ask_For_Cancel_Timer;
 
     procedure Sending
-     (RSS : in out RaftServerStruct; To_ServerID_Or_All : ServerID_Type;
+     (RSS : in out RaftNodeStruct; To_ServerID_Or_All : ServerID_Type;
       M   :        Message_Type'Class)
     is
     begin

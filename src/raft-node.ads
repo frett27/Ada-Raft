@@ -30,7 +30,7 @@ package Raft.Node is
      (others => TransactionLogIndex_Type'First);
   end record;
 
-  type RaftServerStruct is record
+  type RaftNodeStruct is record
 
     Current_Raft_State : RaftStateEnum;
 
@@ -51,11 +51,11 @@ package Raft.Node is
   end record;
 
   -- save the state to a file
-  procedure Save_State_To_File (State : RaftServerStruct; FileName : String);
+  procedure Save_State_To_File (State : RaftNodeStruct; FileName : String);
 
   -- load the state from a file
   procedure Load_State_From_File
-   (Filename : String; State : out RaftServerStruct);
+   (Filename : String; State : out RaftNodeStruct);
 
   type Raft_State_Machine_Wide_Access;
 
@@ -72,17 +72,17 @@ package Raft.Node is
   -- this function is called when a timer expires
   type Cancel_Timer is
    access procedure
-    (RSS : in out RaftServerStruct; Timer_Instance : Timer_Type);
+    (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type);
   type Start_Timer is
    access procedure
-    (RSS : in out RaftServerStruct; Timer_Instance : Timer_Type);
+    (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type);
 
   type Message_Sending is
    access procedure
-    (RSS : in out RaftServerStruct; To_ServerID_Or_All : ServerID_Type;
+    (RSS : in out RaftNodeStruct; To_ServerID_Or_All : ServerID_Type;
      M   :        Message_Type'Class);
 
-  type Raft_Server_Struct_Access is access all RaftServerStruct;
+  type Raft_Server_Struct_Access is access all RaftNodeStruct;
 
   -- raft state machine, defined the state behaviour for each state
   type Raft_State_Machine is abstract tagged record
@@ -133,7 +133,7 @@ package Raft.Node is
   -- machine handle all the state (and the switch between elements)
   type Raft_Machine is record
 
-    State : aliased RaftServerStruct;
+    State : aliased RaftNodeStruct;
 
     MState_Leader    : aliased Raft_State_Machine_Leader;
     MState_Candidate : aliased Raft_State_Machine_Candidate;
@@ -154,7 +154,7 @@ package Raft.Node is
     Sending_Message :     Message_Sending);
 
 --  type RaftServer is
---    new RaftServerStruct and AppendEntries_RPC and RequestVote_RPC with
+--    new RaftNodeStruct and AppendEntries_RPC and RequestVote_RPC with
 --      null record;
 
 --  -- Append entries implementation
