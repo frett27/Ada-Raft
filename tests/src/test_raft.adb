@@ -17,6 +17,7 @@ with Ada.Exceptions;
 with Ada.IO_Exceptions;
 
 with Ada.Numerics.Float_Random;
+with TestRaftSystem;use TestRaftSystem;
 
 package body Test_Raft is
 
@@ -217,9 +218,9 @@ package body Test_Raft is
      (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type)
     is
     begin
-      Put_Line
+      Debug_Test_Message
        ("Ask_For_Timer_Start from " & ServerID_Type'Image (RSS.Current_Id));
-      Put_Line (" Counter: " & Timer_Type'Image (Timer_Instance));
+      Debug_Test_Message (" Counter: " & Timer_Type'Image (Timer_Instance));
       declare
         Counter : Natural :=
          ELECTION_TIMER_COUNTER_INCREMENT +
@@ -245,7 +246,7 @@ package body Test_Raft is
       M   :        Message_Type'Class)
     is
     begin
-      Put_Line
+      Debug_Test_Message
        (RSS.Current_Id'Image & ": " & "Sending " &
         Ada.Tags.Expanded_Name (M'Tag) & " to " &
         ServerID_Type'Image (To_ServerID_Or_All));
@@ -273,13 +274,13 @@ package body Test_Raft is
           M      : Message_Type'Class :=
            Message_Type'Class'Input (InMemoryStream'Access);
         begin
-          put_line
+          Debug_Test_Message
            ("Sending " & ServerID_Type'Image (SID_From) & " to " &
             ServerID_Type'Image (SID_To));
           Send (B'Unchecked_Access, SID_From, SID_To, M);
         exception
           when E : others =>
-            Put_Line
+            Debug_Test_Message
              ("Send Message Error: " &
               Ada.Exceptions.Exception_Information (E));
             return;
@@ -287,10 +288,10 @@ package body Test_Raft is
       end loop;
     exception
       when E : Ada.IO_Exceptions.End_Error =>
-        Put_Line ("No more message");
+        Debug_Test_Message ("No more message");
         return;
       when E : others                      =>
-        Put_Line
+        Debug_Test_Message
          ("Send_Pushed_Message: " & Ada.Exceptions.Exception_Information (E));
         return;
 
@@ -307,7 +308,7 @@ package body Test_Raft is
         M : Message_Type'Class := Message_Type'Class'Input (MB'Access);
 
       begin
-        Put_Line
+        Debug_Test_Message
          (" 1: " & M1.State.Current_Raft_State'Image &
           " L1_CallBack received message " & Ada.tags.Expanded_Name (M'Tag));
         --  Put_Line ("HostName_From: " & To_String (HostName (NL)));
@@ -327,7 +328,7 @@ package body Test_Raft is
         M : Message_Type'Class := Message_Type'Class'Input (MB'Access);
 
       begin
-        Put_Line
+        Debug_Test_Message
          (" 2: " & M2.State.Current_Raft_State'Image &
           " L2_CallBack received message " & Ada.tags.Expanded_Name (M'Tag));
         --  Put_Line ("HostName_From: " & To_String (HostName (NL)));
@@ -347,7 +348,7 @@ package body Test_Raft is
         M : Message_Type'Class := Message_Type'Class'Input (MB'Access);
 
       begin
-        Put_Line
+        Debug_Test_Message
          (" 3: " & M3.State.Current_Raft_State'Image &
           " L3_CallBack received message " & Ada.tags.Expanded_Name (M'Tag));
         --  Put_Line ("HostName_From: " & To_String (HostName (NL)));
@@ -361,15 +362,15 @@ package body Test_Raft is
       Message : in Message_Type'Class)
     is
     begin
-      Put_Line
+      Debug_Test_Message
        ("NHB_Message_Received " & Ada.tags.Expanded_Name (Message'Tag));
     end NHB_Message_Received;
 
   begin
-    Put_Line
+    Debug_Test_Message
      ("==============================================================");
-    Put_Line ("Starting Election Test ===============================");
-    Put_Line
+    Debug_Test_Message ("Starting Election Test ===============================");
+    Debug_Test_Message
      ("==============================================================");
 
     Create (InMemoryStream);
@@ -405,21 +406,21 @@ package body Test_Raft is
       T_Election_Timeout : Timer_Timeout := (Timer_Instance => Election_Timer);
     begin
 
-      Put_Line (">>MAIN : HeartBeat Time out");
+      Debug_Test_Message (">>MAIN : HeartBeat Time out");
       delay 1.0;
 
       Handle_Message (M1, T_Election_Timeout);
     end;
 
-    Put_Line (">>Sending messages");
+    Debug_Test_Message (">>Sending messages");
     Send_Pushed_Message;
-    Put_Line (">>Messages sent");
+    Debug_Test_Message (">>Messages sent");
 
-    for j in 1 .. 50 loop
+    for j in 1 .. 60 loop
       new_line;
-      Put_Line ("[[EPOCH " & j'Image & "]]");
+      Debug_Test_Message ("[[EPOCH " & j'Image & "]]");
       for i in Timers'Range loop
-        Put_Line
+        Debug_Test_Message
          (">> Timer " & Timer_Type'Image (Timers (i).Timer) & " counter: " &
           Timers (i).Counter'Image);
         declare
@@ -428,7 +429,7 @@ package body Test_Raft is
           timeout :=
            Decrement_Timer_Counter (Timers (i).SID, Timers (i).Timer, 1);
           if timeout then
-            Put_Line
+            Debug_Test_Message
              (">> Timer " & Timer_Type'Image (Timers (i).Timer) &
               " expired for " & Timers (i).SID'Image);
             Raft.Comm.Send
@@ -438,9 +439,9 @@ package body Test_Raft is
         end;
       end loop;
 
-      Put_Line (">>Sending messages");
+      Debug_Test_Message (">>Sending messages");
       Send_Pushed_Message;
-      Put_Line (">>Messages sent");
+      Debug_Test_Message (">>Messages sent");
       delay 1.0;
 
       -- force leader election
@@ -450,7 +451,7 @@ package body Test_Raft is
            (Timer_Instance => Election_Timer);
         begin
 
-          Put_Line (">>MAIN : HeartBeat Time out for M2");
+          Debug_Test_Message (">>MAIN : HeartBeat Time out for M2");
 
           Handle_Message (M2, T_Election_Timeout);
         end;
@@ -463,25 +464,23 @@ package body Test_Raft is
           MLeader : Raft_Node_Access;
         begin
           if M1.State.Current_Raft_State = Leader then
-            Put_Line ("Leader: " & M1.State.Current_Id'Image);
+            Debug_Test_Message ("Leader: " & M1.State.Current_Id'Image);
             MLeader := M1;
           elsif M2.State.Current_Raft_State = Leader then
-            Put_Line ("Leader: " & M2.State.Current_Id'Image);
+            Debug_Test_Message ("Leader: " & M2.State.Current_Id'Image);
             MLeader := M2;
           elsif M3.State.Current_Raft_State = Leader then
-            Put_Line ("Leader: " & M3.State.Current_Id'Image);
+            Debug_Test_Message ("Leader: " & M3.State.Current_Id'Image);
             MLeader := M3;
           else
-            Put_Line ("No leader");
+            Debug_Test_Message ("No leader");
             raise Program_Error;
           end if;
 
-          Put_Line
+          Debug_Test_Message
            ("Leader: " & ServerID_Type'Image (MLeader.State.Current_Id));
 
-          new_line;
-          put_line ("********* >>Append Command to leader: ");
-          new_line;
+          Debug_Test_Message ("********* >>Append Command to leader: ");
           declare
             CR : Request_Send_Command := (Command => 1);
           begin

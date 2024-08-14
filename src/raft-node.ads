@@ -38,6 +38,7 @@ package Raft.Node is
     -- id of the current server
     Current_Id : ServerID_Type;
 
+    -- persisted raft node state
     Node_State : Raft_Node_State;
 
     -- volatile for all states
@@ -51,6 +52,11 @@ package Raft.Node is
 
   end record;
 
+  type RaftNodeStruct_Access is access all RaftNodeStruct;
+
+  --------------------------------------------------------------------
+  -- state I/O for nodes (in a simple file)
+
   -- save the state to a file
   procedure Save_State_To_File (State : RaftNodeStruct; FileName : String);
 
@@ -59,6 +65,9 @@ package Raft.Node is
    (Filename : String; State : out RaftNodeStruct);
 
   type Raft_State_Machine_Wide_Access;
+
+  --------------------------------------------------------------------
+  -- Timers management
 
   -- timers are handled externally, to ease the tests
   type Timer_Type is (Election_Timer, Heartbeat_Timer);
@@ -81,7 +90,8 @@ package Raft.Node is
     (RSS : in out RaftNodeStruct; To_ServerID_Or_All : ServerID_Type;
      M   :        Message_Type'Class);
 
-  type RaftNodeStruct_Access is access all RaftNodeStruct;
+  --------------------------------------------------------------------
+  -- Raft state machine
 
   -- raft state machine, defined the state behaviour for each state
   type Raft_State_Machine is abstract tagged record

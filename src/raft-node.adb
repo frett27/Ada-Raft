@@ -7,8 +7,37 @@ with Ada.Text_IO.Text_Streams;
 with Raft.Messages; use Raft.Messages;
 
 with Ada.Tags; use Ada.Tags;
+with Ada.Strings.Unbounded;
 
 package body Raft.Node is
+
+   procedure Debug_Put_Line (Node : Raft_Node_Access; S : String) is
+   begin
+      Put_Line ("[" & Node.State.Current_Id'Image & "] " & S);
+   end Debug_Put_Line;
+
+   procedure Debug_Put_Line
+     (State_Machine : Raft_State_Machine'Class; S : String)
+   is
+   begin
+      Put_Line ("[" & State_Machine.MState.Current_Id'Image & "] " & S);
+   end Debug_Put_Line;
+
+   procedure Dump_Logs (Machine_State : Raft_State_Machine'Class) is
+      use Ada.Strings.Unbounded;
+      U : Unbounded_String := To_Unbounded_String ("");
+   begin
+      for i in Machine_State.MState.Node_State.Log'Range loop
+         declare
+            S : String :=
+              "(" & Machine_State.MState.Node_State.Log (i).C'Image & "," &
+              Machine_State.MState.Node_State.Log (i).T'Image & ") ";
+         begin
+            Append (U, S);
+         end;
+      end loop;
+      Debug_Put_Line (Machine_State, To_String (U));
+   end Dump_Logs;
 
    --------------------------------------------------------------------------
    -- persistent state handling
@@ -52,11 +81,6 @@ package body Raft.Node is
 
       declare
          RStruct : RaftNodeStruct_Access := Machine.State'Access;
-         --  M_State : Raft_State_Machine_Follower :=
-         --    Raft_State_Machine_Follower'
-         --     (MState => Machine.State'Access, Timer_Start => Timer_Start,
-         --       Timer_Cancel    => Timer_Cancel,
-         --       Sending_Message => Sending_Message);
       begin
 
          RStruct.Current_Raft_State := FOLLOWER;
@@ -184,9 +208,9 @@ package body Raft.Node is
    begin
       case New_State is
          when FOLLOWER =>
-            Put_Line
-              ("[Switching to follower state for " &
-               Machine.State.Current_Id'Image & "]");
+            Debug_Put_Line (Machine, "[Switching to follower state]");
+            --    ("[Switching to follower state for " &
+            --     Machine.State.Current_Id'Image & "]");
             Machine.Current_Machine_State := Machine.MState_Follower'Access;
             Machine.Current_Machine_State.MState.Current_Raft_State :=
               FOLLOWER;
@@ -203,9 +227,9 @@ package body Raft.Node is
               (Machine.Current_Machine_State.MState.all, Election_Timer);
 
          when CANDIDATE =>
-            Put_Line
-              ("[Switching to candidate state for " &
-               Machine.State.Current_Id'Image & "]");
+            Debug_Put_Line (Machine, "[Switching to candidate state]");
+            --    ("[Switching to candidate state for " &
+            --     Machine.State.Current_Id'Image & "]");
             Machine.Current_Machine_State := Machine.MState_Candidate'Access;
             Machine.Current_Machine_State.MState.Current_Raft_State :=
               CANDIDATE;
@@ -229,9 +253,7 @@ package body Raft.Node is
             Start_Election_Entering_Candidate_State (Machine.MState_Candidate);
 
          when LEADER =>
-            Put_Line
-              ("[Switching to leader state for " &
-               Machine.State.Current_Id'Image & "]");
+            Debug_Put_Line (Machine, "[Switching to LEADER state]");
 
             -- defined the state
             Machine.Current_Machine_State := Machine.MState_Leader'Access;
@@ -267,13 +289,13 @@ package body Raft.Node is
       A : access Raft_State_Machine'Class := Machine.Current_Machine_State;
    begin
 
-      Put_Line
-        ("[" & A.MState.Current_Id'Image & " -> State: " &
-         RaftStateEnum'Image (A.MState.Current_Raft_State) & ", Term: " &
-         A.MState.Node_State.Current_Term'Image & "] ");
-      Put_Line
-        ("[" & A.MState.Current_Id'Image & " -> Received_message: " &
-         Ada.Tags.Expanded_Name (M'Tag) & "] ");
+      Debug_Put_Line
+        (Machine,
+         "[State: " & RaftStateEnum'Image (A.MState.Current_Raft_State) &
+         ", Term: " & A.MState.Node_State.Current_Term'Image & "] ");
+      Debug_Put_Line
+        (Machine,
+         "[Received_message: " & Ada.Tags.Expanded_Name (M'Tag) & "] ");
 
       Check_Request_Term (Machine, M, New_State);
       Switch_To_State (Machine, New_State);
@@ -294,8 +316,7 @@ package body Raft.Node is
 
       -- respond to vote request
       if M'Tag = Request_Vote_Request'Tag then
-         Put_Line
-           ("[ " & A.MState.Current_Id'Image & " -> Request vote received]");
+         Debug_Put_Line (Machine, "[Request vote received]");
          --  1. Reply false if term < currentTerm (§5.1)
          --  2. If votedFor is null or candidateId, and candidate’s log is at
          --  least as up-to-date as receiver’s log, grant vote (§5.2, §5.4)
@@ -304,16 +325,16 @@ package body Raft.Node is
             Res : Request_Vote_Response;
          begin
 
-            Put_Line
-              ("[ " & A.MState.Current_Id'Image & " -> check term " &
-               Req.Candidate_Term'Image & " with " &
+            Debug_Put_Line
+              (Machine,
+               "[check term " & Req.Candidate_Term'Image & " with " &
                A.MState.Node_State.Current_Term'Image & " ]");
 
             if Req.Candidate_Term < Machine.State.Node_State.Current_Term then
 
-               Put_Line
-                 ("[ " & A.MState.Current_Id'Image &
-                  " -> node has superior term, respond nope to election]");
+               Debug_Put_Line
+                 (Machine,
+                  "[node has superior term, respond nope to election]");
 
                Res :=
                  (Vote_Granted   => False,
@@ -322,14 +343,13 @@ package body Raft.Node is
                Machine.Current_Machine_State.Sending_Message
                  (Machine.Current_Machine_State.MState.all, Req.Candidate_ID,
                   Res);
-               Put_Line
-                 ("[ " & A.MState.Current_Id'Image & " -> Vote not granted]");
+               Debug_Put_Line (Machine, "[Vote not granted]");
                return;
             end if;
 
-            Put_Line
-              ("[ " & A.MState.Current_Id'Image &
-               " -> same term or superior, voted_for : " &
+            Debug_Put_Line
+              (Machine,
+               "[same term or superior, voted_for : " &
                Machine.Current_Machine_State.MState.Node_State.Voted_For'
                  Image &
                ", request candidate : " & Req.Candidate_ID'Image & "]");
@@ -368,10 +388,8 @@ package body Raft.Node is
                          .T;
                   end if;
 
-                  Put_Line
-                    ("[" &
-                     Machine.Current_Machine_State.MState.Current_Id'Image &
-                     " -> Last term: " & Last_term'Image & "]");
+                  Debug_Put_Line
+                    (Machine, "[Last term: " & Last_term'Image & "]");
 
                   if Req.Last_Log_Term > Last_term
                     or else
@@ -418,9 +436,9 @@ package body Raft.Node is
       -- other state specific messages, delegate to state
       A.Handle_Message_Machine_State (M, New_State);
 
-      Put_Line
-        (A.MState.Current_Id'Image & " -> New_State: " &
-         RaftWishedStateEnum'Image (New_State));
+      Debug_Put_Line
+        (Machine,
+         "[New_State: " & RaftWishedStateEnum'Image (New_State) & "]");
 
       Switch_To_State (Machine, New_State);
 
@@ -440,8 +458,9 @@ package body Raft.Node is
    begin
 
       if M.Leader_Term < Machine_State.MState.Node_State.Current_Term then
-         Put_Line
-           ("[ on " & Machine_State.MState.Current_Id'Image &
+         Debug_Put_Line
+           (Machine_State,
+            "[ on " & Machine_State.MState.Current_Id'Image &
             " , leader term is lower than this one ]");
          declare
 
@@ -459,26 +478,27 @@ package body Raft.Node is
       end if;
 
       -- check if log contains an entry at PrevLogTerm whose index matches PrevLogIndex
-      Put_Line
-        ("[AppendEntriesRequest] for " &
+      Debug_Put_Line
+        (Machine_State,
+         "[AppendEntriesRequest] for " &
          Machine_State.MState.Current_Id'Image &
          " Checking if log contains an entry at PrevLogTerm whose index matches PrevLogIndex");
-      Put_Line
-        ("[PrevLogIndex from Message: " & M.Prev_Log_Index_Strict'Image & "]");
-      Put_Line ("[PrevLogTerm from message: " & M.Prev_Log_Term'Image & "]");
-      Put_Line
-        ("[Machine " & Machine_State.MState.Current_Id'Image &
-         " LogUpperBound: " &
+      Debug_Put_Line
+        (Machine_State,
+         "[PrevLogIndex from Message: " & M.Prev_Log_Index_Strict'Image & "]");
+      Debug_Put_Line
+        (Machine_State,
+         "[PrevLogTerm from message: " & M.Prev_Log_Term'Image & "]");
+      Debug_Put_Line
+        (Machine_State,
+         "[ LogUpperBound: " &
          Machine_State.MState.Node_State.Log_Upper_Bound_Strict'Image & "]");
 
       -- dump logs
-      Put_Line ("[Logs for " & Machine_State.MState.Current_Id'Image & "]");
-      for i in Machine_State.MState.Node_State.Log'Range loop
-         Put
-           (" (" & Machine_State.MState.Node_State.Log (i).C'Image & "," &
-            Machine_State.MState.Node_State.Log (i).T'Image & ")");
-      end loop;
-      New_Line;
+      Debug_Put_Line
+        (Machine_State,
+         "[Logs for " & Machine_State.MState.Current_Id'Image & "]");
+      Dump_Logs (Machine_State);
 
       if M.Prev_Log_Index_Strict >
         Machine_State.MState.Node_State.Log_Upper_Bound_Strict
@@ -527,8 +547,9 @@ package body Raft.Node is
                  M.Prev_Log_Index_Strict;
             begin
 
-               Put_Line
-                 ("[Adding entries from " & M.Entries'First'Image & " to " &
+               Debug_Put_Line
+                 (Machine_State,
+                  "[Adding entries from " & M.Entries'First'Image & " to " &
                   TransactionLogIndex_Type'Image
                     (TransactionLogIndex_Type'Pred (M.Entries_Last_Strict)) &
                   " ]");
@@ -555,8 +576,9 @@ package body Raft.Node is
                   Machine_State.MState.Node_State.Log
                     (To_Update_Index_on_Local_Log) :=
                     M.Entries (I);
-                  Put_Line
-                    ("[Updated entry " & To_Update_Index_on_Local_Log'Image &
+                  Debug_Put_Line
+                    (Machine_State,
+                     "[Updated entry " & To_Update_Index_on_Local_Log'Image &
                      " with " & M.Entries (I).T'Image & " on " &
                      Machine_State.MState.Current_Id'Image & "]");
 
@@ -575,16 +597,11 @@ package body Raft.Node is
          end if;
 
          -- dump logs
-         Put_Line
-           ("[Logs after update for " & Machine_State.MState.Current_Id'Image &
+         Debug_Put_Line
+           (Machine_State,
+            "[Logs after update for " & Machine_State.MState.Current_Id'Image &
             "]");
-         for i in Machine_State.MState.Node_State.Log'Range loop
-            Put
-              (" (" & Machine_State.MState.Node_State.Log (i).C'Image & "," &
-               Machine_State.MState.Node_State.Log (i).T'Image & ")");
-         end loop;
-         New_Line;
-
+         Dump_Logs (Machine_State);
          if M.Leader_Commit_Strict > Machine_State.MState.Commit_Index_Strict
          then
 
@@ -593,16 +610,19 @@ package body Raft.Node is
                 (M.Leader_Commit_Strict,
                  Machine_State.MState.Node_State.Log_Upper_Bound_Strict);
 
-            Put_Line
-              ("[Updated commit to " &
+            
+            Debug_Put_Line
+              (Machine_State,
+               "[Updated commit to " &
                TransactionLogIndex_Type'Image
                  (Machine_State.MState.Commit_Index_Strict) &
                " ]");
 
          end if;
 
-         Put_Line
-           ("[Commit index strict for " &
+         Debug_Put_Line
+           (Machine_State,
+            "[Commit index strict for " &
             Machine_State.MState.Current_Id'Image & " : " &
             TransactionLogIndex_Type'Image
               (Machine_State.MState.Commit_Index_Strict) &
@@ -616,12 +636,16 @@ package body Raft.Node is
                Matching_Index_Strict => Match_Index,
                T => Machine_State.MState.Node_State.Current_Term);
          begin
-            Put_Line
-              ("[Append_entries Response for " &
+            Debug_Put_Line
+              (Machine_State,
+               "[Append_entries Response for " &
                Machine_State.MState.Current_Id'Image & "]");
-            Put_Line
-              ("[     Matching_Index_Strict: " & Match_Index'Image & "]");
-            Put_Line ("[     Success: " & Response_Value'Image & "]");
+            Debug_Put_Line
+              (Machine_State,
+               "[     Matching_Index_Strict: " & Match_Index'Image & "]");
+            Debug_Put_Line
+              (Machine_State,
+               "[     Success: " & Response_Value'Image & "]");
 
             Machine_State.Sending_Message
               (Machine_State.MState.all, M.Leader_ID, Response);
@@ -639,13 +663,17 @@ package body Raft.Node is
    is
    begin
       New_Raft_State_Machine := NO_CHANGES;
-      Put_Line ("Candidate got a message " & Ada.Tags.Expanded_Name (M'Tag));
+      Debug_Put_Line
+        (Machine_State,
+         "[Candidate got a message " & Ada.Tags.Expanded_Name (M'Tag) & "]");
 
       if M'Tag = Timer_Timeout'Tag then
          -- heartbeat timeout ?
 
          if Timer_Timeout (M).Timer_Instance = Election_Timer then
-            Put_Line ("Election Timeout for candidate, retrigger a vote");
+            Debug_Put_Line
+              (Machine_State,
+               "[Election Timeout for candidate, retrigger a vote]");
 
             -- restart election
             Start_Election_Entering_Candidate_State (Machine_State);
@@ -661,7 +689,9 @@ package body Raft.Node is
 
          end if;
       elsif M'Tag = Request_Vote_Response'Tag then
-         Put_Line ("Candidate got a vote response");
+         Debug_Put_Line
+           (Machine_State,
+            "[Candidate got a vote response]");
          declare
             RVR : Request_Vote_Response := Request_Vote_Response (M);
             Positive_Response_Count : Natural               := 0;
@@ -711,16 +741,18 @@ package body Raft.Node is
       --      }
 
       if Res.Success then
-         Put_Line
-           ("[ leader " & Machine_State.MState.Current_Id'Image &
+         Debug_Put_Line
+           (Machine_State,
+            "[ leader " & Machine_State.MState.Current_Id'Image &
             " got a success response from " & Res.SID'Image & "]");
 
          Machine_State.MState.Leader_State.Match_Index_Strict (Res.SID) :=
            TransactionLogIndex_Type'Max
              (Machine_State.MState.Leader_State.Match_Index_Strict (Res.SID),
               Res.Matching_Index_Strict);
-         Put_Line
-           ("[ leader " & Machine_State.MState.Current_Id'Image &
+         Debug_Put_Line
+           (Machine_State,
+            "[ leader " & Machine_State.MState.Current_Id'Image &
             " updated matchIndex_strict to " &
             Machine_State.MState.Leader_State.Match_Index_Strict (Res.SID)'
               Image &
@@ -728,8 +760,9 @@ package body Raft.Node is
 
          Machine_State.MState.Leader_State.Next_Index_Strict (Res.SID) :=
            Machine_State.MState.Leader_State.Match_Index_Strict (Res.SID);
-         Put_Line
-           ("[ leader " & Machine_State.MState.Current_Id'Image &
+         Debug_Put_Line
+           (Machine_State,
+            "[ leader " & Machine_State.MState.Current_Id'Image &
             " updated nextIndex_strict to " &
             Machine_State.MState.Leader_State.Next_Index_Strict (Res.SID)'
               Image &
@@ -746,8 +779,9 @@ package body Raft.Node is
          begin
             -- we have at least the elements in the log corresponding to the commit index
             if Machine_State.MState.Node_State.Log_Upper_Bound_Strict > C then
-               Put_Line
-                 ("[ leader " & Machine_State.MState.Current_Id'Image &
+               Debug_Put_Line
+                 (Machine_State,
+                  "[ leader " & Machine_State.MState.Current_Id'Image &
                   " evaluate the commit index]");
                for Server in ServerRange loop
 
@@ -788,14 +822,16 @@ package body Raft.Node is
                then
                   Machine_State.MState.Commit_Index_Strict :=
                     TransactionLogIndex_Type'Succ (C);
-                  Put_Line
-                    ("[ leader " & Machine_State.MState.Current_Id'Image &
+                  Debug_Put_Line
+                    (Machine_State,
+                     "[ leader " & Machine_State.MState.Current_Id'Image &
                      " updated commitIndex_strict to " &
                      Machine_State.MState.Commit_Index_Strict'Image & "]");
                else
-                  Put_Line
-                    ("[ leader " & Machine_State.MState.Current_Id'Image &
-                     " did not update commitIndex_strict, no majority]");
+                  Debug_Put_Line
+                    (Machine_State,
+                     "[ leader " & Machine_State.MState.Current_Id'Image &
+                      " did not update commitIndex_strict, no majority]");
                end if;
 
             end if;
@@ -803,8 +839,9 @@ package body Raft.Node is
          end;
 
       else
-         Put_Line
-           ("[ leader " & Machine_State.MState.Current_Id'Image &
+         Debug_Put_Line
+           (Machine_State,
+            "[ leader " & Machine_State.MState.Current_Id'Image &
             " got a failure response from " & Res.SID'Image & "]");
          Machine_State.MState.Leader_State.Next_Index_Strict (Res.SID) :=
            TransactionLogIndex_Type'Max
@@ -812,8 +849,9 @@ package body Raft.Node is
               TransactionLogIndex_Type'Pred
                 (Machine_State.MState.Leader_State.Next_Index_Strict
                    (Res.SID)));
-         Put_Line
-           ("[ leader " & Machine_State.MState.Current_Id'Image &
+         Debug_Put_Line
+           (Machine_State,
+            "[ leader " & Machine_State.MState.Current_Id'Image &
             " updated nextIndex_strict to " &
             Machine_State.MState.Leader_State.Next_Index_Strict (Res.SID)'
               Image &
@@ -909,9 +947,10 @@ package body Raft.Node is
       end if;
 
       -- unsupported message on state
-      Put_Line
-        ("Message unsupported for follower :" &
-         Ada.Tags.Expanded_Name (M'Tag));
+      Debug_Put_Line
+        (Machine_State,
+         "[Message unsupported for follower :" &
+         Ada.Tags.Expanded_Name (M'Tag) & "]");
       raise Program_Error;
 
    end Handle_Message_Machine_State;
@@ -950,11 +989,13 @@ package body Raft.Node is
                  Machine_State.MState.Leader_State.Next_Index_Strict (Server);
 
             begin
-               Put_Line
-                 ("[Leader Next Index: " & Leader_Next_Index_Strict'Image &
+               Debug_Put_Line
+                 (Machine_State,
+                  "[Leader Next Index: " & Leader_Next_Index_Strict'Image &
                   "]");
-               Put_Line
-                 ("[Node " & Server'Image & " Prev Log Index: " &
+               Debug_Put_Line
+                 (Machine_State,
+                  "[Node " & Server'Image & " Prev Log Index: " &
                   Prev_Node_Log_Index_Strict'Image & "]");
                if Leader_Next_Index_Strict > Prev_Node_Log_Index_Strict then
                   declare
@@ -990,10 +1031,15 @@ package body Raft.Node is
                         Leader_Commit_Strict  =>
                           Machine_State.MState.Commit_Index_Strict);
 
-                     Put_Line
-                       ("[Sent Entries to Node " &
+                     Debug_Put_Line
+                       (Machine_State,
+                        "[Sent Entries to Node " &
                         ServerID_Type'Image (Server) & "]");
-                     Put ("[Entries: ");
+                     
+                     
+                     Debug_Put_Line
+                       (Machine_State,
+                        "[Entries: ");
                      for i in 0 .. Number_of_entries_To_Send - 1 loop
                         Put
                           (Entries
@@ -1002,9 +1048,11 @@ package body Raft.Node is
                              .C'
                              Image);
                      end loop;
+
                      Put_Line ("]");
-                     Put_Line
-                       ("[Commit_index_strict sent in request for " &
+                     Debug_Put_Line
+                       (Machine_State,
+                        "[Commit_index_strict sent in request for " &
                         ServerID_Type'Image (Server) & " : " &
                         TransactionLogIndex_Type'Image
                           (Machine_State.MState.Commit_Index_Strict) &
@@ -1014,8 +1062,9 @@ package body Raft.Node is
                        (Machine_State.MState.all, Server, AER);
                   end;
                else
-                  Put_Line
-                    ("[From Leader, Node " & Server'Image &
+                  Debug_Put_Line
+                    (Machine_State,
+                     "[From Leader, Node " & Server'Image &
                      " already has the latest entries]");
                   AER :=
                     (Leader_Term           =>
@@ -1048,8 +1097,9 @@ package body Raft.Node is
       -- Add new entry to leader's log
       New_Log_Entry :=
         (C => RSC.Command, T => Machine_State.MState.Node_State.Current_Term);
-      Put_Line
-        ("[ leader " & Machine_State.MState.Current_Id'Image &
+      Debug_Put_Line
+        (Machine_State,
+         "[ leader " & Machine_State.MState.Current_Id'Image &
          " got a send command from " & RSC.Command'Image & "]");
 
       New_Index := Machine_State.MState.Node_State.Log_Upper_Bound_Strict;
@@ -1069,8 +1119,9 @@ package body Raft.Node is
 
       Handle_Leader_Send_Append_Entries (Machine_State);
 
-      Put_Line
-        ("[ leader " & Machine_State.MState.Current_Id'Image &
+      Debug_Put_Line
+        (Machine_State,
+         "[ leader " & Machine_State.MState.Current_Id'Image &
          " handled command " & RSC.Command'Image & "]");
 
    end Handle_Leader_Send_Command;
