@@ -2,7 +2,7 @@ Ada Raft
 ---------
 
 First Pet Implementation of the raft protocol, 
-Only the first section is currently in progress.
+Only the first section of the raft protocol, is currently implemented.
 
 **DISCLAMER** :
 
