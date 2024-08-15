@@ -23,4 +23,8 @@ package Test_Raft is
 
   procedure Test_Leader_Election (T : in out Test_Cases.Test_Case'Class);
 
+
+  -- Test Raft System
+  procedure Test_RaftSystem (T : in out Test_Cases.Test_Case'Class);
+
 end Test_Raft;

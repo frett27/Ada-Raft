@@ -21,22 +21,23 @@ package Raft.Node is
      TransactionLogIndex_Type'First;
   end record;
 
-  type AllServerLogIndex is array (ServerRange) of TransactionLogIndex_Type;
+  type AllServerLogIndex is array (ServerID_Type range <>) of TransactionLogIndex_Type;
 
   -- volatile leader additional states
-  type Raft_Leader_Additional_State is record
-    Next_Index_Strict  : AllServerLogIndex :=
+  type Raft_Leader_Additional_State(Server_Number : ServerID_Type) is record
+    Next_Index_Strict  : AllServerLogIndex(1..Server_Number) :=
      (others => TransactionLogIndex_Type'First);
-    Match_Index_Strict : AllServerLogIndex :=
+    Match_Index_Strict : AllServerLogIndex(1..Server_Number) :=
      (others => TransactionLogIndex_Type'First);
   end record;
 
-  type RaftNodeStruct is record
+  type RaftNodeStruct(Server_Number : ServerID_Type) is record
 
     Current_Raft_State : RaftStateEnum;
 
     -- id of the current server
     Current_Id : ServerID_Type;
+
 
     -- persisted raft node state
     Node_State : Raft_Node_State;
@@ -48,7 +49,7 @@ package Raft.Node is
      TransactionLogIndex_Type'First;
 
     -- leader specific implementation
-    Leader_State : Raft_Leader_Additional_State;
+    Leader_State : Raft_Leader_Additional_State(Server_Number);
 
   end record;
 
@@ -94,7 +95,7 @@ package Raft.Node is
   -- Raft state machine
 
   -- raft state machine, defined the state behaviour for each state
-  type Raft_State_Machine is abstract tagged record
+  type Raft_State_Machine(Server_Number : ServerID_Type) is abstract tagged record
 
     MState : RaftNodeStruct_Access;
 
@@ -113,7 +114,7 @@ package Raft.Node is
 
   type Raft_State_Machine_Wide_Access is access all Raft_State_Machine'Class;
 
-  type Raft_State_Machine_Leader is new Raft_State_Machine with null record;
+  type Raft_State_Machine_Leader(Server_Number : ServerID_Type) is new Raft_State_Machine(Server_Number) with null record;
 
   -- handle an external message on the given machine state
   overriding procedure Handle_Message_Machine_State
@@ -121,11 +122,11 @@ package Raft.Node is
     M                      : in     Message_Type'Class;
     New_Raft_State_Machine :    out RaftWishedStateEnum);
 
-  type Array_Of_ServerId_Booleans is array (ServerRange) of Boolean;
+  type Array_Of_ServerId_Booleans is array (ServerID_Type range <>) of Boolean;
 
-  type Raft_State_Machine_Candidate is new Raft_State_Machine with record
-    Server_Vote_Responses : Array_Of_ServerId_Booleans := (others => False);
-    Server_Vote_Responses_Status : Array_Of_ServerId_Booleans :=
+  type Raft_State_Machine_Candidate(Server_Number : ServerID_Type) is new Raft_State_Machine(Server_Number) with record
+    Server_Vote_Responses : Array_Of_ServerId_Booleans(1..Server_Number) := (others => False);
+    Server_Vote_Responses_Status : Array_Of_ServerId_Booleans(1..Server_Number) :=
      (others => False);
   end record;
   overriding procedure Handle_Message_Machine_State
@@ -133,21 +134,21 @@ package Raft.Node is
     M                      : in     Message_Type'Class;
     New_Raft_State_Machine :    out RaftWishedStateEnum);
 
-  type Raft_State_Machine_Follower is new Raft_State_Machine with null record;
+  type Raft_State_Machine_Follower(Server_Number : ServerID_Type) is new Raft_State_Machine(Server_Number) with null record;
   overriding procedure Handle_Message_Machine_State
    (Machine_State          : in out Raft_State_Machine_Follower;
     M                      : in     Message_Type'Class;
     New_Raft_State_Machine :    out RaftWishedStateEnum);
 
   -- machine handle all the state (and the switch between elements)
-  type Raft_Node is record
+  type Raft_Node(Server_Number : ServerID_Type) is record
 
     -- implement the state of the node
-    State : aliased RaftNodeStruct;
+    State : aliased RaftNodeStruct(Server_Number);
 
-    MState_Leader    : aliased Raft_State_Machine_Leader;
-    MState_Candidate : aliased Raft_State_Machine_Candidate;
-    MState_Follower  : aliased Raft_State_Machine_Follower;
+    MState_Leader    : aliased Raft_State_Machine_Leader(Server_Number);
+    MState_Candidate : aliased Raft_State_Machine_Candidate(Server_Number);
+    MState_Follower  : aliased Raft_State_Machine_Follower(Server_Number) ;
 
     -- Reference the current machine state implementation
     Current_Machine_State : Raft_State_Machine_Wide_Access;
@@ -160,9 +161,11 @@ package Raft.Node is
    (Machine : in out Raft_Node_Access; M : in Message_Type'Class);
 
   procedure Create_Machine
-   (Machine         : out Raft_Node_Access; SID : ServerID_Type;
-    Timer_Start     :     Start_Timer; Timer_Cancel : Cancel_Timer;
-    Sending_Message :     Message_Sending);
+     (Machine         : out Raft_Node_Access; 
+      SID : ServerID_Type;
+      Server_Number : ServerID_Type;
+      Timer_Start     :     Start_Timer; Timer_Cancel : Cancel_Timer;
+      Sending_Message :     Message_Sending);
 
 private
 

@@ -16,7 +16,7 @@ package Communication is
 
     -- also define groups of machine (net_hub)
     type Net_Hub is abstract tagged private;
-    type Net_Hub_Access is access all Net_Hub'Class;
+    type Net_Hub_Wide_Access is access all Net_Hub'Class;
 
     -- manage associated properties for the connection to host
     -- net link is coupled with Net_Hub
@@ -28,7 +28,7 @@ package Communication is
     -- net links primitives
 
     procedure Create_Link
-       (H        :    Net_Hub_Access; HostName : in Unbounded_String;
+       (H        :    Net_Hub_Wide_Access; HostName : in Unbounded_String;
         Callback : in Message_Callback; Link : out Net_Link);
 
     -- get the hostname associated to net_link
@@ -57,22 +57,23 @@ package Communication is
     ----------------------------------------------------
     --- In memory message buffer serialization
 
-    type Message_Buffer is new Root_Stream_Type with private;
+    type Message_Buffer_Type is new Root_Stream_Type with private;
+    type Message_Buffer_Access is access all Message_Buffer_Type;
 
-    procedure Create (Buffer : out Message_Buffer);
+    procedure Create (Buffer : out Message_Buffer_Type);
 
     procedure Read
-       (MBuffer : in out Message_Buffer; Item : out Stream_Element_Array;
+       (MBuffer : in out Message_Buffer_Type; Item : out Stream_Element_Array;
         Last    :    out Stream_Element_Offset);
 
     procedure Write
-       (MBuffer : in out Message_Buffer; Item : in Stream_Element_Array);
+       (MBuffer : in out Message_Buffer_Type; Item : in Stream_Element_Array);
 
     function To_Stream_Element_Array
-       (MB : Message_Buffer) return Stream_Element_Array;
+       (MB : Message_Buffer_Type) return Stream_Element_Array;
 
     procedure From_Stream_Element_Array
-       (A : Stream_Element_Array; MB : out Message_Buffer);
+       (A : Stream_Element_Array; MB : out Message_Buffer_Type);
 
 private
 
@@ -81,11 +82,11 @@ private
     type Net_Link is record
         HostName   : Unbounded_String;
         Message_CB : Message_Callback;
-        H          : Net_Hub_Access;
+        H          : Net_Hub_Wide_Access;
     end record;
 
     MAX_MESSAGE_BUFFER : constant Stream_Element_Offset := 1_000_000;
-    type Message_Buffer is new Root_Stream_Type with record
+    type Message_Buffer_Type is new Root_Stream_Type with record
         Buffer : Stream_Element_Array (0 .. MAX_MESSAGE_BUFFER - 1);
         From   : Stream_Element_Offset := 0;
         -- to in an exclusive range

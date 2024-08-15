@@ -1,18 +1,41 @@
-with Raft.Node; use Raft.Node;
-with Raft.Comm; use Raft.Comm;
-With Communication; use Communication;
-With Communication.Hub; use Communication.Hub;
+with Raft.Node;         use Raft.Node;
+with Raft.Comm;         use Raft.Comm;
+with Communication;     use Communication;
+with Communication.Hub; use Communication.Hub;
+with Raft;              use Raft;
 
+with Ada.Streams; use Ada.Streams;
+
+-- this package contains a test system helping
+-- to test the raft algorithm, positionning some state and messages to test
+-- border cases and normal operations
+
+generic
+    SERVER_NUMBER : in ServerID_Type;
+    Debug_Test_Message : access procedure (Message : String);
 package testraftsystem is
 
+    procedure Initialize_System;
 
-    type Node_Array is array (Positive range <>) of Raft.Node.Raft_Node_Access;
+private
 
-    type TestRaftSystem (Nodes_Number : Positive) is record
-        Nodes  : Node_Array (1 .. Nodes_Number);
-        NetHub : aliased LocalHub;
-    end record;
+    type Node_Array is
+       array
+          (ServerID_Type range 1 .. SERVER_NUMBER) of Raft.Node
+          .Raft_Node_Access;
+    type Net_Link_Array_Type is
+       array (ServerID_Type range 1 .. SERVER_NUMBER) of Net_Link;
 
-    procedure Debug_Test_Message (Message : String);
+    Net_Link_Array : Net_Link_Array_Type;
+    Message_Buffer : aliased Message_Buffer_Access;
+    Nodes          : Node_Array;
+    NetHub         : aliased Net_Hub_Wide_Access;
+
+    procedure Link_Callback
+       (NL : in Net_Link; Message : in Stream_Element_Array);
+    procedure Set_Timer
+       (SID : ServerID_Type; Timer : Timer_Type; newCounter : Natural);
+    function Get_Timer_Counter
+       (SID : ServerID_Type; Timer : Timer_Type) return Natural;
 
 end testraftsystem;

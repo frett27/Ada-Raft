@@ -23,7 +23,7 @@ package body Test_Messages is
     --------------------------------------------
 
     function To_Message (U : Unbounded_String) return Stream_Element_Array is
-        MB : aliased Message_Buffer;
+        MB : aliased Message_Buffer_Type;
         M  : Message_String_Type := (S => U);
     begin
         Message_String_Type'Class'Output
@@ -32,7 +32,7 @@ package body Test_Messages is
     end To_Message;
 
     function From_Message (B : Stream_Element_Array) return Unbounded_String is
-        MB : aliased Message_Buffer;
+        MB : aliased Message_Buffer_Type;
     begin
         From_Stream_Element_Array (B, MB);
         declare
@@ -46,14 +46,14 @@ package body Test_Messages is
     --------------------------------------------
 
     procedure Save
-       (Root : access Message_Buffer; M : in Message_Type'Class)
+       (Root : access Message_Buffer_Type; M : in Message_Type'Class)
     is
     begin
         Message_Type'Class'Output (Root, M);
     end Save;
 
     function Load
-       (Root : access Message_Buffer) return Message_Type'Class
+       (Root : access Message_Buffer_Type) return Message_Type'Class
     is
     begin
         return Message_Type'Class'Input (Root);
@@ -61,7 +61,7 @@ package body Test_Messages is
     ---------------------------------------------
 
     procedure Test_Store_Message (T : in out Test_Cases.Test_Case'Class) is
-        M : aliased Message_Buffer;
+        M : aliased Message_Buffer_Type;
     begin
         put_line ("----------------- TEST MESSAGE STORAGE");
         Create (M);

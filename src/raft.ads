@@ -2,13 +2,14 @@ package Raft is
 
   pragma Preelaborate;
 
+
   type ServerID_Type is new Natural;
 
   ALL_SERVER_SENDING : constant ServerID_Type := 0;
   NULL_SERVER        : constant ServerID_Type := 0;
 
-  ServerNumber : constant ServerID_Type := 3;
-  subtype ServerRange is ServerID_Type range 1 .. ServerNumber;
+  --  ServerNumber : constant ServerID_Type := 3;
+  --  subtype ServerRange is ServerID_Type range 1 .. <>;
 
   type Term_Type is new Natural;
 

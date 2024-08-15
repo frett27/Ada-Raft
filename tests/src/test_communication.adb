@@ -19,7 +19,7 @@ package body Test_Communication is
   end Register_Tests;
 
   function To_Message (U : Unbounded_String) return Stream_Element_Array is
-    MB : aliased Message_Buffer;
+    MB : aliased Message_Buffer_Type;
     M  : Message_String_Type := (S => U);
   begin
     Message_String_Type'Class'Output
@@ -28,7 +28,7 @@ package body Test_Communication is
   end To_Message;
 
   function From_Message (B : Stream_Element_Array) return Unbounded_String is
-    MB : aliased Message_Buffer;
+    MB : aliased Message_Buffer_Type;
   begin
     From_Stream_Element_Array (B, MB);
     declare
@@ -48,7 +48,7 @@ package body Test_Communication is
 
   -- Test Buffer Serialization
   procedure Test_In_Memory_Buffer (T : in out Test_Cases.Test_Case'Class) is
-    MB : aliased Message_Buffer;
+    MB : aliased Message_Buffer_Type;
     M1 : Message_Type;
     M  : DummyMessage;
   begin
@@ -99,7 +99,7 @@ package body Test_Communication is
 
     end L2_Callback;
     H        : aliased LocalHub;
-    NHAccess : Net_Hub_Access := H'Unchecked_Access;
+    NHAccess : Net_Hub_Wide_Access := H'Unchecked_Access;
 
   begin
 

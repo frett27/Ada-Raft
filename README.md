@@ -22,7 +22,8 @@ Be able to use it on several nodes
 
 - [X] Basic Raft Algorithm
 - [X] Leader election
-- [X] Log replication
+- [x] Log replication
+- [ ] Test tck - validation for nominal and specific use cases
 - [ ] Client Handling / Commit broadcast
 - [ ] Log compaction / Snapshots
 - [ ] Testing - (Formal Validation ?)

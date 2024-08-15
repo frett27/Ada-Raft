@@ -5,7 +5,7 @@ package body Communication is
 
     -- Create a link to a hub
     procedure Create_Link
-       (H        :    Net_Hub_Access; HostName : in Unbounded_String;
+       (H        :    Net_Hub_Wide_Access; HostName : in Unbounded_String;
         Callback : in Message_Callback; Link : out Net_Link)
     is
     begin
@@ -34,14 +34,14 @@ package body Communication is
         L.H.Register (L.HostName, Message_CB);
     end Register;
 
-    procedure Create (Buffer : out Message_Buffer) is
+    procedure Create (Buffer : out Message_Buffer_Type) is
     begin
         Buffer.Buffer := (others => 0);
         Buffer.To     := 0;
         Buffer.From   := 0;
     end Create;
 
-    procedure Dump_Message_Buffer (MBuffer : in Message_Buffer) is
+    procedure Dump_Message_Buffer (MBuffer : in Message_Buffer_Type) is
     begin
         put_line ("  Message Buffer:");
         put_line ("    From :" & Stream_Element_Offset'Image (MBuffer.From));
@@ -49,7 +49,7 @@ package body Communication is
     end Dump_Message_Buffer;
 
     procedure Read
-       (MBuffer : in out Message_Buffer; Item : out Stream_Element_Array;
+       (MBuffer : in out Message_Buffer_Type; Item : out Stream_Element_Array;
         Last    :    out Stream_Element_Offset)
     is
         idx : Stream_Element_Offset := MBuffer.From;
@@ -75,7 +75,7 @@ package body Communication is
     end Read;
 
     procedure Write
-       (MBuffer : in out Message_Buffer; Item : in Stream_Element_Array)
+       (MBuffer : in out Message_Buffer_Type; Item : in Stream_Element_Array)
     is
         idx : Stream_Element_Offset := MBuffer.To;
     begin
@@ -93,14 +93,14 @@ package body Communication is
     end Write;
 
     function To_Stream_Element_Array
-       (MB : Message_Buffer) return Stream_Element_Array
+       (MB : Message_Buffer_Type) return Stream_Element_Array
     is
     begin
         return MB.Buffer (MB.From .. MB.To - 1);
     end To_Stream_Element_Array;
 
     procedure From_Stream_Element_Array
-       (A : Stream_Element_Array; MB : out Message_Buffer)
+       (A : Stream_Element_Array; MB : out Message_Buffer_Type)
     is
     begin
         MB.From                   := 1;

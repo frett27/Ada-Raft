@@ -72,12 +72,14 @@ package body Raft.Node is
    -- Machine handling
 
    procedure Create_Machine
-     (Machine         : out Raft_Node_Access; SID : ServerID_Type;
+     (Machine         : out Raft_Node_Access; 
+      SID : ServerID_Type;
+      Server_Number : ServerID_Type;
       Timer_Start     :     Start_Timer; Timer_Cancel : Cancel_Timer;
       Sending_Message :     Message_Sending)
    is
    begin
-      Machine := new Raft_Node;
+      Machine := new Raft_Node(Server_Number);
 
       declare
          RStruct : RaftNodeStruct_Access := Machine.State'Access;
@@ -128,7 +130,7 @@ package body Raft.Node is
       Machine_State.MState.Node_State.Voted_For    :=
         Machine_State.MState.Current_Id;
 
-      for I in ServerRange loop
+      for I in 1..Machine_State.MState.Server_Number loop
          declare
             Last_term : Term_Type :=
               Machine_State.MState.Node_State.Current_Term;
@@ -262,7 +264,8 @@ package body Raft.Node is
             -- define the leader state,
             -- all is unknown first
             Machine.State.Leader_State :=
-              (Next_Index_Strict  =>
+              (Server_Number => Machine.Server_Number,                
+               Next_Index_Strict  =>
                  (others => Machine.State.Node_State.Log_Upper_Bound_Strict),
                Match_Index_Strict =>
                  (others => TransactionLogIndex_Type'First));
@@ -713,8 +716,8 @@ package body Raft.Node is
                end if;
             end loop;
 
-            if Positive_Response_Count >
-              Natural (ServerRange'Last - ServerRange'First + 1) / 2
+            if Positive_Response_Count >=
+                 Natural (Machine_State.MState.Server_Number - 1) / 2
             then
                -- go leader
                New_Raft_State_Machine := LEADER;
@@ -783,7 +786,7 @@ package body Raft.Node is
                  (Machine_State,
                   "[ leader " & Machine_State.MState.Current_Id'Image &
                   " evaluate the commit index]");
-               for Server in ServerRange loop
+               for Server in 1..Machine_State.MState.Server_Number loop
 
                   declare
                      Log_Index : TransactionLogIndex_Type :=
@@ -818,7 +821,7 @@ package body Raft.Node is
 
                -- majority of nodes (except for the leader)
                if count_match_index >=
-                 Natural (ServerRange'Last - ServerRange'First + 1 - 1) / 2
+                 Natural (Machine_State.MState.Server_Number - 1) / 2
                then
                   Machine_State.MState.Commit_Index_Strict :=
                     TransactionLogIndex_Type'Succ (C);
@@ -976,7 +979,7 @@ package body Raft.Node is
              .T;
       end if;
 
-      for Server in ServerRange loop
+      for Server in 1..Machine_State.MState.Server_Number loop
          if Server /= Machine_State.MState.Current_Id then
             declare
                AER : Append_Entries_Request;
