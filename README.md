@@ -1,7 +1,7 @@
 Ada Raft
 ---------
 
-First Toy Implementation of the raft protocol, 
+First Pet Implementation of the raft protocol, 
 Only the first section is currently in progress.
 
 **DISCLAMER** :
