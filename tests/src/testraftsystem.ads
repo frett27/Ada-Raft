@@ -26,6 +26,10 @@ package testraftsystem is
     function Get_Node(SID : ServerID_Type) return Raft.Node.Raft_Node_Access;
     procedure Send_Pushed_Message;
 
+    function Get_Leader return Raft.Node.Raft_Node_Access;
+
+    SYSTEM_SERVER_NUMBER : constant ServerID_Type := Server_Number;
+
 private
 
     type Node_Array is

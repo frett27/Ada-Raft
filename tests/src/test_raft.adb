@@ -21,12 +21,15 @@ with TestRaftSystem;
 
 package body Test_Raft is
 
-  use Assertions;
+  DEBUG_LOG: constant Boolean := False;
 
+  use Assertions;
 
     procedure Debug_Test_Message (Message : String) is
     begin
+      if DEBUG_LOG then
         Put_Line (">>>SYSTEM TEST: " & Message);
+      end if;
     end Debug_Test_Message;
 
 
@@ -509,8 +512,12 @@ package body Test_Raft is
   procedure Test_RaftSystem (T : in out Test_Cases.Test_Case'Class) is
 
     package RaftSystem_Instance is new testraftsystem(
-      Server_Number => 3, 
+      Server_Number => 11, 
       Debug_Test_Message => Debug_Test_Message'Access);
+
+    
+    Gen : Ada.Numerics.Float_Random.Generator;
+
   
   begin
       Debug_Test_Message("Initialize_System");  
@@ -518,15 +525,59 @@ package body Test_Raft is
       Debug_Test_Message("Initialize_System done");  
       RaftSystem_Instance.TimeOut_Election_Timer(1);
 
-      for i in 1..10 loop
+      for i in 1..500 loop
+
+          -- check at one step, that there are only one leader (if exists)
+          declare 
+            Leader_Count: Integer := 0;
+          begin
+            for j in 1..RaftSystem_Instance.SYSTEM_SERVER_NUMBER loop
+              if RaftSystem_Instance.Get_Node(j).State.Current_Raft_State = Leader then
+                Leader_Count := Leader_Count + 1;
+              end if;
+            end loop;
+          
+            Assert(Leader_Count <= 1, "More than one leader");
+
+            if Leader_Count = 0 then
+              Debug_Test_Message("No leader, for Epoch " & Integer'Image(i) );
+            end if;
+          end;
+          -- random election 
+
+          if i > 3 and i mod 13 = 0 then
+           declare
+            Leader : Raft_Node_Access;
+            Random_Number : ServerID_Type;
+           begin
+            Random_Number := ServerID_Type(Integer(Ada.Numerics.Float_Random.Random(Gen) * (Float(RaftSystem_Instance.SYSTEM_SERVER_NUMBER - 1))))  + 1;
+
+            Leader := RaftSystem_Instance.Get_Node(Random_Number);
+            Debug_Test_Message("Leader: " & ServerID_Type'Image (Leader.State.Current_Id));
+            RaftSystem_Instance.TimeOut_Election_Timer(Leader.State.Current_Id);
+           end;
+
+          end if;
+
+          if i > 5 and i mod 20 = 0 then
+            declare
+              MLeader : Raft_Node_Access;
+            begin
+              MLeader := RaftSystem_Instance.Get_Leader;
+              Debug_Test_Message ("Leader: " & ServerID_Type'Image (MLeader.State.Current_Id));
+              -- send command to leader
+              declare
+                CR : Request_Send_Command := (Command => Command_Type(i));
+              begin
+                Handle_Message(MLeader, CR);
+              end;
+            end;
+          end if;
+
           RaftSystem_Instance.Start_New_Epoch_And_Handle_Timers(RaftSystem_Instance.Epoch_Type(i));
           RaftSystem_Instance.Send_Pushed_Message;
-          delay 1.0;
-          
+          -- delay 0.2;
       end loop;
-
-
-
 
   end Test_RaftSystem;
 
