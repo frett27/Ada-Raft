@@ -108,8 +108,8 @@ package body testraftsystem is
     is
     begin
         Debug_Test_Message
-           (RSS.Current_Id'Image & ": " & "Sending " &
-            Ada.Tags.Expanded_Name (M'Tag) & " to " &
+           (RSS.Current_Id'Image & ": " & "Sending Message from node " &
+            Ada.Tags.Expanded_Name (M'Tag) & " to node " &
             ServerID_Type'Image (To_ServerID_Or_All));
 
         declare
@@ -179,7 +179,7 @@ package body testraftsystem is
         return Nodes (SID);
     end Get_Node;
 
-    procedure Send_Pushed_Message is
+    procedure Deliver_Pushed_Message is
     begin
         loop
             declare
@@ -191,13 +191,13 @@ package body testraftsystem is
                    Message_Type'Class'Input (Message_Buffer);
             begin
                 Debug_Test_Message
-                   ("Sending " & ServerID_Type'Image (SID_From) & " to " &
+                   ("Delivering Message from Node " & ServerID_Type'Image (SID_From) & " to node " &
                     ServerID_Type'Image (SID_To));
                 Send (NHBinding, SID_From, SID_To, M);
             exception
                 when E : others =>
                     Debug_Test_Message
-                       ("Send Message Error: " &
+                       ("Delivering Message Error: " &
                         Ada.Exceptions.Exception_Information (E));
                     return;
             end;
@@ -212,7 +212,7 @@ package body testraftsystem is
                 Ada.Exceptions.Exception_Information (E));
             return;
 
-    end Send_Pushed_Message;
+    end Deliver_Pushed_Message;
 
     procedure Start_New_Epoch_And_Handle_Timers (Epoch : Epoch_Type) is
     begin

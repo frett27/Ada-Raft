@@ -4,7 +4,7 @@ with Raft.Messages;         use Raft.Messages;
 
 package Raft.Node is
 
-  MAX_LOG : constant TransactionLogIndex_Type := 20;
+  MAX_LOG : constant TransactionLogIndex_Type := 100;
 
   type RaftWishedStateEnum is (FOLLOWER, CANDIDATE, LEADER, NO_CHANGES);
 

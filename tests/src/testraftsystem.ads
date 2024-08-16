@@ -24,7 +24,7 @@ package testraftsystem is
     procedure TimeOut_Election_Timer(SID : ServerID_Type);
 
     function Get_Node(SID : ServerID_Type) return Raft.Node.Raft_Node_Access;
-    procedure Send_Pushed_Message;
+    procedure Deliver_Pushed_Message;
 
     function Get_Leader return Raft.Node.Raft_Node_Access;
 

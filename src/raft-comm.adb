@@ -26,11 +26,6 @@ package body Raft.Comm is
             SA.NH.Send (Sender => From_Host, To => To_Host, Message => B);
         end;
 
-        -- raise Program_Error;
-        --  SA.NH.Send (Sender => From_Host,
-        --      Hostname => To_Host,
-        --      Message =>
-        --  );
     end Send;
 
 end Raft.Comm;

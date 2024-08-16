@@ -515,10 +515,8 @@ package body Test_Raft is
       Server_Number => 11, 
       Debug_Test_Message => Debug_Test_Message'Access);
 
-    
     Gen : Ada.Numerics.Float_Random.Generator;
 
-  
   begin
       Debug_Test_Message("Initialize_System");  
       RaftSystem_Instance.Initialize_System;
@@ -545,7 +543,7 @@ package body Test_Raft is
           end;
           -- random election 
 
-          if i > 3 and i mod 13 = 0 then
+          if i mod 7 = 0 then
            declare
             Leader : Raft_Node_Access;
             Random_Number : ServerID_Type;
@@ -553,13 +551,13 @@ package body Test_Raft is
             Random_Number := ServerID_Type(Integer(Ada.Numerics.Float_Random.Random(Gen) * (Float(RaftSystem_Instance.SYSTEM_SERVER_NUMBER - 1))))  + 1;
 
             Leader := RaftSystem_Instance.Get_Node(Random_Number);
-            Debug_Test_Message("Leader: " & ServerID_Type'Image (Leader.State.Current_Id));
+            Debug_Test_Message("NEW ELECTION ASKED, New Candidate: " & ServerID_Type'Image (Leader.State.Current_Id));
             RaftSystem_Instance.TimeOut_Election_Timer(Leader.State.Current_Id);
            end;
 
           end if;
 
-          if i > 5 and i mod 20 = 0 then
+          if i mod 6 = 0 then
             declare
               MLeader : Raft_Node_Access;
             begin
@@ -578,7 +576,7 @@ package body Test_Raft is
           end if;
 
           RaftSystem_Instance.Start_New_Epoch_And_Handle_Timers(RaftSystem_Instance.Epoch_Type(i));
-          RaftSystem_Instance.Send_Pushed_Message;
+          RaftSystem_Instance.Deliver_Pushed_Message;
           -- delay 0.2;
       end loop;
 
