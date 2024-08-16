@@ -1,8 +1,11 @@
 Ada Raft
 ---------
 
-First Pet Implementation of the raft protocol, 
+First Implementation of the raft protocol, 
 Only the first section of the raft protocol, is currently implemented.
+
+The implementation takes currently a bounded log, and entries are sent with a maximum of 10
+
 
 **DISCLAMER** :
 
@@ -24,15 +27,21 @@ Be able to use it on several nodes
 - [X] Leader election
 - [x] Log replication
 - [ ] Test tck - validation for nominal and specific use cases
-- [ ] Client Handling / Commit broadcast
-- [ ] Log compaction / Snapshots
-- [ ] Testing - (Formal Validation ?)
+  - [ ] Saving the messages and tests to be able to replay and be consistent in the test
+- [ ] Log Compaction (handling of persistence for the log result)
+- [ ] Client Handling / Commit broadcast (handling of hi stressing the server)
+
+- [ ] Testing - (Formal Validation)
 
 
 Further devs :
 
-- [ ] Membership changes
+- [ ] Membership changes (still in reflexion, as the elements above can be error prone for restoration)
+
+seeing if prevote extension, and strategies for log transmission 
 
 
+ChangeLog
+==========
 
-seeing if prevote extension, and strategies for log transmission
+15/08/2024 : Work on RaftSystem Testing (improve the readability of the test)
