@@ -11,14 +11,14 @@ package Communication.Hub is
 
     procedure Register
        (L        : in out LocalHub; Hostname : in Unbounded_String;
-        Callback : in     Message_Callback);
+        Callback : in     Message_Received_For_Host_Callback);
 
 
 private
 
     type Hub_Entry is record
         Hostname : Unbounded_String;
-        Callback : Message_Callback;
+        Callback : Message_Received_For_Host_Callback;
     end record;
 
     type Hub_Entry_Array is array (Positive range <>) of Hub_Entry;

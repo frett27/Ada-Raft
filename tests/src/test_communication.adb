@@ -76,7 +76,7 @@ package body Test_Communication is
     L2       : Net_Link;
     L2Called : Boolean := False;
 
-    procedure L1_CallBack (NL : in Net_Link; Message : in Stream_Element_Array)
+    procedure L1_CallBack (From, To : in Net_Link; Message : in Stream_Element_Array)
     is
     begin
       Assert
@@ -84,16 +84,16 @@ package body Test_Communication is
         "Should no be called, because this is the originator of the message"); -- must not be called
 
       Put_Line ("L1_CallBack");
-      Put_Line ("HostName_From: " & To_String (HostName (NL)));
+      Put_Line ("HostName_From: " & To_String (HostName (From)));
       Put_Line ("Message: " & To_String (From_Message (Message)));
     end L1_CallBack;
 
-    procedure L2_Callback (NL : in Net_Link; Message : in Stream_Element_Array)
+    procedure L2_Callback (From, To : in Net_Link; Message : in Stream_Element_Array)
     is
     begin
 
       Put_Line ("L2_Callback");
-      Put_Line ("HostName_From: " & To_String (HostName (NL)));
+      Put_Line ("HostName_From: " & To_String (HostName (From)));
       Put_Line ("Message: " & To_String (From_Message (Message)));
       L2Called := True;
 

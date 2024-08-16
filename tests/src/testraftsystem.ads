@@ -15,7 +15,16 @@ generic
     Debug_Test_Message : access procedure (Message : String);
 package testraftsystem is
 
+
+    type Epoch_Type is new Natural;
+
     procedure Initialize_System;
+
+    procedure Start_New_Epoch_And_Handle_Timers(Epoch : Epoch_Type);
+    procedure TimeOut_Election_Timer(SID : ServerID_Type);
+
+    function Get_Node(SID : ServerID_Type) return Raft.Node.Raft_Node_Access;
+    procedure Send_Pushed_Message;
 
 private
 
@@ -30,9 +39,10 @@ private
     Message_Buffer : aliased Message_Buffer_Access;
     Nodes          : Node_Array;
     NetHub         : aliased Net_Hub_Wide_Access;
+    NHBinding : NetHub_Binding_Access;
 
     procedure Link_Callback
-       (NL : in Net_Link; Message : in Stream_Element_Array);
+       (From,To : in Net_Link; Message : in Stream_Element_Array);
     procedure Set_Timer
        (SID : ServerID_Type; Timer : Timer_Type; newCounter : Natural);
     function Get_Timer_Counter

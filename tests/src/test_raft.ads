@@ -14,7 +14,7 @@ package Test_Raft is
   function Name (T : Raft_Tests) return Message_String;
   -- Provide name identifying the test case
 
-  -- Test Routines:
+  -- Unit Test Routines
   procedure Test_Storing_State (T : in out Test_Cases.Test_Case'Class);
   procedure Test_Init_Raft_Node (T : in out Test_Cases.Test_Case'Class);
   procedure Test_All_States (T : in out Test_Cases.Test_Case'Class);
@@ -24,7 +24,7 @@ package Test_Raft is
   procedure Test_Leader_Election (T : in out Test_Cases.Test_Case'Class);
 
 
-  -- Test Raft System
+  -- Test Raft System - using variable number of nodes
   procedure Test_RaftSystem (T : in out Test_Cases.Test_Case'Class);
 
 end Test_Raft;

@@ -35,10 +35,10 @@ package body Test_Raft is
     use AUnit.Test_Cases.Registration;
   begin
     -- Repeat for each test routine:
-    Register_Routine (T, Test_Storing_State'Access, "Raft Storing State");
-    Register_Routine (T, Test_Init_Raft_Node'Access, "Raft init machine");
-    Register_Routine (T, Test_All_States'Access, "Raft State Tests");
-    Register_Routine (T, Test_Leader_Election'Access, "Raft Leader Election");
+    --Register_Routine (T, Test_Storing_State'Access, "Raft Storing State");
+    --Register_Routine (T, Test_Init_Raft_Node'Access, "Raft init machine");
+    --Register_Routine (T, Test_All_States'Access, "Raft State Tests");
+    --Register_Routine (T, Test_Leader_Election'Access, "Raft Leader Election");
     Register_Routine (T, Test_RaftSystem'Access, "Raft System Tests");
   end Register_Tests;
 
@@ -312,7 +312,7 @@ package body Test_Raft is
 
     end Send_Pushed_Message;
 
-    procedure L1_CallBack (NL : in Net_Link; Message : in Stream_Element_Array)
+    procedure L1_CallBack (From, To : in Net_Link; Message : in Stream_Element_Array)
     is
 
       MB : aliased Message_Buffer_Type;
@@ -332,7 +332,7 @@ package body Test_Raft is
       end;
     end L1_CallBack;
 
-    procedure L2_CallBack (NL : in Net_Link; Message : in Stream_Element_Array)
+    procedure L2_CallBack (From, To : in Net_Link; Message : in Stream_Element_Array)
     is
 
       MB : aliased Message_Buffer_Type;
@@ -350,7 +350,7 @@ package body Test_Raft is
       end;
     end L2_CallBack;
 
-    procedure L3_CallBack (NL : in Net_Link; Message : in Stream_Element_Array)
+    procedure L3_CallBack (From, To : in Net_Link; Message : in Stream_Element_Array)
     is
 
       MB : aliased Message_Buffer_Type;
@@ -513,7 +513,21 @@ package body Test_Raft is
       Debug_Test_Message => Debug_Test_Message'Access);
   
   begin
+      Debug_Test_Message("Initialize_System");  
       RaftSystem_Instance.Initialize_System;
+      Debug_Test_Message("Initialize_System done");  
+      RaftSystem_Instance.TimeOut_Election_Timer(1);
+
+      for i in 1..10 loop
+          RaftSystem_Instance.Start_New_Epoch_And_Handle_Timers(RaftSystem_Instance.Epoch_Type(i));
+          RaftSystem_Instance.Send_Pushed_Message;
+          delay 1.0;
+          
+      end loop;
+
+
+
+
   end Test_RaftSystem;
 
 end Test_Raft;

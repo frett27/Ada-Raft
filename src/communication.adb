@@ -6,7 +6,7 @@ package body Communication is
     -- Create a link to a hub
     procedure Create_Link
        (H        :    Net_Hub_Wide_Access; HostName : in Unbounded_String;
-        Callback : in Message_Callback; Link : out Net_Link)
+        Callback : in Message_Received_For_Host_Callback; Link : out Net_Link)
     is
     begin
         Link :=
@@ -28,11 +28,16 @@ package body Communication is
     end Send;
 
     --- Register a callback procedure to be called when a message is received.
-    procedure Register (L : in out Net_Link; Message_CB : in Message_Callback)
+    procedure Register (L : in out Net_Link; Message_CB : in Message_Received_For_Host_Callback)
     is
     begin
         L.H.Register (L.HostName, Message_CB);
     end Register;
+
+    function Get_Host_Name(L : in Net_Link) return Unbounded_String is
+    begin
+        return L.HostName;
+    end Get_Host_Name;
 
     procedure Create (Buffer : out Message_Buffer_Type) is
     begin

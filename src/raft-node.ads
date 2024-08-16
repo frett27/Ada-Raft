@@ -158,7 +158,7 @@ package Raft.Node is
   type Raft_Node_Access is access all Raft_Node;
 
   procedure Handle_Message
-   (Machine : in out Raft_Node_Access; M : in Message_Type'Class);
+   (Machine : in Raft_Node_Access; M : in Message_Type'Class);
 
   procedure Create_Machine
      (Machine         : out Raft_Node_Access; 
@@ -178,6 +178,6 @@ private
     or else Machine_State.MState.Current_Raft_State = FOLLOWER;
 
   procedure Switch_To_State
-   (Machine : in out Raft_Node_Access; New_State : RaftWishedStateEnum);
+   (Machine : in Raft_Node_Access; New_State : RaftWishedStateEnum);
 
 end Raft.Node;

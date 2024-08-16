@@ -166,7 +166,7 @@ package body Raft.Node is
    end Start_Election_Entering_Candidate_State;
 
    procedure Check_Request_Term
-     (Machine   : in out Raft_Node_Access; M : in Message_Type'Class;
+     (Machine   : in Raft_Node_Access; M : in Message_Type'Class;
       New_State : in out RaftWishedStateEnum)
    is
       A : access Raft_State_Machine'Class := Machine.Current_Machine_State;
@@ -205,7 +205,7 @@ package body Raft.Node is
      (Machine_State : in out Raft_State_Machine_Leader);
 
    procedure Switch_To_State
-     (Machine : in out Raft_Node_Access; New_State : RaftWishedStateEnum)
+     (Machine : in Raft_Node_Access; New_State : RaftWishedStateEnum)
    is
    begin
       case New_State is
@@ -286,7 +286,7 @@ package body Raft.Node is
 
    --- General message handling
    procedure Handle_Message
-     (Machine : in out Raft_Node_Access; M : in Message_Type'Class)
+     (Machine : in Raft_Node_Access; M : in Message_Type'Class)
    is
       New_State : RaftWishedStateEnum             := NO_CHANGES;
       A : access Raft_State_Machine'Class := Machine.Current_Machine_State;

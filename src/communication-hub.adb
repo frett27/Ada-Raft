@@ -2,7 +2,7 @@ package body Communication.Hub is
 
     procedure Register
        (L        : in out LocalHub; Hostname : in Unbounded_String;
-        Callback : in     Message_Callback)
+        Callback : in     Message_Received_For_Host_Callback)
     is
         I : Positive  := Natural'Succ (L.Last);
         E : Hub_Entry := (Hostname, Callback);
@@ -19,7 +19,7 @@ package body Communication.Hub is
         for i in 1 .. L.Last + 1 loop
             if L.Entries (i).Hostname = To.HostName                
             then
-                L.Entries (i).Callback (Sender, Message);
+                L.Entries (i).Callback (Sender, To, Message);
             end if;
         end loop;
     end Send;
