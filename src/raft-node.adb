@@ -72,14 +72,12 @@ package body Raft.Node is
    -- Machine handling
 
    procedure Create_Machine
-     (Machine         : out Raft_Node_Access; 
-      SID : ServerID_Type;
-      Server_Number : ServerID_Type;
-      Timer_Start     :     Start_Timer; Timer_Cancel : Cancel_Timer;
-      Sending_Message :     Message_Sending)
+     (Machine       : out Raft_Node_Access; SID : ServerID_Type;
+      Server_Number :     ServerID_Type; Timer_Start : Start_Timer;
+      Timer_Cancel  :     Cancel_Timer; Sending_Message : Message_Sending)
    is
    begin
-      Machine := new Raft_Node(Server_Number);
+      Machine := new Raft_Node (Server_Number);
 
       declare
          RStruct : RaftNodeStruct_Access := Machine.State'Access;
@@ -130,7 +128,7 @@ package body Raft.Node is
       Machine_State.MState.Node_State.Voted_For    :=
         Machine_State.MState.Current_Id;
 
-      for I in 1..Machine_State.MState.Server_Number loop
+      for I in 1 .. Machine_State.MState.Server_Number loop
          declare
             Last_term : Term_Type :=
               Machine_State.MState.Node_State.Current_Term;
@@ -166,7 +164,7 @@ package body Raft.Node is
    end Start_Election_Entering_Candidate_State;
 
    procedure Check_Request_Term
-     (Machine   : in Raft_Node_Access; M : in Message_Type'Class;
+     (Machine   : in     Raft_Node_Access; M : in Message_Type'Class;
       New_State : in out RaftWishedStateEnum)
    is
       A : access Raft_State_Machine'Class := Machine.Current_Machine_State;
@@ -264,7 +262,7 @@ package body Raft.Node is
             -- define the leader state,
             -- all is unknown first
             Machine.State.Leader_State :=
-              (Server_Number => Machine.Server_Number,                
+              (Server_Number      => Machine.Server_Number,
                Next_Index_Strict  =>
                  (others => Machine.State.Node_State.Log_Upper_Bound_Strict),
                Match_Index_Strict =>
@@ -545,6 +543,7 @@ package body Raft.Node is
             Match_Index := M.Prev_Log_Index_Strict;
          else
 
+            -- adding elements
             declare
                To_Update_Index_on_Local_Log : TransactionLogIndex_Type :=
                  M.Prev_Log_Index_Strict;
@@ -556,6 +555,44 @@ package body Raft.Node is
                   TransactionLogIndex_Type'Image
                     (TransactionLogIndex_Type'Pred (M.Entries_Last_Strict)) &
                   " ]");
+
+               --  -- check if the last matches
+               --  declare
+               --     Last_Log_Index_To_check : TransactionLogIndex_Type :=
+               --       TransactionLogIndex_Type'Pred (M.Prev_Log_Index_Strict);
+               --     Last_Log_Term_To_check  : Term_Type := M.Prev_Log_Term;
+               --  begin
+               --     if Machine_State.MState.Node_State.Log_Upper_Bound_Strict >
+               --       Last_Log_Index_To_check
+               --     then
+               --        if Last_Log_Term_To_check /=
+               --          Machine_State.MState.Node_State.Log
+               --            (Last_Log_Index_To_check)
+               --            .T
+               --        then
+
+               --           Debug_Put_Line(Machine_State, "[Prev term does not match, return false in response]");
+               --           -- prev term does not match,
+               --           -- return false in response
+               --           Response_Value := False;
+               --           declare
+               --              Response : Append_Entries_Response :=
+               --                (Success               => False,
+               --                 SID => Machine_State.MState.Current_Id,
+               --                 Matching_Index_Strict =>
+               --                   TransactionLogIndex_Type'First,
+               --                 T                     =>
+               --                   Machine_State.MState.Node_State.Current_Term);
+               --           begin
+               --              -- ignore the message
+               --              Machine_State.Sending_Message
+               --                (Machine_State.MState.all, M.Leader_ID, Response);
+               --              return;
+               --           end;
+
+               --        end if;
+               --     end if;
+               --  end;
 
                Match_Index := To_Update_Index_on_Local_Log;
 
@@ -613,7 +650,6 @@ package body Raft.Node is
                 (M.Leader_Commit_Strict,
                  Machine_State.MState.Node_State.Log_Upper_Bound_Strict);
 
-            
             Debug_Put_Line
               (Machine_State,
                "[Updated commit to " &
@@ -647,8 +683,7 @@ package body Raft.Node is
               (Machine_State,
                "[     Matching_Index_Strict: " & Match_Index'Image & "]");
             Debug_Put_Line
-              (Machine_State,
-               "[     Success: " & Response_Value'Image & "]");
+              (Machine_State, "[     Success: " & Response_Value'Image & "]");
 
             Machine_State.Sending_Message
               (Machine_State.MState.all, M.Leader_ID, Response);
@@ -692,9 +727,7 @@ package body Raft.Node is
 
          end if;
       elsif M'Tag = Request_Vote_Response'Tag then
-         Debug_Put_Line
-           (Machine_State,
-            "[Candidate got a vote response]");
+         Debug_Put_Line (Machine_State, "[Candidate got a vote response]");
          declare
             RVR : Request_Vote_Response := Request_Vote_Response (M);
             Positive_Response_Count : Natural               := 0;
@@ -717,7 +750,7 @@ package body Raft.Node is
             end loop;
 
             if Positive_Response_Count >=
-                 Natural (Machine_State.MState.Server_Number - 1) / 2
+              Natural (Machine_State.MState.Server_Number - 1) / 2
             then
                -- go leader
                New_Raft_State_Machine := LEADER;
@@ -786,7 +819,7 @@ package body Raft.Node is
                  (Machine_State,
                   "[ leader " & Machine_State.MState.Current_Id'Image &
                   " evaluate the commit index]");
-               for Server in 1..Machine_State.MState.Server_Number loop
+               for Server in 1 .. Machine_State.MState.Server_Number loop
 
                   declare
                      Log_Index : TransactionLogIndex_Type :=
@@ -834,7 +867,7 @@ package body Raft.Node is
                   Debug_Put_Line
                     (Machine_State,
                      "[ leader " & Machine_State.MState.Current_Id'Image &
-                      " did not update commitIndex_strict, no majority]");
+                     " did not update commitIndex_strict, no majority]");
                end if;
 
             end if;
@@ -967,19 +1000,8 @@ package body Raft.Node is
       -- From election, sending an empty appendEntries to all
       -- to be reviewed
    begin
-      -- Send AppendEntries RPCs to all other servers
-      if Machine_State.MState.Node_State.Log_Upper_Bound_Strict /=
-        TransactionLogIndex_Type'First
-      then
-         -- there are entries
-         T :=
-           Machine_State.MState.Node_State.Log
-             (TransactionLogIndex_Type'Pred
-                (Machine_State.MState.Node_State.Log_Upper_Bound_Strict))
-             .T;
-      end if;
 
-      for Server in 1..Machine_State.MState.Server_Number loop
+      for Server in 1 .. Machine_State.MState.Server_Number loop
          if Server /= Machine_State.MState.Current_Id then
             declare
                AER : Append_Entries_Request;
@@ -992,6 +1014,17 @@ package body Raft.Node is
                  Machine_State.MState.Leader_State.Next_Index_Strict (Server);
 
             begin
+
+               if Prev_Node_Log_Index_Strict /= TransactionLogIndex_Type'First
+               then
+                  -- send the term of the last known index of the node
+                  T :=
+                    Machine_State.MState.Node_State.Log
+                      (TransactionLogIndex_Type'Pred
+                         (Prev_Node_Log_Index_Strict))
+                      .T;
+               end if;
+
                Debug_Put_Line
                  (Machine_State,
                   "[Leader Next Index: " & Leader_Next_Index_Strict'Image &
@@ -1007,6 +1040,7 @@ package body Raft.Node is
                        Natural (Leader_Next_Index_Strict) -
                        Natural (Prev_Node_Log_Index_Strict);
                   begin
+
                      for i in 0 .. Number_of_entries_To_Send - 1 loop
                         declare
                            LogIndex : TransactionLogIndex_Type :=
@@ -1038,11 +1072,8 @@ package body Raft.Node is
                        (Machine_State,
                         "[Sent Entries to Node " &
                         ServerID_Type'Image (Server) & "]");
-                     
-                     
-                     Debug_Put_Line
-                       (Machine_State,
-                        "[Entries: ");
+
+                     Debug_Put_Line (Machine_State, "[Entries: ");
                      for i in 0 .. Number_of_entries_To_Send - 1 loop
                         Put
                           (Entries

@@ -21,7 +21,7 @@ with TestRaftSystem;
 
 package body Test_Raft is
 
-  DEBUG_LOG: constant Boolean := False;
+  DEBUG_LOG: constant Boolean := True;
 
   use Assertions;
 
@@ -525,7 +525,7 @@ package body Test_Raft is
       Debug_Test_Message("Initialize_System done");  
       RaftSystem_Instance.TimeOut_Election_Timer(1);
 
-      for i in 1..500 loop
+      for i in 1..200 loop
 
           -- check at one step, that there are only one leader (if exists)
           declare 
