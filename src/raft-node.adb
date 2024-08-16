@@ -556,44 +556,6 @@ package body Raft.Node is
                     (TransactionLogIndex_Type'Pred (M.Entries_Last_Strict)) &
                   " ]");
 
-               --  -- check if the last matches
-               --  declare
-               --     Last_Log_Index_To_check : TransactionLogIndex_Type :=
-               --       TransactionLogIndex_Type'Pred (M.Prev_Log_Index_Strict);
-               --     Last_Log_Term_To_check  : Term_Type := M.Prev_Log_Term;
-               --  begin
-               --     if Machine_State.MState.Node_State.Log_Upper_Bound_Strict >
-               --       Last_Log_Index_To_check
-               --     then
-               --        if Last_Log_Term_To_check /=
-               --          Machine_State.MState.Node_State.Log
-               --            (Last_Log_Index_To_check)
-               --            .T
-               --        then
-
-               --           Debug_Put_Line(Machine_State, "[Prev term does not match, return false in response]");
-               --           -- prev term does not match,
-               --           -- return false in response
-               --           Response_Value := False;
-               --           declare
-               --              Response : Append_Entries_Response :=
-               --                (Success               => False,
-               --                 SID => Machine_State.MState.Current_Id,
-               --                 Matching_Index_Strict =>
-               --                   TransactionLogIndex_Type'First,
-               --                 T                     =>
-               --                   Machine_State.MState.Node_State.Current_Term);
-               --           begin
-               --              -- ignore the message
-               --              Machine_State.Sending_Message
-               --                (Machine_State.MState.all, M.Leader_ID, Response);
-               --              return;
-               --           end;
-
-               --        end if;
-               --     end if;
-               --  end;
-
                Match_Index := To_Update_Index_on_Local_Log;
 
                for I in
@@ -762,6 +724,7 @@ package body Raft.Node is
 
    end Handle_Message_Machine_State;
 
+   --- this function handle the append entries response
    procedure Handle_Leader_Append_Entries_Response
      (Machine_State : in out Raft_State_Machine_Leader;
       Res           : in     Append_Entries_Response)
@@ -853,23 +816,30 @@ package body Raft.Node is
                end loop;
 
                -- majority of nodes (except for the leader)
-               if count_match_index >=
-                 Natural (Machine_State.MState.Server_Number - 1) / 2
-               then
-                  Machine_State.MState.Commit_Index_Strict :=
-                    TransactionLogIndex_Type'Succ (C);
-                  Debug_Put_Line
-                    (Machine_State,
-                     "[ leader " & Machine_State.MState.Current_Id'Image &
-                     " updated commitIndex_strict to " &
-                     Machine_State.MState.Commit_Index_Strict'Image & "]");
-               else
-                  Debug_Put_Line
-                    (Machine_State,
-                     "[ leader " & Machine_State.MState.Current_Id'Image &
-                     " did not update commitIndex_strict, no majority]");
-               end if;
-
+               declare
+                  Majority_Count : Natural :=
+                    Natural (Machine_State.MState.Server_Number - 1) / 2;
+               begin
+                  if count_match_index >= Majority_Count then
+                     Machine_State.MState.Commit_Index_Strict :=
+                       TransactionLogIndex_Type'Succ (C);
+                     Debug_Put_Line
+                       (Machine_State,
+                        "[ LEADER " & Machine_State.MState.Current_Id'Image &
+                        " UPDATED COMMIT_INDEX_STRICT TO -- " &
+                        Machine_State.MState.Commit_Index_Strict'Image &
+                        " --, with majority of " &
+                        Natural'Image (Majority_Count) & " ]");
+                  else
+                     Debug_Put_Line
+                       (Machine_State,
+                        "[ LEADER " & Machine_State.MState.Current_Id'Image &
+                        " did not update commitIndex_strict, no majority, currently " &
+                        Natural'Image (count_match_index) &
+                        " responses, majority is at " &
+                        Natural'Image (Majority_Count) & " ]");
+                  end if;
+               end;
             end if;
 
          end;

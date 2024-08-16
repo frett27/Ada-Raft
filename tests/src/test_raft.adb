@@ -564,13 +564,16 @@ package body Test_Raft is
               MLeader : Raft_Node_Access;
             begin
               MLeader := RaftSystem_Instance.Get_Leader;
-              Debug_Test_Message ("Leader: " & ServerID_Type'Image (MLeader.State.Current_Id));
-              -- send command to leader
-              declare
-                CR : Request_Send_Command := (Command => Command_Type(i));
-              begin
-                Handle_Message(MLeader, CR);
-              end;
+              if (MLeader /= null) then
+                Debug_Test_Message ("Leader is : " & ServerID_Type'Image (MLeader.State.Current_Id));
+                -- send command to leader
+                declare
+                  CR : Request_Send_Command := (Command => Command_Type(i));
+                begin
+                  Debug_Test_Message("Sending the command "  & Command_Type'Image(CR.Command));
+                  Handle_Message(MLeader, CR);
+                end;
+              end if;
             end;
           end if;
 
