@@ -4,7 +4,7 @@ Ada Raft
 First Implementation of the raft protocol, 
 Only the first section of the raft protocol specification, is currently implemented.
 
-The implementation currently takes a bounded log, and entries are sent with a maximum of 10
+The implementation currently takes a bounded log, and entries are sent with a maximum of 10 (streams for sync)
 
 
 **DISCLAMER** :
