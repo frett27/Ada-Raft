@@ -2,20 +2,19 @@ Ada Raft
 ---------
 
 First Implementation of the raft protocol, 
-Only the first section of the raft protocol, is currently implemented.
+Only the first section of the raft protocol specification, is currently implemented.
 
-The implementation takes currently a bounded log, and entries are sent with a maximum of 10
+The implementation currently takes a bounded log, and entries are sent with a maximum of 10
 
 
 **DISCLAMER** :
 
-This project is NOT Working yet, and not fully qualified.
-This project is not currently usable in production, 
-implementation is in progress. There are still a lot of elements to complete.
+This project is NOT currently production proof for a correct use in production, 
+Tests are available, and for explorers, you can takes it, test it, and if suitable for your usage, go for it ! :)
 
-Messages are currently not sent using network, but with a message serialization on each Epoch (permitting to test more efficiently).
+Messages are currently not sent using network, it use message serialization on each Epoch (permitting to test more efficiently, the several implementation cases).
 
-A first architecture / implementation is done, may be changed in the future.
+A first architecture / implementation is prototyped and done, this may be evolved in the future, depending on readability and further concerns.
 
 Some documentation is available here, and will be improve with implementation: [doc](doc)
 
