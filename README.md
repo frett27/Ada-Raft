@@ -6,7 +6,7 @@ Famous concensu's based products are : zookeeper, etcd.
 
 Lots of products now embed concensus libraries, for redondancy and recovery. (cassendra, kafka, .. to name somes) 
 
-This repo host a basic implementation of the raft protocol using the Ada Langage, suitable for secure and high quality software. This repo has been an holiday toy to learn about the key details of Raft Implementation. 
+This repo host a basic implementation of the raft protocol using the Ada Langage, suitable for secure and high quality software. This repo has been an holiday toy to learn about the key details of Raft Implementation. Ada language permit is a very short time to achieve a first reliable implementation (in days).
 
 Only the first section of the raft protocol specification, is currently implemented.
 
