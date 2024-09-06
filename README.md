@@ -1,13 +1,18 @@
 Ada Raft
 ---------
 
-First Implementation of the raft protocol, 
+Raft is a concensus protocol (as paxos, zab, ..) , concensus permit to have global decision for a sets of agents / nodes / computers, behaving like a unique computer for decisions, see [https://raft.github.io/](https://raft.github.io/) for more general informations.
+Famous concensu's based products are : zookeeper, etcd
+Lots of products now embed concensus libraries, for redondancy and recovery. (cassendra, kafka, .. to name somes) 
+
+This repo host a basic implementation of the raft protocol using the Ada Langage, suitable for secure and high quality software. This repo has been an holiday toy to learn about the key details of Raft Implementation. 
+
 Only the first section of the raft protocol specification, is currently implemented.
 
-The implementation currently takes a bounded log, and entries are sent with a maximum of 10 (streams for sync)
+The implementation currently takes a bounded log, and entries are sent with a maximum of 10 (streams for sync, a fixed constant that can be changed at compilation time).
 
 
-**DISCLAMER** :
+**DISCLAMER** :-) , as usual :
 
 This project is NOT currently production proof for a correct use in production, 
 Tests are available, and for explorers, you can takes it, test it, and if suitable for your usage, go for it ! :)
