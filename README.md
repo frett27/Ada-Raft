@@ -43,4 +43,4 @@ seeing if prevote extension, and strategies for log transmission
 ChangeLog
 ==========
 
-15/08/2024 : Work on RaftSystem Testing (improve the readability of the test)
+15/08/2024 : Work on RaftSystem Testing (improve the readability of the tests)
