@@ -2,7 +2,8 @@ Ada Raft
 ---------
 
 Raft is a concensus protocol (as paxos, zab, ..) , concensus permit to have global decision for a sets of agents / nodes / computers, behaving like a unique computer for decisions, see [https://raft.github.io/](https://raft.github.io/) for more general informations.
-Famous concensu's based products are : zookeeper, etcd
+Famous concensu's based products are : zookeeper, etcd. 
+
 Lots of products now embed concensus libraries, for redondancy and recovery. (cassendra, kafka, .. to name somes) 
 
 This repo host a basic implementation of the raft protocol using the Ada Langage, suitable for secure and high quality software. This repo has been an holiday toy to learn about the key details of Raft Implementation. 
