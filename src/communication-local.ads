@@ -1,6 +1,6 @@
 with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
 
-package Communication.Hub is
+package Communication.Local is
 
     --- this is local communication, without any network involved
     type LocalHub is new Net_Hub with private;
@@ -31,4 +31,4 @@ private
         Entries : Hub_Entry_Array (1 .. N);
     end record;
 
-end Communication.Hub;
+end Communication.Local;

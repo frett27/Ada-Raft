@@ -1,4 +1,3 @@
-with Communication.Hub;
 with Ada.Text_IO; use Ada.Text_IO;
 
 package body Communication is

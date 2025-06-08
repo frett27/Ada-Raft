@@ -1,5 +1,5 @@
 with Communication;         use Communication;
-with Communication.Hub;     use Communication.Hub;
+with Communication.Local;   use Communication.Local;
 with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
 with Ada.Text_IO;           use Ada.Text_IO;
 with AUnit;                 use AUnit;

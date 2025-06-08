@@ -3,7 +3,7 @@ with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
 with AUnit;                 use AUnit;
 with AUnit.Assertions;      use AUnit.Assertions;
 with Communication;         use Communication;
-with Communication.Hub;     use Communication.Hub;
+with Communication.Local;   use Communication.Local;
 with Ada.Text_IO;           use Ada.Text_IO;
 with Ada.Tags;              use Ada.Tags;
 

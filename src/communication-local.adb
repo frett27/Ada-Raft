@@ -1,4 +1,4 @@
-package body Communication.Hub is
+package body Communication.Local is
 
     procedure Register
        (L        : in out LocalHub; Hostname : in Unbounded_String;
@@ -25,4 +25,4 @@ package body Communication.Hub is
     end Send;
 
 
-end Communication.Hub;
+end Communication.Local;

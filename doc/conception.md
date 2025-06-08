@@ -1,10 +1,8 @@
 
-# Raft protocol implementation design
+# Raft protocol implementation design concepts
 
 Design is oriented for the library beeing properly and easily tested. This lead to disable time, be able to control message ordering and delays.
-=> Time is an issue, to be able to test all conditions
-
-In this implementation, we separate the execution engine (handling messages and behaviours) from the behaviour implementation, this could provide using async/await implementation with message loop, 
+=> Time is an issue for proving the working of the protocol, as the protocol is based on timeouts. Evicting time, or providing a time variable (or epoch) then some test condition can be applied.
 
 
 
@@ -14,8 +12,71 @@ Timers are handled externally, this permit to make some edge and limit cases, to
 
 
 
-
 # Communication sub systems
+
+A couple of objects define the communication between Raft nodes. There are no links between communication objects and the Raft nodes. This is done externally with a message loop.
+
+
+```mermaid
+classDiagram
+
+    class Net_Hub {
+    
+    }
+
+    class Net_Link {
+        associated_message_callback
+        hostname
+        *Net_Hub
+    }
+
+    Net_Hub "1" -- "*" Net_Link
+    
+
+    class Raft_Node {
+    
+    }
+
+    Raft_Node --> Net_Hub
+    Raft_Node --> Net_Link
+```
+
+### Net_Hub
+
+The Net_Hub is the object that define the communication means and hosts access (naming). This object is defined along the raft_node. For each RaftNode, a NetLink object is created, referencing a callback procedure for the received messages.
+
+Net Links are created from the NetHub, using the Create_Link procedure.
+
+```
+    Create_Link(NetHub, HostName : in Unbounded_String, Callback : in    
+        Message_Received_For_Host_Callback; Link : out Net_Link);
+```
+the callback procedure is defined as,:
+
+```
+    procedure Link_Callback(From,To : in Net_Link; Message : in Stream_Element_Array);
+```
+To centralize the message reception, if multiple nodes are executed on the same process, the from and to parameters are used to determine the origin and destination of the message.
+
+
+
+### Sending a message
+
+
+- to send a message, this is done on the Net_Hub, as the nethub is properly constructed, one can send a message to a specific node. Using the Send procedure : 
+
+- the Net_Link is created from the NetHub , using the Create_Link
+- 
+- 
+
+```
+    Send(L: Net_Hub, Sender, To : in Net_Link, Message : in Message_Type'Class)
+```
+
+
+
+
+
 
 All Nodes are referenced with IDS for communication. These ids are the reference in all communications.
 

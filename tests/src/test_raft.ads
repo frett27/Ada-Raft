@@ -8,19 +8,21 @@ package Test_Raft is
 
   type Raft_Tests is new Test_Cases.Test_Case with null record;
 
-  procedure Register_Tests (T : in out Raft_Tests);
   -- Register routines to be run
+  procedure Register_Tests (T : in out Raft_Tests);
+  
 
-  function Name (T : Raft_Tests) return Message_String;
   -- Provide name identifying the test case
-
+  function Name (T : Raft_Tests) return Message_String;
+  
   -- Unit Test Routines
+
+  -- test storing state in a file
   procedure Test_Storing_State (T : in out Test_Cases.Test_Case'Class);
   procedure Test_Init_Raft_Node (T : in out Test_Cases.Test_Case'Class);
   procedure Test_All_States (T : in out Test_Cases.Test_Case'Class);
 
   -- Protocols tests
-
   procedure Test_Leader_Election (T : in out Test_Cases.Test_Case'Class);
 
 
