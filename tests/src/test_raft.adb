@@ -57,6 +57,28 @@ package body Test_Raft is
    end Name;
 
    --------------------------------------------------------------------------------------------
+   
+   -- Override the abstract procedures with 'overriding' keyword
+   overriding
+   procedure Write_Command(Stream : not null access Root_Stream_Type'Class; 
+                          Item : Test_Command) is
+   begin
+      Integer'Write(Stream, Item.Value);
+   end Write_Command;
+   
+   overriding
+   procedure Read_Command(Stream : not null access Root_Stream_Type'Class; 
+                         Item : out Test_Command) is
+   begin
+      Integer'Read(Stream, Item.Value);
+   end Read_Command;
+   
+   overriding
+   function To_String(Item : Test_Command) return String is
+   begin
+      return "TestCmd(" & Item.Value'Image & ")";
+   end To_String;
+
 
    -- Test Routines:
    procedure Test_Storing_State (T : in out Test_Cases.Test_Case'Class) is
@@ -64,7 +86,7 @@ package body Test_Raft is
       SERVER_NUMBER : constant ServerID_Type := 3;
 
       Transaction : TLog_Type (TransactionLogIndex_Type'First .. MAX_LOG) :=
-        (others => (T => 0, C => 0));
+        (others => (T => 0, C => null));
 
       SState : Raft_Node_State :=
         Raft_Node_State'
@@ -554,7 +576,7 @@ package body Test_Raft is
 
                Debug_Test_Message ("********* >>Append Command to leader: ");
                declare
-                  CR : Request_Send_Command := (Command => 1);
+                  CR : Request_Send_Command := (Command => new Test_Command'(Value => 1));
                begin
                   Handle_Message (MLeader, CR);
                end;
@@ -639,11 +661,11 @@ package body Test_Raft is
                   -- send command to leader
                   declare
                      CR : Request_Send_Command :=
-                       (Command => Command_Type (i));
+                       (Command => new Test_Command'(Value => i));
                   begin
                      Debug_Test_Message
                        ("Sending the command "
-                        & Command_Type'Image (CR.Command));
+                        & Image (CR.Command));
                      Handle_Message (MLeader, CR);
                   end;
                end if;

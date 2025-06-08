@@ -1,3 +1,5 @@
+with Ada.Streams; use Ada.Streams;
+
 package Raft is
 
    pragma Preelaborate;
@@ -17,9 +19,21 @@ package Raft is
 
    type TransactionLogIndex_Type is new Positive;
 
-   -- command definition and implementation
-   type Command_Type is new Natural;
-
+    
+   -- Default concrete command type for basic usage
+   type Command_Type_Implementation is abstract tagged null record;
+   
+   -- Implement the abstract operations for the default command type
+   
+   procedure Write_Command(Stream : not null access Root_Stream_Type'Class; 
+                          Item : Command_Type_Implementation) is abstract;
+   
+   
+   procedure Read_Command(Stream : not null access Root_Stream_Type'Class; 
+                         Item : out Command_Type_Implementation) is abstract;
+   
+   type Command_Type is access all Command_Type_Implementation'Class;
+   
    type Command_And_Term_Entry_Type is record
       C : Command_Type;
       T : Term_Type;
@@ -34,5 +48,11 @@ package Raft is
                 .. TransactionLogIndex_Type'First + 10);
 
    type TLog_Access_Type is access all TLog_Type;
+
+   -- Add this to the abstract type
+   function To_String(Item : Command_Type_Implementation) return String is abstract;
+   
+   -- Image function for Command_Type (access type)
+   function Image(Item : Command_Type) return String;
 
 end Raft;

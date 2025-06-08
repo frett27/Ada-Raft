@@ -10,6 +10,24 @@ with Ada.IO_Exceptions;     use Ada.IO_Exceptions;
 
 package body TestRaftSystem is
 
+
+
+   -- Add this function to convert bytes to hex
+   function To_Hex_String(Data : Stream_Element_Array) return String is
+      Hex_Chars : constant String := "0123456789ABCDEF";
+      Result : String(1 .. Data'Length * 2);
+      Index : Natural := 1;
+   begin
+      for I in Data'Range loop
+         Result(Index) := Hex_Chars(Natural(Data(I) / 16) + 1);
+         Result(Index + 1) := Hex_Chars(Natural(Data(I) mod 16) + 1);
+         Index := Index + 2;
+      end loop;
+      return Result;
+   end To_Hex_String;
+
+
+
     procedure Link_Callback
        (From, To : in Net_Link; Message : in Stream_Element_Array)
     is
@@ -26,7 +44,9 @@ package body TestRaftSystem is
         begin
             Debug_Test_Message
                ("Deliver_Message_To_Node: " & To_String (Get_Host_Name (To)) &
-                " : " & Ada.tags.Expanded_Name (M'Tag));
+                " : " & Ada.tags.Expanded_Name (M'Tag) & " Serialized Message length : " & Message'Length'Image);
+            Debug_Test_Message ("   Serialized Message: " & To_Hex_String (Message));
+
             Handle_Message (Nodes (SID_To), M);
         end;
 
