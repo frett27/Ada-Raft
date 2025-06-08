@@ -8,7 +8,7 @@ with Ada.Numerics.Float_Random;
 with Ada.Exceptions;        use Ada.Exceptions;
 with Ada.IO_Exceptions;     use Ada.IO_Exceptions;
 
-package body testraftsystem is
+package body TestRaftSystem is
 
     procedure Link_Callback
        (From, To : in Net_Link; Message : in Stream_Element_Array)
@@ -268,4 +268,4 @@ package body testraftsystem is
         return null;
     end Get_Leader;
 
-end testraftsystem;
+end TestRaftSystem;
