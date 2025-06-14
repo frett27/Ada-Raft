@@ -39,6 +39,9 @@ package TestRaftSystem is
     -- get the leader, return null if no leader found
     function Get_Leader return Raft.Node.Raft_Node_Access;
 
+    -- validate the commit state of the system
+    procedure Validate_All_Nodes_Committed_TLogs_Entre_Current_Term_And_Current_Index(Check_Result: out Boolean; Number_Of_Checked_Node_Is_Consistent: out Natural);
+
     SYSTEM_SERVER_NUMBER : constant ServerID_Type := Server_Number;
 
 private

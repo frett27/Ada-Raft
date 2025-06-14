@@ -10,6 +10,14 @@ package body Test_Communication is
 
   use Assertions;
 
+
+  -- Register routines to be run
+
+  function Name (T : Communication_Test) return Message_String is
+  begin
+    return Format ("Communication Tests");
+  end Name;
+
   procedure Register_Tests (T : in out Communication_Test) is
     use AUnit.Test_Cases.Registration;
   begin
@@ -17,6 +25,8 @@ package body Test_Communication is
     Register_Routine (T, Test_Send_Message'Access, "Test Send Message");
     Register_Routine (T, Test_In_Memory_Buffer'Access, "Test Serialization");
   end Register_Tests;
+
+   ----------------------------------------------------------------
 
   function To_Message (U : Unbounded_String) return Stream_Element_Array is
     MB : aliased Message_Buffer_Type;
@@ -38,13 +48,6 @@ package body Test_Communication is
       return m.S;
     end;
   end From_Message;
-
-  -- Register routines to be run
-
-  function Name (T : Communication_Test) return Message_String is
-  begin
-    return Format ("Communication Tests");
-  end Name;
 
   -- Test Buffer Serialization
   procedure Test_In_Memory_Buffer (T : in out Test_Cases.Test_Case'Class) is

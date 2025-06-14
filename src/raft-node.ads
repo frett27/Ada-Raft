@@ -188,6 +188,20 @@ package Raft.Node is
       Timer_Cancel    : Cancel_Timer;
       Sending_Message : Message_Sending);
 
+   -- Add these procedure declarations at the package body level
+   procedure Handle_Leader_Send_Append_Entries
+     (Machine_State : in out Raft_State_Machine_Leader);
+
+   procedure Handle_Leader_Append_Entries_Response
+     (Machine_State : in out Raft_State_Machine_Leader;
+      Res : in Append_Entries_Response);
+
+   procedure Handle_Leader_Send_Command
+     (Machine_State : in out Raft_State_Machine_Leader;
+      RSC : in Request_Send_Command)
+      with
+     Pre => Machine_State.MState.Current_Raft_State = LEADER;
+
 private
 
    -- handle an append entries request (implementation for candidate and follower)
@@ -200,6 +214,18 @@ private
        or else Machine_State.MState.Current_Raft_State = FOLLOWER;
 
    procedure Switch_To_State
-     (Machine : in Raft_Node_Access; New_State : RaftWishedStateEnum);
+     (Machine : in Raft_Node_Access;
+      New_State : RaftWishedStateEnum);
+
+   procedure Start_Election_Entering_Candidate_State
+     (Machine_State : in out Raft_State_Machine_Candidate)
+     with
+     Pre => Machine_State.MState.Current_Raft_State = CANDIDATE;
+     
+
+   procedure Check_Request_Term
+     (Machine : in Raft_Node_Access;
+      M : in Message_Type'Class;
+      New_State : in out RaftWishedStateEnum);
 
 end Raft.Node;

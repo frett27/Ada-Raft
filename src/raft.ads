@@ -6,7 +6,6 @@ package Raft is
 
    type ServerID_Type is new Natural;
 
-   ALL_SERVER_SENDING : constant ServerID_Type := 0;
    NULL_SERVER        : constant ServerID_Type := 0;
 
    --  ServerNumber : constant ServerID_Type := 3;

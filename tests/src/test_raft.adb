@@ -658,6 +658,7 @@ package body Test_Raft is
                   Debug_Test_Message
                     ("Leader is : "
                      & ServerID_Type'Image (MLeader.State.Current_Id));
+                  
                   -- send command to leader
                   declare
                      CR : Request_Send_Command :=
@@ -676,6 +677,23 @@ package body Test_Raft is
            (RaftSystem_Instance.Epoch_Type (i));
          RaftSystem_Instance.Deliver_Pushed_Message;
          -- delay 0.2;
+
+
+         -- check the commit state of the system   
+         declare
+            Check_Result : Boolean;
+            Number_Of_Checked_Node_Is_Consistent : Natural := 0;
+         begin
+            RaftSystem_Instance.Validate_All_Nodes_Committed_TLogs_Entre_Current_Term_And_Current_Index(Check_Result, Number_Of_Checked_Node_Is_Consistent);
+            if not Check_Result then
+               Debug_Test_Message ("CONSISTENCY CHECK ERROR: All nodes committed logs between current term and current index are not consistent");
+               raise Program_Error with "CONSISTENCY CHECK ERROR: All nodes committed logs between current term and current index are not consistent"; 
+            end if;
+         
+
+         Debug_Test_Message ("CONSISTENCY CHECK : All nodes committed logs between current term and current index are consistent");
+         Debug_Test_Message ("Number of checked nodes: " & Number_Of_Checked_Node_Is_Consistent'Image);
+         end;
       end loop;
 
    end Test_RaftSystem;

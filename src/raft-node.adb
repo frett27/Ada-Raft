@@ -119,8 +119,7 @@ package body Raft.Node is
    end Create_Machine;
 
    procedure Start_Election_Entering_Candidate_State
-     (Machine_State : in out Raft_State_Machine_Candidate) with
-     Pre => Machine_State.MState.Current_Raft_State = CANDIDATE
+     (Machine_State : in out Raft_State_Machine_Candidate) 
    is
    begin
       -- §5.2
@@ -199,9 +198,6 @@ package body Raft.Node is
 
       end if;
    end Check_Request_Term;
-
-   procedure Handle_Leader_Send_Append_Entries
-     (Machine_State : in out Raft_State_Machine_Leader);
 
    procedure Switch_To_State
      (Machine : in Raft_Node_Access; New_State : RaftWishedStateEnum)
@@ -867,11 +863,6 @@ package body Raft.Node is
 
       end if;
    end Handle_Leader_Append_Entries_Response;
-
-   procedure Handle_Leader_Send_Command
-     (Machine_State : in out Raft_State_Machine_Leader;
-      RSC           : in     Request_Send_Command) with
-     Pre => Machine_State.MState.Current_Raft_State = LEADER;
 
    overriding procedure Handle_Message_Machine_State
      (Machine_State          : in out Raft_State_Machine_Leader;

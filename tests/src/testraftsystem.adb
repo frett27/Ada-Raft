@@ -288,4 +288,62 @@ package body TestRaftSystem is
         return null;
     end Get_Leader;
 
+    procedure Validate_All_Nodes_Committed_TLogs_Entre_Current_Term_And_Current_Index(Check_Result: out Boolean; Number_Of_Checked_Node_Is_Consistent: out Natural) is
+        Number_Of_Checked_Node_Is_Consistent_Local : Natural := 0;
+    
+    begin
+        -- check if there is a leader
+        if Get_Leader = null then
+            Debug_Test_Message("No leader, cannot check consistency");
+            Check_Result := True;
+            Number_Of_Checked_Node_Is_Consistent := 0;
+            return;
+        end if;
+
+        -- get leader current term and current index   
+        declare
+            Leader_Node_State : RaftNodeStruct := Get_Leader.State;
+            Leader_Term : Term_Type := Leader_Node_State.Node_State.Current_Term;
+            Leader_Commit_Index : TransactionLogIndex_Type := Leader_Node_State.Commit_Index_Strict;
+        begin
+            Debug_Test_Message ("Leader term: " & Leader_Term'Image);
+            Debug_Test_Message ("Leader commit index: " & Leader_Commit_Index'Image);
+            for i in 1 .. SERVER_NUMBER loop
+                declare
+                    Node_State : RaftNodeStruct := Nodes (i).State;
+                    Node_Term : Term_Type := Node_State.Node_State.Current_Term;
+                    Node_Commit_Index : TransactionLogIndex_Type := Node_State.Commit_Index_Strict;
+                begin
+                    Debug_Test_Message ("Node " & i'Image & " term: " & Node_Term'Image & " commit index: " & Node_Commit_Index'Image);
+                    if Node_Term = Leader_Term and Node_Commit_Index <= Leader_Commit_Index then
+                        --check the logs in the node, and check that all local commited logs are in the leader logs
+                        if Node_Commit_Index > 0 then
+                        for j in TransactionLogIndex_Type'First .. Node_Commit_Index-1 loop
+                            -- if node committed logs are not in the leader logs, return false
+                            if Node_State.Node_State.Log (j) /= Leader_Node_State.Node_State.Log (j) then
+                                Debug_Test_Message ("CONSISTENCY ERROR: Node " & i'Image & " has a different log at index " & j'Image);
+                                -- Dump both logs for comparison
+                                Debug_Test_Message ("CONSISTENCY CHECK ERROR: Node " & i'Image & " log entry " & j'Image & ": " & 
+                                    "(Term: " & Node_State.Node_State.Log(j).T'Image & 
+                                    ", Command: " & Image(Node_State.Node_State.Log(j).C) & ")");
+                                Debug_Test_Message ("CONSISTENCY CHECK ERROR: Leader log entry " & j'Image & ": " & 
+                                    "(Term: " & Leader_Node_State.Node_State.Log(j).T'Image & 
+                                    ", Command: " & Image(Leader_Node_State.Node_State.Log(j).C) & ")");
+                                Check_Result := False;
+                                return;
+                            end if;
+                        end loop;
+                        Number_Of_Checked_Node_Is_Consistent_Local := Number_Of_Checked_Node_Is_Consistent_Local + 1;
+                        end if;
+                    end if;
+                end;
+            end loop; 
+            Debug_Test_Message ("CONSISTENCY CHECK : All nodes committed logs between current term and current index are consistent");
+            Debug_Test_Message ("Number of checked nodes: " & Number_Of_Checked_Node_Is_Consistent_Local'Image);
+            Check_Result := True;
+            Number_Of_Checked_Node_Is_Consistent := Number_Of_Checked_Node_Is_Consistent_Local;
+            return;
+        end;
+    end Validate_All_Nodes_Committed_TLogs_Entre_Current_Term_And_Current_Index;
+
 end TestRaftSystem;
