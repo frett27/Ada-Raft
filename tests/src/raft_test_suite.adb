@@ -2,6 +2,9 @@ with AUnit.Test_Suites;
 With Test_Communication;
 With Test_Raft;
 with Test_Messages;
+with Test_Message_Buffer;
+with Test_Raft_States;
+with Test_Raft_Protocol;
 
 package body Raft_Test_Suite is
 
@@ -14,11 +17,17 @@ package body Raft_Test_Suite is
    Test_Send_Message : aliased Test_Communication.Communication_Test;
    Raft_Test : aliased Test_Raft.Raft_Tests;
    Messages_Tests : aliased Test_Messages.Messages_Tests;
+   Message_Buffer_Tests : aliased Test_Message_Buffer.Message_Buffer_Tests;
+   Raft_States_Tests : aliased Test_Raft_States.Raft_States_Tests;
+   Raft_Protocol_Tests : aliased Test_Raft_Protocol.Raft_Protocol_Tests;
 
 
    function Suite return Access_Test_Suite is
    begin
       --Add_Test (Result'Access, Test_Send_Message'Access);
+      Add_Test (Result'Access, Raft_States_Tests'Access);
+      Add_Test (Result'Access, Raft_Protocol_Tests'Access);
+      Add_Test (Result'Access, Message_Buffer_Tests'Access);
       Add_Test (Result'Access, Raft_Test'Access);
       --Add_Test (Result'Access, Messages_Tests'Access);
 

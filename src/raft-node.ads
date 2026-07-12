@@ -207,8 +207,8 @@ package Raft.Node is
 
    procedure Handle_Leader_Send_Command
      (Machine_State : in out Raft_State_Machine_Leader;
-      RSC : Request_Send_Command)
-      with
+      RSC           : Request_Send_Command)
+   with
      Pre => Machine_State.MState.Current_Raft_State = LEADER;
 
 private
@@ -229,7 +229,7 @@ private
 
    procedure Start_Election_Entering_Candidate_State
      (Machine_State : in out Raft_State_Machine_Candidate)
-     with
+   with
      Pre => Machine_State.MState.Current_Raft_State = CANDIDATE;
 
    procedure Check_Request_Term

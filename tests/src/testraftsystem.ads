@@ -1,5 +1,6 @@
 with Raft.Node;         use Raft.Node;
 with Raft.Comm;         use Raft.Comm;
+with Raft.Messages;     use Raft.Messages;
 with Communication;     use Communication;
 with Communication.Local; use Communication.Local;
 with Raft;              use Raft;
@@ -28,10 +29,69 @@ package TestRaftSystem is
     procedure Start_New_Epoch_And_Handle_Timers(Epoch : Epoch_Type);
 
     -- time out the election timer
-    procedure TimeOut_Election_Timer(SID : ServerID_Type);
+    procedure TimeOut_SID_Election_Timer(SID : ServerID_Type);
    
     -- get the node
     function Get_Node(SID : ServerID_Type) return Raft.Node.Raft_Node_Access;
+
+    function Node_State (SID : ServerID_Type) return RaftStateEnum;
+
+    function Node_Term (SID : ServerID_Type) return Term_Type;
+
+    function Node_Voted_For (SID : ServerID_Type) return ServerID_Type;
+
+    function Count_Nodes_In_State (S : RaftStateEnum) return Natural;
+
+    function Node_Commit_Index (SID : ServerID_Type)
+      return TransactionLogIndex_Type;
+
+    function Node_Log_Upper_Bound (SID : ServerID_Type)
+      return TransactionLogIndex_Type;
+
+    function Node_Log_Term
+      (SID : ServerID_Type; Index : TransactionLogIndex_Type) return Term_Type;
+
+    function Leader_Id return ServerID_Type;
+
+    procedure Set_Node_Term (SID : ServerID_Type; Term : Term_Type);
+
+    procedure Set_Node_Voted_For
+      (SID : ServerID_Type; Voted_For : ServerID_Type);
+
+    procedure Set_Node_Log_Entry
+      (SID   : ServerID_Type;
+       Index : TransactionLogIndex_Type;
+       Term  : Term_Type;
+       Log_Entry : Command_And_Term_Entry_Type);
+
+    procedure Set_Node_Log_Upper_Bound
+      (SID : ServerID_Type; Bound : TransactionLogIndex_Type);
+
+    procedure Inject_Message (SID : ServerID_Type; M : Message_Type'Class);
+
+    procedure Send_Client_Command
+      (Leader_SID : ServerID_Type; Command : Command_Type);
+
+    procedure Run_Steps (Count : Natural);
+
+    function Elect_Leader
+      (Starter : ServerID_Type; Max_Epochs : Natural) return ServerID_Type;
+
+    procedure Read_Next_Buffered_Message
+      (From_SID, To_SID : out ServerID_Type;
+       M      : out Message_Type'Class;
+       Found  : out Boolean);
+
+    function Dequeue_Request_Vote
+      (From_SID, To_SID : out ServerID_Type; Found : out Boolean)
+       return Request_Vote_Request;
+
+    function Node_Last_Log_Index (SID : ServerID_Type)
+      return TransactionLogIndex_Type;
+
+    procedure Process_Pending_Messages;
+
+    procedure Advance_One_Epoch (Epoch : Epoch_Type);
 
     -- deliver a pushed message
     procedure Deliver_Pushed_Message;

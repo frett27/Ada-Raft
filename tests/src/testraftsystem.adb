@@ -3,6 +3,7 @@ with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
 with Ada.Streams;           use Ada.Streams;
 with Ada.Tags;
 with Raft.Node;             use Raft.Node;
+with Raft.Messages;         use Raft.Messages;
 with Ada.Numerics;          use Ada.Numerics;
 with Ada.Numerics.Float_Random;
 with Ada.Exceptions;        use Ada.Exceptions;
@@ -70,11 +71,207 @@ package body TestRaftSystem is
        (SID : ServerID_Type; Timer : Timer_Type) return Natural
     is
     begin
-        for i in Timers'Range (1) loop
-            return Timers (i, Timer);
-        end loop;
-        return 0;
+        return Timers (SID, Timer);
     end Get_Timer_Counter;
+
+    function Node_State (SID : ServerID_Type) return RaftStateEnum is
+    begin
+        return Nodes (SID).State.Current_Raft_State;
+    end Node_State;
+
+    function Node_Term (SID : ServerID_Type) return Term_Type is
+    begin
+        return Nodes (SID).State.Node_State.Current_Term;
+    end Node_Term;
+
+    function Node_Voted_For (SID : ServerID_Type) return ServerID_Type is
+    begin
+        return Nodes (SID).State.Node_State.Voted_For;
+    end Node_Voted_For;
+
+    function Count_Nodes_In_State (S : RaftStateEnum) return Natural is
+       Count : Natural := 0;
+    begin
+       for I in 1 .. SERVER_NUMBER loop
+          if Nodes (I).State.Current_Raft_State = S then
+             Count := Count + 1;
+          end if;
+       end loop;
+       return Count;
+    end Count_Nodes_In_State;
+
+    function Node_Commit_Index (SID : ServerID_Type)
+      return TransactionLogIndex_Type
+    is
+    begin
+       return Nodes (SID).State.Commit_Index_Strict;
+    end Node_Commit_Index;
+
+    function Node_Log_Upper_Bound (SID : ServerID_Type)
+      return TransactionLogIndex_Type
+    is
+    begin
+       return Nodes (SID).State.Node_State.Log_Upper_Bound_Strict;
+    end Node_Log_Upper_Bound;
+
+    function Node_Log_Term
+      (SID : ServerID_Type; Index : TransactionLogIndex_Type) return Term_Type
+    is
+    begin
+       return Nodes (SID).State.Node_State.Log (Index).T;
+    end Node_Log_Term;
+
+    function Leader_Id return ServerID_Type is
+    begin
+       for I in 1 .. SERVER_NUMBER loop
+          if Nodes (I).State.Current_Raft_State = Leader then
+             return I;
+          end if;
+       end loop;
+       return NULL_SERVER;
+    end Leader_Id;
+
+    procedure Set_Node_Term (SID : ServerID_Type; Term : Term_Type) is
+    begin
+       Nodes (SID).State.Node_State.Current_Term := Term;
+    end Set_Node_Term;
+
+    procedure Set_Node_Voted_For
+      (SID : ServerID_Type; Voted_For : ServerID_Type)
+    is
+    begin
+       Nodes (SID).State.Node_State.Voted_For := Voted_For;
+    end Set_Node_Voted_For;
+
+    procedure Set_Node_Log_Entry
+      (SID   : ServerID_Type;
+       Index : TransactionLogIndex_Type;
+       Term  : Term_Type;
+       Log_Entry : Command_And_Term_Entry_Type)
+    is
+    begin
+       Nodes (SID).State.Node_State.Log (Index) := Log_Entry;
+       Nodes (SID).State.Node_State.Log (Index).T := Term;
+    end Set_Node_Log_Entry;
+
+    procedure Set_Node_Log_Upper_Bound
+      (SID : ServerID_Type; Bound : TransactionLogIndex_Type)
+    is
+    begin
+       Nodes (SID).State.Node_State.Log_Upper_Bound_Strict := Bound;
+    end Set_Node_Log_Upper_Bound;
+
+    procedure Inject_Message (SID : ServerID_Type; M : Message_Type'Class) is
+    begin
+       Handle_Message (Nodes (SID), M);
+    end Inject_Message;
+
+    procedure Send_Client_Command
+      (Leader_SID : ServerID_Type; Command : Command_Type)
+    is
+       Req : Request_Send_Command := (Command => Command);
+    begin
+       Inject_Message (Leader_SID, Req);
+    end Send_Client_Command;
+
+    procedure Run_Steps (Count : Natural) is
+    begin
+       for Step in 1 .. Count loop
+          Process_Pending_Messages;
+          Advance_One_Epoch (Epoch_Type (Step));
+       end loop;
+    end Run_Steps;
+
+    function Elect_Leader
+      (Starter : ServerID_Type; Max_Epochs : Natural) return ServerID_Type
+    is
+    begin
+       TimeOut_SID_Election_Timer (Starter);
+       Process_Pending_Messages;
+
+       for Epoch in 1 .. Max_Epochs loop
+          Process_Pending_Messages;
+          Advance_One_Epoch (Epoch_Type (Epoch));
+
+          if Leader_Id /= NULL_SERVER then
+             return Leader_Id;
+          end if;
+       end loop;
+
+       return NULL_SERVER;
+    end Elect_Leader;
+
+    function Node_Last_Log_Index (SID : ServerID_Type)
+      return TransactionLogIndex_Type
+    is
+       Upper : constant TransactionLogIndex_Type :=
+         Nodes (SID).State.Node_State.Log_Upper_Bound_Strict;
+    begin
+       if Upper = TransactionLogIndex_Type'First then
+          return TransactionLogIndex_Type'First;
+       end if;
+
+       return TransactionLogIndex_Type'Pred (Upper);
+    end Node_Last_Log_Index;
+
+    procedure Read_Next_Buffered_Message
+      (From_SID, To_SID : out ServerID_Type;
+       M      : out Message_Type'Class;
+       Found  : out Boolean)
+    is
+    begin
+       begin
+          From_SID := ServerID_Type'Input (Message_Buffer);
+          To_SID   := ServerID_Type'Input (Message_Buffer);
+          declare
+             Local : Message_Type'Class :=
+               Message_Type'Class'Input (Message_Buffer);
+          begin
+             M     := Local;
+             Found := True;
+          end;
+       exception
+          when Ada.IO_Exceptions.End_Error =>
+             Found := False;
+       end;
+    end Read_Next_Buffered_Message;
+
+    function Dequeue_Request_Vote
+      (From_SID, To_SID : out ServerID_Type; Found : out Boolean)
+       return Request_Vote_Request
+    is
+       Empty : constant Request_Vote_Request :=
+         (Candidate_Term        => Term_Type (0),
+          Candidate_ID          => NULL_SERVER,
+          Last_Log_Index_Strict => TransactionLogIndex_Type'First,
+          Last_Log_Term         => Term_Type (0));
+    begin
+       begin
+          From_SID := ServerID_Type'Input (Message_Buffer);
+          To_SID   := ServerID_Type'Input (Message_Buffer);
+          declare
+             M : Message_Type'Class :=
+               Message_Type'Class'Input (Message_Buffer);
+          begin
+             Found := True;
+             return Request_Vote_Request (M);
+          end;
+       exception
+          when Ada.IO_Exceptions.End_Error =>
+             Found := False;
+             return Empty;
+       end;
+    end Dequeue_Request_Vote;
+
+    procedure Process_Pending_Messages is
+    begin
+       Deliver_Pushed_Message;
+    end Process_Pending_Messages;
+
+    procedure Advance_One_Epoch (Epoch : Epoch_Type) is
+    begin
+       Start_New_Epoch_And_Handle_Timers (Epoch);
+    end Advance_One_Epoch;
 
     function Decrement_Timer_Counter
        (SID : ServerID_Type; Timer : Timer_Type; decrement : Natural)
@@ -269,14 +466,14 @@ package body TestRaftSystem is
 
     end Start_New_Epoch_And_Handle_Timers;
 
-    procedure TimeOut_Election_Timer (SID : ServerID_Type) is
+    procedure TimeOut_SID_Election_Timer (SID : ServerID_Type) is
         T_Election_Timeout : Timer_Timeout :=
            (Timer_Instance => Election_Timer);
     begin
         Debug_Test_Message
-           ("TimeOut_Election_Timer: " & ServerID_Type'Image (SID));
+           ("TimeOut_SID_Election_Timer: " & ServerID_Type'Image (SID));
         Handle_Message (Get_Node (SID), T_Election_Timeout);
-    end TimeOut_Election_Timer;
+    end TimeOut_SID_Election_Timer;
 
     function Get_Leader return Raft.Node.Raft_Node_Access is
     begin

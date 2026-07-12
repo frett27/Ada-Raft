@@ -23,10 +23,18 @@ with Ada.Numerics.Float_Random;
 
 -- test system
 with TestRaftSystem;
+with Test_Banners;
 
 package body Test_Raft is
 
    DEBUG_LOG : constant Boolean := True;
+
+   Suite_Name : constant String := "Raft Structures Tests";
+
+   procedure Banner (Test_Name : String) is
+   begin
+      Test_Banners.Begin_Test (Suite_Name, Test_Name);
+   end Banner;
 
    use Assertions;
 
@@ -45,7 +53,7 @@ package body Test_Raft is
       --Register_Routine (T, Test_Storing_State'Access, "Raft Storing State");
       --Register_Routine (T, Test_Init_Raft_Node'Access, "Raft init machine");
       --Register_Routine (T, Test_All_States'Access, "Raft State Tests");
-      --Register_Routine (T, Test_Leader_Election'Access, "Raft Leader Election");
+      Register_Routine (T, Test_Leader_Election'Access, "Raft Leader Election");
       Register_Routine (T, Test_RaftSystem'Access, "Raft System Tests");
    end Register_Tests;
 
@@ -187,405 +195,63 @@ package body Test_Raft is
 
    end Test_All_States;
 
-   type Timer_Holder is record
-      SID     : ServerID_Type;
-      Timer   : Timer_Type;
-      Counter : Natural := 0;
-   end record;
-
-   -- start with three nodes, by default
+   --  Integration test: election, forced re-elections, and client commands.
    procedure Test_Leader_Election (T : in out Test_Cases.Test_Case'Class) is
+      package RS is new TestRaftSystem
+        (SERVER_NUMBER      => 3,
+         Debug_Test_Message => Debug_Test_Message'Access);
 
-      -- three nodes
-      M1 : Raft_Node_Access;
-      M2 : Raft_Node_Access;
-      M3 : Raft_Node_Access;
-
-      L1 : Net_Link;
-      L2 : Net_Link;
-      L3 : Net_Link;
-
-      SERVER_NUMBER : constant ServerID_Type := 3;
-
-      B : aliased NetHub_Binding (SERVER_NUMBER);
-
-      NetHub   : aliased LocalHub;
-      NHAccess : Net_Hub_Wide_Access := NetHub'Unchecked_Access;
-
-      InMemoryStream : aliased Message_Buffer_Type;
-
-      --- timers
-      Timers : array (1 .. 6) of Timer_Holder :=
-        ((SID => 1, Timer => Election_Timer, Counter => 0),
-         (SID => 2, Timer => Election_Timer, Counter => 0),
-         (SID => 3, Timer => Election_Timer, Counter => 0),
-         (SID => 1, Timer => Heartbeat_Timer, Counter => 0),
-         (SID => 2, Timer => Heartbeat_Timer, Counter => 0),
-         (SID => 3, Timer => Heartbeat_Timer, Counter => 0));
-
-      ELECTION_TIMER_COUNTER_INCREMENT  : constant Positive := 15;
-      HEARTBEAT_TIMER_COUNTER_INCREMENT : constant Positive := 4;
-
-      procedure Set_Timer
-        (SID : ServerID_Type; Timer : Timer_Type; newCounter : Natural) is
-      begin
-         for i in Timers'Range loop
-            if (Timers (i).SID = SID) and then (Timers (i).Timer = Timer) then
-               Timers (i).Counter := newCounter;
-            end if;
-         end loop;
-      end Set_Timer;
-
-      function Get_Timer_Counter
-        (SID : ServerID_Type; Timer : Timer_Type) return Natural is
-      begin
-         for i in Timers'Range loop
-            if (Timers (i).SID = SID) and then (Timers (i).Timer = Timer) then
-               return Timers (i).Counter;
-            end if;
-         end loop;
-         return 0;
-      end Get_Timer_Counter;
-
-      function Decrement_Timer_Counter
-        (SID : ServerID_Type; Timer : Timer_Type; decrement : Natural)
-         return Boolean is
-      begin
-         for i in Timers'Range loop
-            if (Timers (i).SID = SID) and then (Timers (i).Timer = Timer) then
-               if Timers (i).Counter > 0 then
-                  Timers (i).Counter :=
-                    Natural'Max (0, Timers (i).Counter) - decrement;
-                  if Timers (i).Counter = 0 then
-                     return True;
-                  end if;
-               end if;
-               -- not activated
-               return False;
-            end if;
-         end loop;
-         return False;
-      end Decrement_Timer_Counter;
-
-      Gen : Ada.Numerics.Float_Random.Generator;
-
-      procedure Ask_For_Timer_Start
-        (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type) is
-      begin
-         Debug_Test_Message
-           ("Ask_For_Timer_Start from "
-            & ServerID_Type'Image (RSS.Current_Id));
-         Debug_Test_Message (" Counter: " & Timer_Type'Image (Timer_Instance));
-         declare
-            Counter : Natural :=
-              ELECTION_TIMER_COUNTER_INCREMENT
-              + Natural (Ada.Numerics.Float_Random.Random (Gen) * 3.0);
-         begin
-            if (Timer_Instance = Heartbeat_Timer) then
-               Counter := HEARTBEAT_TIMER_COUNTER_INCREMENT;
-            end if;
-            Set_Timer (RSS.Current_Id, Timer_Instance, Counter);
-         end;
-      end Ask_For_Timer_Start;
-
-      procedure Ask_For_Cancel_Timer
-        (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type) is
-      begin
-         -- cancel
-         Set_Timer (RSS.Current_Id, Timer_Instance, 0);
-      end Ask_For_Cancel_Timer;
-
-      procedure Sending
-        (RSS                : in out RaftNodeStruct;
-         To_ServerID_Or_All : ServerID_Type;
-         M                  : Message_Type'Class) is
-      begin
-         Debug_Test_Message
-           (RSS.Current_Id'Image
-            & ": "
-            & "Sending "
-            & Ada.Tags.Expanded_Name (M'Tag)
-            & " to "
-            & ServerID_Type'Image (To_ServerID_Or_All));
-
-         declare
-         begin
-            ServerID_Type'Output (InMemoryStream'Access, RSS.Current_Id);
-            ServerID_Type'Output (InMemoryStream'Access, To_ServerID_Or_All);
-            Message_Type'Class'Output (InMemoryStream'Access, M);
-
-         end;
-
-      -- Send (B'Unchecked_Access, RSS.Current_Id, To_ServerID_Or_All, M);
-      end Sending;
-
-      procedure Send_Pushed_Message is
-      begin
-         loop
-            declare
-               SID_From : ServerID_Type :=
-                 ServerID_Type'Input (InMemoryStream'Access);
-
-               SID_To : ServerID_Type :=
-                 ServerID_Type'Input (InMemoryStream'Access);
-               M      : Message_Type'Class :=
-                 Message_Type'Class'Input (InMemoryStream'Access);
-            begin
-               Debug_Test_Message
-                 ("Sending "
-                  & ServerID_Type'Image (SID_From)
-                  & " to "
-                  & ServerID_Type'Image (SID_To));
-               Send (B'Unchecked_Access, SID_From, SID_To, M);
-            exception
-               when E : others =>
-                  Debug_Test_Message
-                    ("Send Message Error: "
-                     & Ada.Exceptions.Exception_Information (E));
-                  return;
-            end;
-         end loop;
-      exception
-         when E : Ada.IO_Exceptions.End_Error =>
-            Debug_Test_Message ("No more message");
-            return;
-         when E : others =>
-            Debug_Test_Message
-              ("Send_Pushed_Message: "
-               & Ada.Exceptions.Exception_Information (E));
-            return;
-
-      end Send_Pushed_Message;
-
-      procedure L1_CallBack
-        (From, To : in Net_Link; Message : in Stream_Element_Array)
-      is
-
-         MB : aliased Message_Buffer_Type;
-      begin
-
-         From_Stream_Element_Array (Message, MB);
-         declare
-            M : Message_Type'Class := Message_Type'Class'Input (MB'Access);
-
-         begin
-            Debug_Test_Message
-              (" 1: "
-               & M1.State.Current_Raft_State'Image
-               & " L1_CallBack received message "
-               & Ada.tags.Expanded_Name (M'Tag));
-            --  Put_Line ("HostName_From: " & To_String (HostName (NL)));
-            --  Put_Line ("Message: " & To_String (From_Message (Message)));
-            Handle_Message (M1, M);
-         end;
-      end L1_CallBack;
-
-      procedure L2_CallBack
-        (From, To : in Net_Link; Message : in Stream_Element_Array)
-      is
-
-         MB : aliased Message_Buffer_Type;
-      begin
-
-         From_Stream_Element_Array (Message, MB);
-         declare
-            M : Message_Type'Class := Message_Type'Class'Input (MB'Access);
-
-         begin
-            Debug_Test_Message
-              (" 2: "
-               & M2.State.Current_Raft_State'Image
-               & " L2_CallBack received message "
-               & Ada.tags.Expanded_Name (M'Tag));
-            Handle_Message (M2, M);
-         end;
-      end L2_CallBack;
-
-      procedure L3_CallBack
-        (From, To : in Net_Link; Message : in Stream_Element_Array)
-      is
-
-         MB : aliased Message_Buffer_Type;
-      begin
-
-         From_Stream_Element_Array (Message, MB);
-         declare
-            M : Message_Type'Class := Message_Type'Class'Input (MB'Access);
-
-         begin
-            Debug_Test_Message
-              (" 3: "
-               & M3.State.Current_Raft_State'Image
-               & " L3_CallBack received message "
-               & Ada.tags.Expanded_Name (M'Tag));
-            Handle_Message (M3, M);
-         end;
-      end L3_CallBack;
-
-      procedure NHB_Message_Received
-        (NH      : in NetHub_Binding_Access;
-         SID     : ServerID_Type;
-         Message : in Message_Type'Class) is
-      begin
-         Debug_Test_Message
-           ("NHB_Message_Received " & Ada.tags.Expanded_Name (Message'Tag));
-      end NHB_Message_Received;
-
+      Leader_Found : Boolean := False;
+      Epoch        : Natural := 0;
    begin
-      Debug_Test_Message
-        ("==============================================================");
-      Debug_Test_Message
-        ("Starting Election Test ===============================");
-      Debug_Test_Message
-        ("==============================================================");
+      Banner ("Raft Leader Election");
+      Debug_Test_Message ("Starting leader election integration test");
 
-      Create (InMemoryStream);
+      RS.Initialize_System;
+      RS.TimeOut_SID_Election_Timer (1);
+      RS.Process_Pending_Messages;
 
-      -- connect the hosts to the hub
-      Create_Link
-        (NHAccess,
-         To_Unbounded_String ("M1"),
-         L1_CallBack'Unrestricted_Access,
-         L1);
+      for J in 1 .. 60 loop
+         Assert
+           (RS.Count_Nodes_In_State (Leader) <= 1,
+            "epoch " & Natural'Image (J) & " must not have multiple leaders");
 
-      Create_Link
-        (NHAccess,
-         To_Unbounded_String ("M2"),
-         L2_CallBack'Unrestricted_Access,
-         L2);
+         if RS.Leader_Id /= NULL_SERVER then
+            Leader_Found := True;
+         end if;
 
-      Create_Link
-        (NHAccess,
-         To_Unbounded_String ("M3"),
-         L3_CallBack'Unrestricted_Access,
-         L3);
+         RS.Process_Pending_Messages;
 
-      Create_Machine
-        (M1,
-         1,
-         SERVER_NUMBER,
-         Ask_For_Timer_Start'Unrestricted_Access,
-         Ask_For_Cancel_Timer'Unrestricted_Access,
-         Sending'Unrestricted_Access);
-      Create_Machine
-        (M2,
-         2,
-         SERVER_NUMBER,
-         Ask_For_Timer_Start'Unrestricted_Access,
-         Ask_For_Cancel_Timer'Unrestricted_Access,
-         Sending'Unrestricted_Access);
-      Create_Machine
-        (M3,
-         3,
-         SERVER_NUMBER,
-         Ask_For_Timer_Start'Unrestricted_Access,
-         Ask_For_Cancel_Timer'Unrestricted_Access,
-         Sending'Unrestricted_Access);
+         Epoch := Epoch + 1;
+         RS.Advance_One_Epoch (RS.Epoch_Type (Epoch));
 
-      Raft.Comm.Create
-        (SERVER_NUMBER,
-         ServerId_NetLink'(1 => L1, 2 => L2, 3 => L3),
-         NHAccess,
-         NHB_Message_Received'Unrestricted_Access,
-         B);
+         if J = 13 or J = 17 or J = 21 then
+            RS.TimeOut_SID_Election_Timer (2);
+            RS.Process_Pending_Messages;
 
-      declare
-         T_Election_Timeout : Timer_Timeout :=
-           (Timer_Instance => Election_Timer);
-      begin
+            Assert
+              (RS.Leader_Id /= NULL_SERVER,
+               "re-election started by node 2 must produce a leader");
+         end if;
 
-         Debug_Test_Message (">>MAIN : HeartBeat Time out");
-         delay 1.0;
+         if J > 5 and then J mod 5 = 0 then
+            Assert
+              (RS.Leader_Id /= NULL_SERVER,
+               "leader must exist at checkpoint epoch " & Natural'Image (J));
 
-         Handle_Message (M1, T_Election_Timeout);
-      end;
-
-      Debug_Test_Message (">>Sending messages");
-      Send_Pushed_Message;
-      Debug_Test_Message (">>Messages sent");
-
-      for j in 1 .. 60 loop
-         new_line;
-         Debug_Test_Message ("[[EPOCH " & j'Image & "]]");
-         for i in Timers'Range loop
             Debug_Test_Message
-              (">> Timer "
-               & Timer_Type'Image (Timers (i).Timer)
-               & " counter: "
-               & Timers (i).Counter'Image);
-            declare
-               timeout : Boolean;
-            begin
-               timeout :=
-                 Decrement_Timer_Counter (Timers (i).SID, Timers (i).Timer, 1);
-               if timeout then
-                  Debug_Test_Message
-                    (">> Timer "
-                     & Timer_Type'Image (Timers (i).Timer)
-                     & " expired for "
-                     & Timers (i).SID'Image);
-                  Raft.Comm.Send
-                    (B'Unchecked_Access,
-                     Timers (i).SID,
-                     Timers (i).SID,
-                     Timer_Timeout'(Timer_Instance => Timers (i).Timer));
-               end if;
-            end;
-         end loop;
+              ("Checkpoint epoch "
+               & Natural'Image (J)
+               & ": leader is "
+               & ServerID_Type'Image (RS.Leader_Id));
 
-         Debug_Test_Message (">>Sending messages");
-         Send_Pushed_Message;
-         Debug_Test_Message (">>Messages sent");
-         delay 1.0;
-
-         -- force leader election
-         if j = 13 or j = 17 or j = 21 then
-            declare
-               T_Election_Timeout : Timer_Timeout :=
-                 (Timer_Instance => Election_Timer);
-            begin
-
-               Debug_Test_Message (">>MAIN : HeartBeat Time out for M2");
-
-               Handle_Message (M2, T_Election_Timeout);
-            end;
-
+            RS.Send_Client_Command
+              (RS.Leader_Id, new Test_Command'(Value => Integer (J)));
+            RS.Process_Pending_Messages;
          end if;
-
-         if j > 5 and j mod 5 = 0 then
-            -- leader must exists
-            declare
-               MLeader : Raft_Node_Access;
-            begin
-               if M1.State.Current_Raft_State = Leader then
-                  Debug_Test_Message ("Leader: " & M1.State.Current_Id'Image);
-                  MLeader := M1;
-               elsif M2.State.Current_Raft_State = Leader then
-                  Debug_Test_Message ("Leader: " & M2.State.Current_Id'Image);
-                  MLeader := M2;
-               elsif M3.State.Current_Raft_State = Leader then
-                  Debug_Test_Message ("Leader: " & M3.State.Current_Id'Image);
-                  MLeader := M3;
-               else
-                  Debug_Test_Message ("No leader");
-                  raise Program_Error;
-               end if;
-
-               Debug_Test_Message
-                 ("Leader: " & ServerID_Type'Image (MLeader.State.Current_Id));
-
-               Debug_Test_Message ("********* >>Append Command to leader: ");
-               declare
-                  CR : Request_Send_Command := (Command => new Test_Command'(Value => 1));
-               begin
-                  Handle_Message (MLeader, CR);
-               end;
-            end;
-
-         end if;
-
       end loop;
 
+      Assert (Leader_Found, "a leader should appear during the simulation");
    end Test_Leader_Election;
 
    procedure Test_RaftSystem (T : in out Test_Cases.Test_Case'Class) is
@@ -598,10 +264,11 @@ package body Test_Raft is
       Gen : Ada.Numerics.Float_Random.Generator;
 
    begin
+      Banner ("Raft System Tests");
       Debug_Test_Message ("Initialize_System");
       RaftSystem_Instance.Initialize_System;
       Debug_Test_Message ("Initialize_System done");
-      RaftSystem_Instance.TimeOut_Election_Timer (1);
+      RaftSystem_Instance.TimeOut_SID_Election_Timer (1);
 
       for i in 1 .. 200 loop
 
@@ -643,7 +310,7 @@ package body Test_Raft is
                Debug_Test_Message
                  ("NEW ELECTION ASKED, New Candidate: "
                   & ServerID_Type'Image (Leader.State.Current_Id));
-               RaftSystem_Instance.TimeOut_Election_Timer
+               RaftSystem_Instance.TimeOut_SID_Election_Timer
                  (Leader.State.Current_Id);
             end;
 

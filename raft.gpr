@@ -26,4 +26,9 @@ project Raft is
       for Artifacts (".") use ("share");
    end Install;
 
+   package Prove is
+      for Proof_Switches ("Ada") use
+        ("--level=1", "--timeout=60", "--steps=0");
+   end Prove;
+
 end Raft;

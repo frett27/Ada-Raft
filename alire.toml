@@ -13,3 +13,5 @@ tags = []
 
 
 
+[[depends-on]]
+gnatprove = "^14.1.1"
