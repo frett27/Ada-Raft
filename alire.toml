@@ -1,5 +1,5 @@
 name = "raft"
-description = ""
+description = "Raft consensus in Ada with a deterministic multi-node test harness"
 version = "0.1.0-dev"
 
 authors = ["Patrice Freydiere"]
