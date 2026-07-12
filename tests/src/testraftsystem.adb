@@ -107,6 +107,13 @@ package body TestRaftSystem is
        return Nodes (SID).State.Commit_Index_Strict;
     end Node_Commit_Index;
 
+    function Node_Last_Applied (SID : ServerID_Type)
+      return TransactionLogIndex_Type
+    is
+    begin
+       return Nodes (SID).State.Last_Applied_Strict;
+    end Node_Last_Applied;
+
     function Node_Log_Upper_Bound (SID : ServerID_Type)
       return TransactionLogIndex_Type
     is
@@ -216,15 +223,28 @@ package body TestRaftSystem is
     function Node_Last_Log_Index (SID : ServerID_Type)
       return TransactionLogIndex_Type
     is
-       Upper : constant TransactionLogIndex_Type :=
-         Nodes (SID).State.Node_State.Log_Upper_Bound_Strict;
     begin
-       if Upper = TransactionLogIndex_Type'First then
-          return TransactionLogIndex_Type'First;
-       end if;
-
-       return TransactionLogIndex_Type'Pred (Upper);
+       return Last_Log_Index (Nodes (SID).State.Node_State);
     end Node_Last_Log_Index;
+
+    function Node_Has_Snapshot (SID : ServerID_Type) return Boolean is
+    begin
+       return Nodes (SID).State.Node_State.Has_Snapshot;
+    end Node_Has_Snapshot;
+
+    function Node_Snapshot_Last_Index (SID : ServerID_Type)
+      return TransactionLogIndex_Type
+    is
+    begin
+       return Nodes (SID).State.Node_State.Snapshot_Last_Included_Index;
+    end Node_Snapshot_Last_Index;
+
+    function Node_First_Retained_Log_Index (SID : ServerID_Type)
+      return TransactionLogIndex_Type
+    is
+    begin
+       return First_Retained_Log_Index (Nodes (SID).State.Node_State);
+    end Node_First_Retained_Log_Index;
 
     procedure Read_Next_Buffered_Message
       (From_SID, To_SID : out ServerID_Type;
@@ -422,7 +442,8 @@ package body TestRaftSystem is
                (Nodes (i), i, SERVER_NUMBER,
                 Ask_For_Timer_Start'Unrestricted_Access,
                 Ask_For_Cancel_Timer'Unrestricted_Access,
-                Sending'Unrestricted_Access);
+                Sending'Unrestricted_Access,
+                null);
         end loop;
 
         NHBinding := new NetHub_Binding (SERVER_NUMBER);

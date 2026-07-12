@@ -1,5 +1,6 @@
 with Communication;         use Communication;
 with Raft.Messages;         use Raft.Messages;
+with Raft.State_Machine;
 
 package Raft.Node is
 
@@ -20,6 +21,12 @@ package Raft.Node is
         TLog_Type (TransactionLogIndex_Type'First .. MAX_LOG);
       Log_Upper_Bound_Strict : TransactionLogIndex_Type :=
         TransactionLogIndex_Type'First;
+      Has_Snapshot                   : Boolean := False;
+      Snapshot_Last_Included_Index   : TransactionLogIndex_Type :=
+        TransactionLogIndex_Type'First;
+      Snapshot_Last_Included_Term    : Term_Type := 0;
+      Snapshot_Data                  : Snapshot_Blob;
+      Snapshot_Data_Length           : Snapshot_Length := 0;
    end record;
 
    type AllServerLogIndex is
@@ -32,6 +39,12 @@ package Raft.Node is
       Match_Index_Strict : AllServerLogIndex (1 .. Server_Number) :=
         (others => TransactionLogIndex_Type'First);
    end record;
+
+   type Snapshot_Send_Offset_Array is
+     array (ServerID_Type range <>) of Natural;
+
+   type Snapshot_Send_Active_Array is
+     array (ServerID_Type range <>) of Boolean;
 
    type RaftNodeStruct (Server_Number : ServerID_Type) is record
 
@@ -51,6 +64,17 @@ package Raft.Node is
 
       --  leader specific implementation
       Leader_State : Raft_Leader_Additional_State (Server_Number);
+
+      Snapshot_Send_Offset : Snapshot_Send_Offset_Array (1 .. Server_Number) :=
+        (others => 0);
+      Snapshot_Send_Active : Snapshot_Send_Active_Array (1 .. Server_Number) :=
+        (others => False);
+      Snapshot_Receive_Length : Snapshot_Length := 0;
+      Snapshot_Receive_Buffer : Snapshot_Blob;
+      Receiving_Snapshot      : Boolean := False;
+
+      Application_State :
+        Raft.State_Machine.Application_State_Access := null;
 
    end record;
 
@@ -190,12 +214,17 @@ package Raft.Node is
      (Machine : Raft_Node_Access; M : Message_Type'Class);
 
    procedure Create_Machine
-     (Machine         : out Raft_Node_Access;
-      SID             : ServerID_Type;
-      Server_Number   : ServerID_Type;
-      Timer_Start     : Start_Timer;
-      Timer_Cancel    : Cancel_Timer;
-      Sending_Message : Message_Sending);
+     (Machine           : out Raft_Node_Access;
+      SID               : ServerID_Type;
+      Server_Number     : ServerID_Type;
+      Timer_Start       : Start_Timer;
+      Timer_Cancel      : Cancel_Timer;
+      Sending_Message   : Message_Sending;
+      App_State         : Raft.State_Machine.Application_State_Access);
+
+   procedure Apply_Committed_Entries (MState : RaftNodeStruct_Access)
+   with
+     Pre => MState /= null;
 
    --  Add these procedure declarations at the package body level
    procedure Handle_Leader_Send_Append_Entries
@@ -218,6 +247,14 @@ private
    procedure Handle_AppendEntries_Request
      (Machine_State : in out Raft_State_Machine'Class;
       M             : Append_Entries_Request'Class)
+   with
+     Pre =>
+       Machine_State.MState.Current_Raft_State = CANDIDATE
+       or else Machine_State.MState.Current_Raft_State = FOLLOWER;
+
+   procedure Handle_InstallSnapshot_Request
+     (Machine_State : in out Raft_State_Machine'Class;
+      M             : Install_Snapshot_Request)
    with
      Pre =>
        Machine_State.MState.Current_Raft_State = CANDIDATE

@@ -6,7 +6,125 @@ with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
 
 with Ada.Tags; use Ada.Tags;
 
+with Raft.Snapshot; use Raft.Snapshot;
+with Raft.State_Machine; use Raft.State_Machine;
+
 package body Raft.Node is
+
+   procedure After_Commit_Advanced (MState : RaftNodeStruct_Access) is
+   begin
+      Apply_Committed_Entries (MState);
+      Compact_If_Needed (MState);
+   end After_Commit_Advanced;
+
+   procedure Apply_Committed_Entries (MState : RaftNodeStruct_Access) is
+      NS : Raft_Node_State renames MState.Node_State;
+   begin
+      while MState.Last_Applied_Strict < MState.Commit_Index_Strict loop
+         declare
+            Index_To_Apply : constant TransactionLogIndex_Type :=
+              MState.Last_Applied_Strict;
+            First_Retained : constant TransactionLogIndex_Type :=
+              First_Retained_Log_Index (NS);
+            Log_Entry : constant Command_And_Term_Entry_Type :=
+              Log_Entry_At (NS, Index_To_Apply);
+         begin
+            if Index_To_Apply >= First_Retained
+              and then MState.Application_State /= null
+              and then Log_Entry.C /= null
+            then
+               Apply_Command (MState.Application_State.all, Log_Entry.C);
+            end if;
+
+            MState.Last_Applied_Strict :=
+              TransactionLogIndex_Type'Succ (Index_To_Apply);
+         end;
+      end loop;
+   end Apply_Committed_Entries;
+
+   procedure Adjust_Leader_Indices_After_Compact
+     (Machine_State : in out Raft_State_Machine_Leader)
+   is
+      NS : Raft_Node_State renames Machine_State.MState.Node_State;
+   begin
+      if not NS.Has_Snapshot then
+         return;
+      end if;
+
+      for Server in 1 .. Machine_State.MState.Server_Number loop
+         if Machine_State.MState.Leader_State.Next_Index_Strict (Server) <=
+           NS.Snapshot_Last_Included_Index
+         then
+            Machine_State.MState.Leader_State.Next_Index_Strict (Server) :=
+              TransactionLogIndex_Type'Succ (NS.Snapshot_Last_Included_Index);
+            Machine_State.MState.Leader_State.Match_Index_Strict (Server) :=
+              TransactionLogIndex_Type'Min
+                (Machine_State.MState.Leader_State.Match_Index_Strict (Server),
+                 NS.Snapshot_Last_Included_Index);
+            Machine_State.MState.Snapshot_Send_Offset (Server) := 0;
+            Machine_State.MState.Snapshot_Send_Active (Server) := False;
+         end if;
+      end loop;
+   end Adjust_Leader_Indices_After_Compact;
+
+   procedure Send_Next_Snapshot_Chunk_To_Follower
+     (Machine_State : in out Raft_State_Machine_Leader;
+      Server        : ServerID_Type)
+   is
+      NS : constant Raft_Node_State := Machine_State.MState.Node_State;
+      Offset : Natural renames
+        Machine_State.MState.Snapshot_Send_Offset (Server);
+      Chunk  : Snapshot_Chunk := (others => 0);
+      Remaining : Natural;
+      Chunk_Len : Natural;
+      Done_Flag : Boolean;
+      Req       : Install_Snapshot_Request;
+   begin
+      if NS.Snapshot_Data_Length = 0 then
+         return;
+      end if;
+
+      if Offset >= NS.Snapshot_Data_Length then
+         Machine_State.MState.Snapshot_Send_Active (Server) := False;
+         Machine_State.MState.Leader_State.Next_Index_Strict (Server) :=
+           TransactionLogIndex_Type'Succ (NS.Snapshot_Last_Included_Index);
+         Machine_State.MState.Leader_State.Match_Index_Strict (Server) :=
+           NS.Snapshot_Last_Included_Index;
+         return;
+      end if;
+
+      Remaining := NS.Snapshot_Data_Length - Offset;
+      Chunk_Len := Natural'Min (Remaining, MAX_SNAPSHOT_CHUNK);
+
+      for I in 1 .. Chunk_Len loop
+         Chunk (I) := NS.Snapshot_Data (Offset + I);
+      end loop;
+
+      Done_Flag := (Offset + Chunk_Len) >= NS.Snapshot_Data_Length;
+
+      Req :=
+        (Leader_Term         => NS.Current_Term,
+         Leader_ID           => Machine_State.MState.Current_Id,
+         Last_Included_Index => NS.Snapshot_Last_Included_Index,
+         Last_Included_Term  => NS.Snapshot_Last_Included_Term,
+         Offset              => Offset,
+         Done                => Done_Flag,
+         Data_Length         => Chunk_Len,
+         Data                => Chunk);
+
+      Offset := Offset + Chunk_Len;
+
+      Machine_State.Sending_Message
+        (Machine_State.MState.all, Server, Req);
+
+      if Done_Flag then
+         Machine_State.MState.Snapshot_Send_Active (Server) := False;
+         Machine_State.MState.Leader_State.Next_Index_Strict (Server) :=
+           TransactionLogIndex_Type'Succ (NS.Snapshot_Last_Included_Index);
+         Machine_State.MState.Leader_State.Match_Index_Strict (Server) :=
+           NS.Snapshot_Last_Included_Index;
+      end if;
+   end Send_Next_Snapshot_Chunk_To_Follower;
 
    procedure Debug_Put_Line (Node : Raft_Node_Access; S : String) is
    begin
@@ -73,9 +191,10 @@ package body Raft.Node is
    --  Machine handling
 
    procedure Create_Machine
-     (Machine       : out Raft_Node_Access; SID : ServerID_Type;
-      Server_Number :     ServerID_Type; Timer_Start : Start_Timer;
-      Timer_Cancel  :     Cancel_Timer; Sending_Message : Message_Sending)
+     (Machine           : out Raft_Node_Access; SID : ServerID_Type;
+      Server_Number     :     ServerID_Type; Timer_Start : Start_Timer;
+      Timer_Cancel      :     Cancel_Timer; Sending_Message : Message_Sending;
+      App_State         : Raft.State_Machine.Application_State_Access)
    is
    begin
       Machine := new Raft_Node (Server_Number);
@@ -86,6 +205,7 @@ package body Raft.Node is
 
          RStruct.Current_Raft_State := FOLLOWER;
          RStruct.Current_Id         := SID;
+         RStruct.Application_State  := App_State;
 
          --  read state from file, or create it
          RStruct.Node_State.Current_Term           := 0;
@@ -122,8 +242,8 @@ package body Raft.Node is
    procedure Start_Election_Entering_Candidate_State
      (Machine_State : in out Raft_State_Machine_Candidate)
    is
-      Last_Log_Index : TransactionLogIndex_Type :=
-        TransactionLogIndex_Type'First;
+      NS : constant Raft_Node_State := Machine_State.MState.Node_State;
+      Last_Idx : constant TransactionLogIndex_Type := Last_Log_Index (NS);
       Last_term      : Term_Type;
    begin
       --  §5.2
@@ -134,14 +254,8 @@ package body Raft.Node is
 
       Last_term := Machine_State.MState.Node_State.Current_Term;
 
-      if Machine_State.MState.Node_State.Log_Upper_Bound_Strict /=
-        TransactionLogIndex_Type'First
-      then
-         Last_Log_Index :=
-           TransactionLogIndex_Type'Pred
-             (Machine_State.MState.Node_State.Log_Upper_Bound_Strict);
-         Last_term :=
-           Machine_State.MState.Node_State.Log (Last_Log_Index).T;
+      if Last_Idx /= TransactionLogIndex_Type'First or else NS.Has_Snapshot then
+         Last_term := Log_Term_At (NS, Last_Idx);
       end if;
 
       for I in 1 .. Machine_State.MState.Server_Number loop
@@ -151,7 +265,7 @@ package body Raft.Node is
                  (Candidate_Term        =>
                     Machine_State.MState.Node_State.Current_Term,
                   Candidate_ID          => Machine_State.MState.Current_Id,
-                  Last_Log_Index_Strict => Last_Log_Index,
+                  Last_Log_Index_Strict => Last_Idx,
                   Last_Log_Term         => Last_term);
             begin
                Machine_State.Sending_Message
@@ -191,6 +305,16 @@ package body Raft.Node is
                if AER.Leader_Term > A.MState.Node_State.Current_Term then
                   A.MState.Node_State.Current_Term := AER.Leader_Term;
                   --  move to follower
+                  New_State                        := FOLLOWER;
+               end if;
+            end;
+         elsif M'Tag = Install_Snapshot_Request'Tag then
+            declare
+               ISR : constant Install_Snapshot_Request :=
+                 Install_Snapshot_Request (M);
+            begin
+               if ISR.Leader_Term > A.MState.Node_State.Current_Term then
+                  A.MState.Node_State.Current_Term := ISR.Leader_Term;
                   New_State                        := FOLLOWER;
                end if;
             end;
@@ -302,7 +426,10 @@ package body Raft.Node is
                Next_Index_Strict  =>
                  (others => Machine.State.Node_State.Log_Upper_Bound_Strict),
                Match_Index_Strict =>
-                 (others => TransactionLogIndex_Type'First));
+                 (others => Last_Log_Index (Machine.State.Node_State)));
+
+            Machine.State.Snapshot_Send_Offset := (others => 0);
+            Machine.State.Snapshot_Send_Active := (others => False);
 
             --  Start or reset the heartbeat timer
             Machine.Current_Machine_State.Timer_Cancel
@@ -350,6 +477,15 @@ package body Raft.Node is
                Reset_Election_Timer (Machine);
             end if;
          end;
+      elsif M'Tag = Install_Snapshot_Request'Tag then
+         declare
+            ISR : constant Install_Snapshot_Request :=
+              Install_Snapshot_Request (M);
+         begin
+            if ISR.Leader_Term >= Machine.State.Node_State.Current_Term then
+               Reset_Election_Timer (Machine);
+            end if;
+         end;
       end if;
 
       --  respond to vote request
@@ -393,31 +529,23 @@ package body Raft.Node is
                ", request candidate : " & Req.Candidate_ID'Image & "]");
 
             declare
+               NS : constant Raft_Node_State :=
+                 Machine.Current_Machine_State.MState.Node_State;
+
                function Receiver_Last_Log_Term return Term_Type is
-                  NS : constant Raft_Node_State :=
-                    Machine.Current_Machine_State.MState.Node_State;
                begin
-                  if NS.Log_Upper_Bound_Strict = TransactionLogIndex_Type'First
+                  if Last_Log_Index (NS) = TransactionLogIndex_Type'First
+                    and then not NS.Has_Snapshot
                   then
                      return Machine.State.Node_State.Current_Term;
                   end if;
 
-                  return NS.Log
-                    (TransactionLogIndex_Type'Pred (NS.Log_Upper_Bound_Strict))
-                    .T;
+                  return Log_Term_At (NS, Last_Log_Index (NS));
                end Receiver_Last_Log_Term;
 
                function Receiver_Last_Log_Index return TransactionLogIndex_Type is
-                  NS : constant Raft_Node_State :=
-                    Machine.Current_Machine_State.MState.Node_State;
                begin
-                  if NS.Log_Upper_Bound_Strict = TransactionLogIndex_Type'First
-                  then
-                     return TransactionLogIndex_Type'First;
-                  end if;
-
-                  return TransactionLogIndex_Type'Pred
-                    (NS.Log_Upper_Bound_Strict);
+                  return Last_Log_Index (NS);
                end Receiver_Last_Log_Index;
 
                function Candidate_Log_Is_Up_To_Date return Boolean is
@@ -546,30 +674,37 @@ package body Raft.Node is
          "[Logs for " & Id_Image (Machine_State.MState.Current_Id) & "]");
       Dump_Logs (Machine_State);
 
-      if M.Prev_Log_Index_Strict >
-        Machine_State.MState.Node_State.Log_Upper_Bound_Strict
-        or else
-        (M.Prev_Log_Index_Strict > TransactionLogIndex_Type'First
-         and then
-           Machine_State.MState.Node_State.Log
-             (TransactionLogIndex_Type'Pred (M.Prev_Log_Index_Strict))
-             .T /=
-           M.Prev_Log_Term)
-      then
-
-         declare
-            Response : constant Append_Entries_Response :=
-              (Success => False, SID => Machine_State.MState.Current_Id,
-               Matching_Index_Strict => TransactionLogIndex_Type'First,
-               T => Machine_State.MState.Node_State.Current_Term);
-         begin
-            --  ignore the message
-            Machine_State.Sending_Message
-              (Machine_State.MState.all, M.Leader_ID, Response);
-            return;
-         end;
-
-      end if;
+      declare
+         NS : constant Raft_Node_State :=
+           Machine_State.MState.Node_State;
+      begin
+         if NS.Has_Snapshot
+           and then M.Prev_Log_Index_Strict = NS.Snapshot_Last_Included_Index
+           and then M.Prev_Log_Term = NS.Snapshot_Last_Included_Term
+         then
+            null;
+         elsif M.Prev_Log_Index_Strict >
+           NS.Log_Upper_Bound_Strict
+           or else
+             (M.Prev_Log_Index_Strict > TransactionLogIndex_Type'First
+              and then
+                Log_Term_At
+                  (NS,
+                   TransactionLogIndex_Type'Pred (M.Prev_Log_Index_Strict)) /=
+                M.Prev_Log_Term)
+         then
+            declare
+               Response : constant Append_Entries_Response :=
+                 (Success => False, SID => Machine_State.MState.Current_Id,
+                  Matching_Index_Strict => TransactionLogIndex_Type'First,
+                  T => Machine_State.MState.Node_State.Current_Term);
+            begin
+               Machine_State.Sending_Message
+                 (Machine_State.MState.all, M.Leader_ID, Response);
+               return;
+            end;
+         end if;
+      end;
 
       --  from given entries, check if there are inconsistencies
       declare
@@ -655,6 +790,8 @@ package body Raft.Node is
                 (M.Leader_Commit_Strict,
                  Machine_State.MState.Node_State.Log_Upper_Bound_Strict);
 
+            After_Commit_Advanced (Machine_State.MState);
+
             Debug_Put_Line
               (Machine_State,
                "[Updated commit to " &
@@ -697,6 +834,54 @@ package body Raft.Node is
       end;
 
    end Handle_AppendEntries_Request;
+
+   procedure Handle_InstallSnapshot_Request
+     (Machine_State : in out Raft_State_Machine'Class;
+      M             : Install_Snapshot_Request)
+   is
+      Response : constant Install_Snapshot_Response :=
+        (T   => Machine_State.MState.Node_State.Current_Term,
+         SID => Machine_State.MState.Current_Id);
+   begin
+      if M.Leader_Term < Machine_State.MState.Node_State.Current_Term then
+         Machine_State.Sending_Message
+           (Machine_State.MState.all, M.Leader_ID, Response);
+         return;
+      end if;
+
+      if M.Offset = 0 then
+         Machine_State.MState.Receiving_Snapshot      := True;
+         Machine_State.MState.Snapshot_Receive_Length := 0;
+         Machine_State.MState.Snapshot_Receive_Buffer := (others => 0);
+      end if;
+
+      if Machine_State.MState.Receiving_Snapshot then
+         for I in 1 .. M.Data_Length loop
+            Machine_State.MState.Snapshot_Receive_Buffer (M.Offset + I) :=
+              M.Data (I);
+         end loop;
+
+         if M.Offset + M.Data_Length >
+           Machine_State.MState.Snapshot_Receive_Length
+         then
+            Machine_State.MState.Snapshot_Receive_Length :=
+              Snapshot_Length (M.Offset + M.Data_Length);
+         end if;
+      end if;
+
+      if M.Done then
+         Apply_Install_Snapshot
+           (Machine_State.MState,
+            M.Last_Included_Index,
+            M.Last_Included_Term,
+            Machine_State.MState.Snapshot_Receive_Buffer,
+            Machine_State.MState.Snapshot_Receive_Length);
+         Machine_State.MState.Receiving_Snapshot := False;
+      end if;
+
+      Machine_State.Sending_Message
+        (Machine_State.MState.all, M.Leader_ID, Response);
+   end Handle_InstallSnapshot_Request;
 
    --  General Message handling
    overriding procedure Handle_Message_Machine_State
@@ -745,6 +930,17 @@ package body Raft.Node is
             then
                New_Raft_State_Machine := FOLLOWER;
             end if;
+         end;
+      elsif M'Tag = Install_Snapshot_Request'Tag then
+         declare
+            Req : constant Install_Snapshot_Request :=
+              Install_Snapshot_Request (M);
+         begin
+            if Req.Leader_Term >= Machine_State.MState.Node_State.Current_Term
+            then
+               New_Raft_State_Machine := FOLLOWER;
+            end if;
+            Handle_InstallSnapshot_Request (Machine_State, Req);
          end;
       elsif M'Tag = Request_Vote_Response'Tag then
          Debug_Put_Line (Machine_State, "[Candidate got a vote response]");
@@ -818,7 +1014,9 @@ package body Raft.Node is
             " for " & Res.SID'Image & "]");
 
          Machine_State.MState.Leader_State.Next_Index_Strict (Res.SID) :=
-           Machine_State.MState.Leader_State.Match_Index_Strict (Res.SID);
+           TransactionLogIndex_Type'Succ
+             (Machine_State.MState.Leader_State.Match_Index_Strict
+                (Res.SID));
          Debug_Put_Line
            (Machine_State,
             "[ leader " & Id_Image (Machine_State.MState.Current_Id) &
@@ -859,12 +1057,10 @@ package body Raft.Node is
                                (Server) >
                              Machine_State.MState.Commit_Index_Strict
                              and then
-                              --  Log is in current term
-
-                               Machine_State.MState.Node_State.Log
-                                 (TransactionLogIndex_Type'Pred (Log_Index))
-                                 .T =
-                               Machine_State.MState.Node_State.Current_Term
+                              Log_Term_At
+                                (Machine_State.MState.Node_State,
+                                 TransactionLogIndex_Type'Pred (Log_Index)) =
+                              Machine_State.MState.Node_State.Current_Term
 
                            then
                               count_match_index :=
@@ -884,6 +1080,8 @@ package body Raft.Node is
                   if count_match_index >= Majority_Count then
                      Machine_State.MState.Commit_Index_Strict :=
                        TransactionLogIndex_Type'Succ (C);
+                     After_Commit_Advanced (Machine_State.MState);
+                     Adjust_Leader_Indices_After_Compact (Machine_State);
                      Debug_Put_Line
                        (Machine_State,
                         "[ LEADER "
@@ -950,6 +1148,16 @@ package body Raft.Node is
             Handle_Leader_Append_Entries_Response (Machine_State, Res);
          end;
 
+      elsif M'Tag = Install_Snapshot_Response'Tag then
+         declare
+            Res : constant Install_Snapshot_Response :=
+              Install_Snapshot_Response (M);
+         begin
+            if Machine_State.MState.Snapshot_Send_Active (Res.SID) then
+               Send_Next_Snapshot_Chunk_To_Follower (Machine_State, Res.SID);
+            end if;
+         end;
+
       elsif M'Tag = Timer_Timeout'Tag then
          --  heartbeat timeout ?
 
@@ -1012,6 +1220,14 @@ package body Raft.Node is
             Handle_AppendEntries_Request (Machine_State, Req);
          end;
          return;
+      elsif M'Tag = Install_Snapshot_Request'Tag then
+         declare
+            Req : constant Install_Snapshot_Request :=
+              Install_Snapshot_Request (M);
+         begin
+            Handle_InstallSnapshot_Request (Machine_State, Req);
+         end;
+         return;
       end if;
 
       --  unsupported message on state
@@ -1026,137 +1242,122 @@ package body Raft.Node is
    procedure Handle_Leader_Send_Append_Entries
      (Machine_State : in out Raft_State_Machine_Leader)
    is
-
-      T : Term_Type := Machine_State.MState.Node_State.Current_Term;
-
-      --  From election, sending an empty appendEntries to all
-      --  to be reviewed
    begin
-
       for Server in 1 .. Machine_State.MState.Server_Number loop
          if Server /= Machine_State.MState.Current_Id then
             declare
+               NS : constant Raft_Node_State :=
+                 Machine_State.MState.Node_State;
                AER : Append_Entries_Request;
-
                Leader_Next_Index_Strict :
                  constant TransactionLogIndex_Type :=
                  Machine_State.MState.Leader_State.Next_Index_Strict
                    (Machine_State.MState.Current_Id);
-               --  the leader knowledge on the node next index
                Prev_Node_Log_Index_Strict :
                  constant TransactionLogIndex_Type :=
                  Machine_State.MState.Leader_State.Next_Index_Strict
                    (Server);
-
+               Prev_For_Rpc : TransactionLogIndex_Type :=
+                 Prev_Node_Log_Index_Strict;
+               T : Term_Type := NS.Current_Term;
             begin
-
-               if Prev_Node_Log_Index_Strict /= TransactionLogIndex_Type'First
+               if Follower_Needs_Snapshot (NS, Prev_Node_Log_Index_Strict)
                then
-                  --  send the term of the last known index of the node
-                  T :=
-                    Machine_State.MState.Node_State.Log
-                      (TransactionLogIndex_Type'Pred
-                         (Prev_Node_Log_Index_Strict))
-                      .T;
-               end if;
+                  if not Machine_State.MState.Snapshot_Send_Active (Server)
+                  then
+                     Machine_State.MState.Snapshot_Send_Offset (Server) := 0;
+                     Machine_State.MState.Snapshot_Send_Active (Server) :=
+                       True;
+                  end if;
+                  Send_Next_Snapshot_Chunk_To_Follower
+                    (Machine_State, Server);
+               else
+                  if NS.Has_Snapshot
+                    and then
+                      Prev_Node_Log_Index_Strict >=
+                        First_Retained_Log_Index (NS)
+                  then
+                     Prev_For_Rpc := NS.Snapshot_Last_Included_Index;
+                  end if;
 
-               Debug_Put_Line
-                 (Machine_State,
-                  "[Leader Next Index: " & Leader_Next_Index_Strict'Image &
-                  "]");
-               Debug_Put_Line
-                 (Machine_State,
-                  "[Node " & Server'Image & " Prev Log Index: " &
-                  Prev_Node_Log_Index_Strict'Image & "]");
-               if Leader_Next_Index_Strict > Prev_Node_Log_Index_Strict then
-                  declare
-                     Entries : TAddLog_Type := (others => (C => null, T => 0));
-                     Number_of_entries_To_Send : constant Natural      :=
-                       Natural (Leader_Next_Index_Strict) -
-                       Natural (Prev_Node_Log_Index_Strict);
-                     Max_Batch : constant Natural :=
-                       Natural (TAddLog_Type'Last - TAddLog_Type'First + 1);
-                     Batch_Size : Natural :=
-                       Natural'Min (Number_of_entries_To_Send, Max_Batch);
-                  begin
+                  if NS.Has_Snapshot
+                    and then Prev_For_Rpc = NS.Snapshot_Last_Included_Index
+                  then
+                     T := NS.Snapshot_Last_Included_Term;
+                  elsif Prev_For_Rpc >= TransactionLogIndex_Type'First
+                  then
+                     T := Log_Term_At (NS, Prev_For_Rpc);
+                  end if;
 
-                     for i in 0 .. Batch_Size - 1 loop
-                        declare
-                           LogIndex : constant TransactionLogIndex_Type :=
+                  if T = 0 then
+                     T := NS.Current_Term;
+                  end if;
+
+                  if Leader_Next_Index_Strict > Prev_Node_Log_Index_Strict
+                  then
+                     declare
+                        Entries : TAddLog_Type :=
+                          (others => (C => null, T => 0));
+                        Number_of_entries_To_Send : constant Natural :=
+                          Natural (Leader_Next_Index_Strict) -
+                          Natural (Prev_Node_Log_Index_Strict);
+                        Max_Batch : constant Natural :=
+                          Natural
+                            (TAddLog_Type'Last - TAddLog_Type'First + 1);
+                        Batch_Size : constant Natural :=
+                          Natural'Min (Number_of_entries_To_Send, Max_Batch);
+                     begin
+                        for i in 0 .. Batch_Size - 1 loop
+                           declare
+                              LogIndex : constant TransactionLogIndex_Type :=
+                                TransactionLogIndex_Type
+                                  (Natural (Prev_Node_Log_Index_Strict) + i);
+                           begin
+                              Entries
+                                (TransactionLogIndex_Type
+                                   (Natural (TransactionLogIndex_Type'First) +
+                                    i)) :=
+                                Log_Entry_At (NS, LogIndex);
+                           end;
+                        end loop;
+
+                        AER :=
+                          (Leader_Term =>
+                             Machine_State.MState.Node_State.Current_Term,
+                           Leader_ID => Machine_State.MState.Current_Id,
+                           Prev_Log_Index_Strict => Prev_For_Rpc,
+                           Prev_Log_Term         => T,
+                           Entries               => Entries,
+                           Entries_Last_Strict   =>
                              TransactionLogIndex_Type
-                               (Natural (Prev_Node_Log_Index_Strict) + i);
-                        begin
-                           Entries
-                             (TransactionLogIndex_Type
-                                (Natural (TransactionLogIndex_Type'First) +
-                                 i)) :=
-                             Machine_State.MState.Node_State.Log (LogIndex);
-                        end;
-                     end loop;
+                               (Natural (TransactionLogIndex_Type'First) +
+                                Batch_Size),
+                           Leader_Commit_Strict  =>
+                             Machine_State.MState.Commit_Index_Strict);
 
+                        Machine_State.Sending_Message
+                          (Machine_State.MState.all, Server, AER);
+                     end;
+                  else
                      AER :=
-                       (Leader_Term           =>
+                       (Leader_Term =>
                           Machine_State.MState.Node_State.Current_Term,
-                        Leader_ID => Machine_State.MState.Current_Id,
-                        Prev_Log_Index_Strict => Prev_Node_Log_Index_Strict,
-                        Prev_Log_Term         => T, Entries => Entries,
-                        Entries_Last_Strict   =>
-                          TransactionLogIndex_Type
-                            (Natural (TransactionLogIndex_Type'First) +
-                             Batch_Size),
+                        Leader_ID             => Machine_State.MState.Current_Id,
+                        Prev_Log_Index_Strict => Prev_For_Rpc,
+                        Prev_Log_Term         => T,
+                        Entries               =>
+                          (others => (C => null, T => 0)),
+                        Entries_Last_Strict   => TransactionLogIndex_Type'First,
                         Leader_Commit_Strict  =>
                           Machine_State.MState.Commit_Index_Strict);
 
-                     Debug_Put_Line
-                       (Machine_State,
-                        "[Sent Entries to Node " &
-                        ServerID_Type'Image (Server) & "]");
-
-                     Debug_Put_Line (Machine_State, "[Entries: ");
-                     for i in 0 .. Batch_Size - 1 loop
-                        Put
-                          (Image (Entries
-                             (TransactionLogIndex_Type
-                                (Natural (TransactionLogIndex_Type'First) + i))
-                             .C));
-                     end loop;
-
-                     Put_Line ("]");
-                     Debug_Put_Line
-                       (Machine_State,
-                        "[Commit_index_strict sent in request for " &
-                        ServerID_Type'Image (Server) & " : " &
-                        TransactionLogIndex_Type'Image
-                          (Machine_State.MState.Commit_Index_Strict) &
-                        "]");
-
                      Machine_State.Sending_Message
                        (Machine_State.MState.all, Server, AER);
-                  end;
-               else
-                  Debug_Put_Line
-                    (Machine_State,
-                     "[From Leader, Node " & Server'Image &
-                     " already has the latest entries]");
-                  AER :=
-                    (Leader_Term           =>
-                       Machine_State.MState.Node_State.Current_Term,
-                     Leader_ID             => Machine_State.MState.Current_Id,
-                     Prev_Log_Index_Strict => Prev_Node_Log_Index_Strict,
-                     Prev_Log_Term         => T,
-                     Entries               => (others => (C => null, T => 0)),
-                     Entries_Last_Strict   => TransactionLogIndex_Type'First,
-                     Leader_Commit_Strict  =>
-                       Machine_State.MState.Commit_Index_Strict);
-
-                  Machine_State.Sending_Message
-                    (Machine_State.MState.all, Server, AER);
+                  end if;
                end if;
-
             end;
          end if;
       end loop;
-
    end Handle_Leader_Send_Append_Entries;
 
    procedure Handle_Leader_Send_Command

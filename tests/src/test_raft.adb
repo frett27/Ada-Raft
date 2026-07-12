@@ -87,6 +87,65 @@ package body Test_Raft is
       return "TestCmd(" & Item.Value'Image & ")";
    end To_String;
 
+   overriding
+   procedure Apply_Command
+     (State : in out Test_Application_State;
+      Cmd   : Command_Type)
+   is
+   begin
+      if Cmd /= null and then Cmd.all in Test_Command'Class then
+         State.Sum := State.Sum + Test_Command (Cmd.all).Value;
+      end if;
+   end Apply_Command;
+
+   overriding
+   procedure Save_Snapshot
+     (State  : Test_Application_State;
+      Data   : in out Snapshot_Blob;
+      Offset : Natural;
+      Length : out Snapshot_Length)
+   is
+      Pos : Natural := Offset;
+   begin
+      for Shift in 0 .. 3 loop
+         Data (Pos) :=
+           Stream_Element (Integer ((State.Sum / (256**Shift)) mod 256));
+         Pos := Pos + 1;
+      end loop;
+      Length := Snapshot_Length (Pos - Offset);
+   end Save_Snapshot;
+
+   overriding
+   procedure Restore_Snapshot
+     (State  : in out Test_Application_State;
+      Data   : Snapshot_Blob;
+      Offset : Natural;
+      Length : Snapshot_Length)
+   is
+      Pos    : Natural := Offset;
+      Result : Integer := 0;
+   begin
+      if Length < 4 then
+         return;
+      end if;
+
+      for Shift in 0 .. 3 loop
+         Result := Result + Integer (Data (Pos)) * (256**Shift);
+         Pos := Pos + 1;
+      end loop;
+
+      State.Sum := Result;
+   end Restore_Snapshot;
+
+   function Application_Sum (State : Application_State_Access) return Integer is
+   begin
+      if State = null then
+         return 0;
+      end if;
+
+      return Test_Application_State (State.all).Sum;
+   end Application_Sum;
+
 
    -- Test Routines:
    procedure Test_Storing_State (T : in out Test_Cases.Test_Case'Class) is
@@ -101,7 +160,8 @@ package body Test_Raft is
           (Current_Term           => Term_Type (1),
            Voted_For              => ServerID_Type (2),
            Log                    => Transaction,
-           Log_Upper_Bound_Strict => TransactionLogIndex_Type'First);
+           Log_Upper_Bound_Strict => TransactionLogIndex_Type'First,
+           others                 => <>);
 
       LState : Raft_Leader_Additional_State :=
         (Server_Number      => SERVER_NUMBER,
@@ -115,7 +175,8 @@ package body Test_Raft is
          Node_State          => SState,
          Commit_Index_Strict => TransactionLogIndex_Type'First,
          Last_Applied_Strict => TransactionLogIndex_Type'First,
-         Leader_State        => LState);
+         Leader_State        => LState,
+         others              => <>);
 
       S2 : Raft.Node.RaftNodeStruct (SERVER_NUMBER);
    begin
@@ -145,7 +206,8 @@ package body Test_Raft is
          SERVER_NUMBER,
          Timer_Stuff'Unrestricted_Access,
          Timer_Stuff'Unrestricted_Access,
-         Sending'Unrestricted_Access);
+         Sending'Unrestricted_Access,
+         null);
       Assert (M /= null, "M is null");
       Assert (M.State.Current_Raft_State = Follower, "M is not follower");
 
@@ -180,7 +242,8 @@ package body Test_Raft is
          SERVER_NUMBER,
          Timer_Stuff'Unrestricted_Access,
          Timer_Stuff'Unrestricted_Access,
-         Sending'Unrestricted_Access);
+         Sending'Unrestricted_Access,
+         null);
 
       declare
          T_Timeout : Timer_Timeout := (Timer_Instance => Election_Timer);

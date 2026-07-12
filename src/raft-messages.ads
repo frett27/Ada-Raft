@@ -41,4 +41,20 @@ package Raft.Messages is
       Command_Committed : Boolean;
    end record;
 
+   type Install_Snapshot_Request is new Request_Message_Type with record
+      Leader_Term           : Term_Type;
+      Leader_ID             : ServerID_Type;
+      Last_Included_Index   : TransactionLogIndex_Type;
+      Last_Included_Term    : Term_Type;
+      Offset                : Natural;
+      Done                  : Boolean;
+      Data_Length           : Natural range 0 .. MAX_SNAPSHOT_CHUNK;
+      Data                  : Snapshot_Chunk;
+   end record;
+
+   type Install_Snapshot_Response is new Response_Message_Type with record
+      T   : Term_Type;
+      SID : ServerID_Type;
+   end record;
+
 end Raft.Messages;

@@ -5,6 +5,7 @@ with raft.comm;
 with raft.node;
 with Ada.Streams; use Ada.Streams;
 with Raft; use Raft;
+with Raft.State_Machine; use Raft.State_Machine;
 
 package Test_Raft is
 
@@ -54,6 +55,35 @@ package Test_Raft is
 
   overriding
   function To_String(Item : Test_Command) return String;
+
+  -- -------------------------------------------------------
+  -- Example application state: running sum of command values
+  -- -------------------------------------------------------
+
+  type Test_Application_State is new Application_State with record
+    Sum : Integer := 0;
+  end record;
+
+  overriding
+  procedure Apply_Command
+    (State : in out Test_Application_State;
+     Cmd   : Command_Type);
+
+   overriding
+   procedure Save_Snapshot
+     (State  : Test_Application_State;
+      Data   : in out Snapshot_Blob;
+      Offset : Natural;
+      Length : out Snapshot_Length);
+
+   overriding
+   procedure Restore_Snapshot
+     (State  : in out Test_Application_State;
+      Data   : Snapshot_Blob;
+      Offset : Natural;
+      Length : Snapshot_Length);
+
+  function Application_Sum (State : Application_State_Access) return Integer;
 
 
 

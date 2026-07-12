@@ -43,6 +43,15 @@ package Raft is
 
    type TLog_Access_Type is access all TLog_Type;
 
+   MAX_SNAPSHOT_BYTES : constant := 4096;
+   MAX_SNAPSHOT_CHUNK : constant := 512;
+
+   type Snapshot_Chunk is array (1 .. MAX_SNAPSHOT_CHUNK) of Stream_Element;
+
+   type Snapshot_Blob is array (1 .. MAX_SNAPSHOT_BYTES) of Stream_Element;
+
+   subtype Snapshot_Length is Natural range 0 .. MAX_SNAPSHOT_BYTES;
+
    function To_String (Item : Command_Type_Implementation) return String
    is abstract;
 

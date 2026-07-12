@@ -123,6 +123,9 @@ classDiagram
         Last_Applied : TransactionLogIndexPointer :=
          UNDEFINED_TRANSACTION_LOG_INDEX;
 
+        Application_State : access Application_State'Class;
+        --  optional hook: Apply_Command / Save_Snapshot / Restore_Snapshot
+
         -- leader specific implementation
         Leader_State : Raft_Leader_Additional_State;
     }
@@ -167,6 +170,22 @@ classDiagram
 ### Raft Machine State
 
 Handle all the state's specific behaviour and divise the implementation into localized implementation. The machine state contains a reference to the state. 
+
+
+### Application state and snapshots
+
+Raft replicates the **log**; the library user owns the **application state**
+updated by committed commands. Extend `Raft.State_Machine.Application_State`:
+
+- `Apply_Command` — apply one committed log entry to local state
+- `Save_Snapshot` / `Restore_Snapshot` — serialize state into the snapshot blob
+  (after the 8-byte `lastIncludedIndex` / `lastIncludedTerm` header)
+
+Register an instance on each node via `Create_Machine` (`App_State` parameter).
+When `commitIndex` advances, `Apply_Committed_Entries` applies all pending
+entries (`lastApplied` .. `commitIndex`). Compaction stores the application
+image in the snapshot; `InstallSnapshot` restores it and replays the log suffix.
+
 
 
 ## Implementation review

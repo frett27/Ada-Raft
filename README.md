@@ -31,9 +31,10 @@ Be able to use it on several nodes
 - [X] Basic Raft Algorithm
 - [X] Leader election
 - [x] Log replication
-- [ ] Test tck - validation for nominal and specific use cases
-  - [ ] Saving the messages and tests to be able to replay and be consistent in the test
-- [ ] Log Compaction (handling of persistence for the log result)
+- [X] Test tck - validation for nominal and specific use cases
+  - [X] Saving the messages and tests to be able to replay and be consistent in the test
+- [X] Log Compaction (handling of persistence for the log result)
+- [X] Application state machine (apply committed commands, snapshot/restore)
 - [ ] Client Handling / Commit broadcast (handling of hi stressing the server)
 
 - [ ] Testing - (Formal Validation)

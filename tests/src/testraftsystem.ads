@@ -1,6 +1,7 @@
 with Raft.Node;         use Raft.Node;
 with Raft.Comm;         use Raft.Comm;
 with Raft.Messages;     use Raft.Messages;
+with Raft.Snapshot;     use Raft.Snapshot;
 with Communication;     use Communication;
 with Communication.Local; use Communication.Local;
 with Raft;              use Raft;
@@ -43,6 +44,9 @@ package TestRaftSystem is
     function Count_Nodes_In_State (S : RaftStateEnum) return Natural;
 
     function Node_Commit_Index (SID : ServerID_Type)
+      return TransactionLogIndex_Type;
+
+    function Node_Last_Applied (SID : ServerID_Type)
       return TransactionLogIndex_Type;
 
     function Node_Log_Upper_Bound (SID : ServerID_Type)
@@ -89,6 +93,14 @@ package TestRaftSystem is
        return Request_Vote_Request;
 
     function Node_Last_Log_Index (SID : ServerID_Type)
+      return TransactionLogIndex_Type;
+
+    function Node_Has_Snapshot (SID : ServerID_Type) return Boolean;
+
+    function Node_Snapshot_Last_Index (SID : ServerID_Type)
+      return TransactionLogIndex_Type;
+
+    function Node_First_Retained_Log_Index (SID : ServerID_Type)
       return TransactionLogIndex_Type;
 
     procedure Process_Pending_Messages;
