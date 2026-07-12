@@ -131,6 +131,18 @@ package body TestRaftSystem is
        return NULL_SERVER;
     end Leader_Id;
 
+    function Connected_Leader_Id return ServerID_Type is
+    begin
+       for I in 1 .. SERVER_NUMBER loop
+          if Node_Connected (I)
+            and then Nodes (I).State.Current_Raft_State = Leader
+          then
+             return I;
+          end if;
+       end loop;
+       return NULL_SERVER;
+    end Connected_Leader_Id;
+
     procedure Set_Node_Term (SID : ServerID_Type; Term : Term_Type) is
     begin
        Nodes (SID).State.Node_State.Current_Term := Term;
@@ -273,6 +285,43 @@ package body TestRaftSystem is
        Start_New_Epoch_And_Handle_Timers (Epoch);
     end Advance_One_Epoch;
 
+    procedure Disconnect_Node (SID : ServerID_Type) is
+    begin
+       Node_Connected (SID) := False;
+       Debug_Test_Message
+         ("Disconnect_Node: " & ServerID_Type'Image (SID));
+    end Disconnect_Node;
+
+    procedure Connect_Node (SID : ServerID_Type) is
+    begin
+       Node_Connected (SID) := True;
+       Debug_Test_Message ("Connect_Node: " & ServerID_Type'Image (SID));
+    end Connect_Node;
+
+    procedure Connect_All_Nodes is
+    begin
+       for I in 1 .. SERVER_NUMBER loop
+          Node_Connected (I) := True;
+       end loop;
+       Debug_Test_Message ("Connect_All_Nodes");
+    end Connect_All_Nodes;
+
+    function Is_Node_Connected (SID : ServerID_Type) return Boolean is
+    begin
+       return Node_Connected (SID);
+    end Is_Node_Connected;
+
+    function Connected_Node_Count return Natural is
+       Count : Natural := 0;
+    begin
+       for I in 1 .. SERVER_NUMBER loop
+          if Node_Connected (I) then
+             Count := Count + 1;
+          end if;
+       end loop;
+       return Count;
+    end Connected_Node_Count;
+
     function Decrement_Timer_Counter
        (SID : ServerID_Type; Timer : Timer_Type; decrement : Natural)
         return Boolean
@@ -354,6 +403,7 @@ package body TestRaftSystem is
         for i in 1 .. SERVER_NUMBER loop
             Timers (i, Election_Timer)  := 0;
             Timers (i, Heartbeat_Timer) := 0;
+            Node_Connected (i)          := True;
         end loop;
 
         Message_Buffer := new Message_Buffer_Type;
@@ -407,10 +457,24 @@ package body TestRaftSystem is
                 M      : Message_Type'Class :=
                    Message_Type'Class'Input (Message_Buffer);
             begin
-                Debug_Test_Message
-                   ("Delivering Message from Node " & ServerID_Type'Image (SID_From) & " to node " &
-                    ServerID_Type'Image (SID_To));
-                Send (NHBinding, SID_From, SID_To, M);
+                if SID_From /= SID_To
+                  and then (not Node_Connected (SID_From)
+                            or else not Node_Connected (SID_To))
+                then
+                    Debug_Test_Message
+                       ("Dropping message from "
+                        & ServerID_Type'Image (SID_From)
+                        & " to "
+                        & ServerID_Type'Image (SID_To)
+                        & " (network partition)");
+                else
+                    Debug_Test_Message
+                       ("Delivering Message from Node "
+                        & ServerID_Type'Image (SID_From)
+                        & " to node "
+                        & ServerID_Type'Image (SID_To));
+                    Send (NHBinding, SID_From, SID_To, M);
+                end if;
             exception
                 when E : others =>
                     Debug_Test_Message
@@ -433,10 +497,9 @@ package body TestRaftSystem is
 
     procedure Start_New_Epoch_And_Handle_Timers (Epoch : Epoch_Type) is
     begin
-        New_Line;
         Debug_Test_Message ("[[EPOCH " & Epoch'Image & "]]");
         for i in 1 .. SERVER_NUMBER loop
-            Put_Line
+            Debug_Test_Message
                ("     Node " & i'Image & ": " &
                 RaftStateEnum'Image (Nodes (i).State.Current_Raft_State));
         end loop;

@@ -53,6 +53,8 @@ package TestRaftSystem is
 
     function Leader_Id return ServerID_Type;
 
+    function Connected_Leader_Id return ServerID_Type;
+
     procedure Set_Node_Term (SID : ServerID_Type; Term : Term_Type);
 
     procedure Set_Node_Voted_For
@@ -93,6 +95,17 @@ package TestRaftSystem is
 
     procedure Advance_One_Epoch (Epoch : Epoch_Type);
 
+    --  Network partition simulation (inter-node RPC only; local timers still run).
+    procedure Disconnect_Node (SID : ServerID_Type);
+
+    procedure Connect_Node (SID : ServerID_Type);
+
+    procedure Connect_All_Nodes;
+
+    function Is_Node_Connected (SID : ServerID_Type) return Boolean;
+
+    function Connected_Node_Count return Natural;
+
     -- deliver a pushed message
     procedure Deliver_Pushed_Message;
 
@@ -122,6 +135,10 @@ private
 
     -- this is the array of nodes
     Nodes          : Node_Array;
+
+    --  Per-node connectivity for network partition tests.
+    Node_Connected : array (ServerID_Type range 1 .. SERVER_NUMBER) of Boolean :=
+      (others => True);
 
     -- this is the global hub, for nodes communication
     NetHub         : aliased Net_Hub_Wide_Access;

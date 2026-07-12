@@ -23,4 +23,7 @@ package Test_Raft_States is
    procedure Test_At_Most_One_Leader
      (T : in out Test_Cases.Test_Case'Class);
 
+   procedure Test_Network_Partition_Leader_Availability
+     (T : in out Test_Cases.Test_Case'Class);
+
 end Test_Raft_States;

@@ -200,6 +200,44 @@ package body Raft.Node is
       end if;
    end Check_Request_Term;
 
+   procedure Check_Response_Term
+     (Machine   : Raft_Node_Access; M : Message_Type'Class;
+      New_State : in out RaftWishedStateEnum)
+   is
+      A : constant access Raft_State_Machine'Class :=
+        Machine.Current_Machine_State;
+   begin
+      if M'Tag = Append_Entries_Response'Tag then
+         declare
+            Res : constant Append_Entries_Response :=
+              Append_Entries_Response (M);
+         begin
+            if Res.T > A.MState.Node_State.Current_Term then
+               A.MState.Node_State.Current_Term := Res.T;
+               New_State                        := FOLLOWER;
+            end if;
+         end;
+      elsif M'Tag = Request_Vote_Response'Tag then
+         declare
+            Res : constant Request_Vote_Response :=
+              Request_Vote_Response (M);
+         begin
+            if Res.T > A.MState.Node_State.Current_Term then
+               A.MState.Node_State.Current_Term := Res.T;
+               New_State                        := FOLLOWER;
+            end if;
+         end;
+      end if;
+   end Check_Response_Term;
+
+   procedure Reset_Election_Timer (Machine : Raft_Node_Access) is
+   begin
+      Machine.Current_Machine_State.Timer_Cancel
+        (Machine.Current_Machine_State.MState.all, Election_Timer);
+      Machine.Current_Machine_State.Timer_Start
+        (Machine.Current_Machine_State.MState.all, Election_Timer);
+   end Reset_Election_Timer;
+
    procedure Switch_To_State
      (Machine : Raft_Node_Access; New_State : RaftWishedStateEnum)
    is
@@ -297,20 +335,21 @@ package body Raft.Node is
          "[Received_message: " & Ada.Tags.Expanded_Name (M'Tag) & "] ");
 
       Check_Request_Term (Machine, M, New_State);
+      Check_Response_Term (Machine, M, New_State);
       Switch_To_State (Machine, New_State);
 
       A := Machine.Current_Machine_State;
 
-      if Ada.Tags.Is_Descendant_At_Same_Level (M'Tag, Request_Message_Type'Tag)
-      then
-
-         --  a request received, reset the election timer
-         Machine.Current_Machine_State.Timer_Cancel
-           (Machine.Current_Machine_State.MState.all, Election_Timer);
-
-         Machine.Current_Machine_State.Timer_Start
-           (Machine.Current_Machine_State.MState.all, Election_Timer);
-
+      if M'Tag = Append_Entries_Request'Tag then
+         declare
+            AER : constant Append_Entries_Request :=
+              Append_Entries_Request (M);
+         begin
+            --  §5.2: reset election timer only for the current leader
+            if AER.Leader_Term >= Machine.State.Node_State.Current_Term then
+               Reset_Election_Timer (Machine);
+            end if;
+         end;
       end if;
 
       --  respond to vote request
@@ -423,6 +462,7 @@ package body Raft.Node is
 
                Machine.Current_Machine_State.MState.Node_State.Voted_For :=
                  Req.Candidate_ID;
+               Reset_Election_Timer (Machine);
                Res :=
                  (Vote_Granted   => True,
                   Vote_Server_ID => Machine.State.Current_Id,
@@ -1034,9 +1074,13 @@ package body Raft.Node is
                      Number_of_entries_To_Send : constant Natural      :=
                        Natural (Leader_Next_Index_Strict) -
                        Natural (Prev_Node_Log_Index_Strict);
+                     Max_Batch : constant Natural :=
+                       Natural (TAddLog_Type'Last - TAddLog_Type'First + 1);
+                     Batch_Size : Natural :=
+                       Natural'Min (Number_of_entries_To_Send, Max_Batch);
                   begin
 
-                     for i in 0 .. Number_of_entries_To_Send - 1 loop
+                     for i in 0 .. Batch_Size - 1 loop
                         declare
                            LogIndex : constant TransactionLogIndex_Type :=
                              TransactionLogIndex_Type
@@ -1059,7 +1103,7 @@ package body Raft.Node is
                         Entries_Last_Strict   =>
                           TransactionLogIndex_Type
                             (Natural (TransactionLogIndex_Type'First) +
-                             Number_of_entries_To_Send),
+                             Batch_Size),
                         Leader_Commit_Strict  =>
                           Machine_State.MState.Commit_Index_Strict);
 
@@ -1069,7 +1113,7 @@ package body Raft.Node is
                         ServerID_Type'Image (Server) & "]");
 
                      Debug_Put_Line (Machine_State, "[Entries: ");
-                     for i in 0 .. Number_of_entries_To_Send - 1 loop
+                     for i in 0 .. Batch_Size - 1 loop
                         Put
                           (Image (Entries
                              (TransactionLogIndex_Type
