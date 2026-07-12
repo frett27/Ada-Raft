@@ -1,6 +1,6 @@
 # AdaRaft
 
-An Ada experiment in learning [Raft](https://raft.github.io/) — by building a **deterministic, multi-node model** first, then growing the protocol core inside it.
+An Ada experience in implementing [Raft](https://raft.github.io/) — by building a **deterministic, multi-node model** first, then growing the protocol core inside it.
 
 This began as a holiday project. The main idea behind the design is to allow **extensive tests on edge cases** — split votes, stale leaders, log gaps, partitions, snapshot catch-up — **before** layering on everything real deployments need (network I/O, disk failures, timeouts in the wild, and all the error paths that come with them). Time and messaging stay under explicit control (external timers, epoch stepping, a queued message buffer) so those scenarios can be stepped through reproducibly. The tests have been useful; they are still far from complete, and I/O handling is largely deferred.
 
