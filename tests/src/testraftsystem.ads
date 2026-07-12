@@ -8,7 +8,7 @@ with Ada.Streams; use Ada.Streams;
 
 -- this package contains an "inmemory" raft system , used for tests
 -- this instance is positionning some state and messages to test
--- border cases and normal operations
+-- edge cases and normal operations
 
 generic
     -- number of servers in the system

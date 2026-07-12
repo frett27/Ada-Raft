@@ -38,6 +38,7 @@ package Raft is
       T : Term_Type;
    end record;
 
+   -- this is the raft log type, a command associated to the term
    type TLog_Type is
      array (TransactionLogIndex_Type range <>) of Command_And_Term_Entry_Type;
    subtype TAddLog_Type is
