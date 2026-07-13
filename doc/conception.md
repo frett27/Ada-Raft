@@ -1,200 +1,98 @@
+# Raft protocol — design concepts
 
-# Raft protocol implementation design concepts
+Design is **test-first**: time and messaging are external so runs are deterministic (epochs, queued delivery, forced timeouts). That makes edge cases — split votes, partitions, compaction, lagging followers — reproducible without wall-clock races.
 
-Design is oriented for the library beeing properly and easily tested. This lead to disable time, be able to control message ordering and delays.
-=> Time is an issue for proving the working of the protocol, as the protocol is based on timeouts. Evicting time, or providing a time variable (or epoch) then some test condition can be applied.
+## Events and time
 
+Timers live outside the node. Tests step an **epoch** and fire election/heartbeat timeouts explicitly.
 
+## Communication
 
-# Events
-
-Timers are handled externally, this permit to make some edge and limit cases, to better tests the implementation.
-
-
-
-# Communication sub systems
-
-A couple of objects define the communication between Raft nodes. There are no links between communication objects and the Raft nodes. This is done externally with a message loop.
-
+Nodes do not talk to each other directly. A **message loop** (buffer + hub/links) routes RPCs; partitions and delivery order are test-controlled.
 
 ```mermaid
 classDiagram
-
-    class Net_Hub {
-    
-    }
-
-    class Net_Link {
-        associated_message_callback
-        hostname
-        *Net_Hub
-    }
-
+    class Net_Hub
+    class Net_Link
+    class Raft_Node
     Net_Hub "1" -- "*" Net_Link
-    
-
-    class Raft_Node {
-    
-    }
-
     Raft_Node --> Net_Hub
     Raft_Node --> Net_Link
 ```
 
-### Net_Hub
+- **Net_Hub** — naming and `Send`; each node has a **Net_Link** with a receive callback.
+- **IDs** — `ServerID_Type` is the address on every RPC.
 
-The Net_Hub is the object that define the communication means and hosts access (naming). This object is defined along the raft_node. For each RaftNode, a NetLink object is created, referencing a callback procedure for the received messages.
-
-Net Links are created from the NetHub, using the Create_Link procedure.
-
-```
-    Create_Link(NetHub, HostName : in Unbounded_String, Callback : in    
-        Message_Received_For_Host_Callback; Link : out Net_Link);
-```
-the callback procedure is defined as,:
-
-```
-    procedure Link_Callback(From,To : in Net_Link; Message : in Stream_Element_Array);
-```
-To centralize the message reception, if multiple nodes are executed on the same process, the from and to parameters are used to determine the origin and destination of the message.
-
-
-
-### Sending a message
-
-
-- to send a message, this is done on the Net_Hub, as the nethub is properly constructed, one can send a message to a specific node. Using the Send procedure : 
-
-- the Net_Link is created from the NetHub , using the Create_Link
-- 
-- 
-
-```
-    Send(L: Net_Hub, Sender, To : in Net_Link, Message : in Message_Type'Class)
-```
-
-
-
-
-
-
-All Nodes are referenced with IDS for communication. These ids are the reference in all communications.
-
-Communication hub -> define the communication means and hosts access (naming).
-
-
-
-
-## Raft Machine
-
-Handle all the state and handle transition changing procedures
-
-
+## Raft node structure
 
 ```mermaid
 classDiagram
-
-	class RaftNode {
-	
-        State : aliased RaftNodeStruct;
-
-        MState_Leader    : aliased Raft_State_Machine_Leader;
-        MState_Candidate : aliased Raft_State_Machine_Candidat;
-        MState_Follower  : aliased Raft_State_Machine_Follower;
-
-        Current_Machine_State : Raft_State_Machine_Wide_Access;
+    class RaftNode {
+        State : RaftNodeStruct
+        MState_Leader / Candidate / Follower
+        Current_Machine_State
     }
-    
-    RaftNode ..> Raft_State_Machine_Leader
-    RaftNode ..> Raft_State_Machine_Follower
-    RaftNode ..> Raft_State_Machine_Candidate
-    
     class RaftNodeStruct {
-        Current_Raft_State : RaftStateEnum;
-
-        -- id of the current server
-        Current_Id : ServerID;
-
-        Node_State : Raft_Node_State;
-
-        -- volatile for all states
-        Commit_Index : TransactionLogIndexPointer :=
-         UNDEFINED_TRANSACTION_LOG_INDEX;
-        Last_Applied : TransactionLogIndexPointer :=
-         UNDEFINED_TRANSACTION_LOG_INDEX;
-
-        Application_State : access Application_State'Class;
-        --  optional hook: Apply_Command / Save_Snapshot / Restore_Snapshot
-
-        -- leader specific implementation
-        Leader_State : Raft_Leader_Additional_State;
+        Node_State : Raft_Node_State
+        Commit_Index_Strict
+        Last_Applied_Strict
+        Application_State
+        Leader_State
+        Snapshot_Send_* 
     }
-    
-    RaftNode --> RaftNodeStruct
-    RaftNodeStruct --> Raft_Node_State
     class Raft_Node_State {
-        -- persisted
-        Current_Term    : Term;
-        Voted_For       : ServerID := 0;
-        Log             : TLog (TransactionLogIndex'First .. MAX_LOG);
-        Log_Upper_Bound : TransactionLogIndexPointer;
+        Current_Term
+        Voted_For
+        Log : Shifted_Log
+        Has_Snapshot
+        Snapshot_Last_Included_*
+        Snapshot_Data
     }
-    
-    class Raft_State_Machine {
-    	 MState : RaftNodeStruct_Access;
-
-        -- Note : to refactor, theses pointers should be in the machine without
-        -- extra informations given to the state (to limit complexity)
-        Timer_Cancel    : Cancel_Timer;
-        Timer_Start     : Start_Timer;
-        Sending_Message : Message_Sending;
-        
-        Handle_Message_Machine_State(M: Message_type'Class)
-
-    }
-    
-    Raft_State_Machine ..> RaftNodeStruct
-    
-    Raft_State_Machine_Leader <|-- Raft_State_Machine
-    Raft_State_Machine_Follower <|-- Raft_State_Machine
-    Raft_State_Machine_Candidate <|-- Raft_State_Machine
-    
-    class Raft_State_Machine_Candidate {
-        Server_Vote_Responses : Array_Of_ServerId_Booleans := (others => False);
-        Server_Vote_Responses_Status : Array_Of_ServerId_Booleans := (others => False);
-    }
+    RaftNode --> RaftNodeStruct
+    Raft_State_Machine <|-- Leader
+    Raft_State_Machine <|-- Follower
+    Raft_State_Machine <|-- Candidate
 ```
 
+**State machines** (`Raft_State_Machine_*`) hold role-specific behaviour; `Handle_Message` dispatches by current role. Shared persistent data sits in `Raft_Node_State`; volatile leader fields (`nextIndex`, `matchIndex`, snapshot send progress) sit in `RaftNodeStruct`.
 
+## Transaction log — `Raft.Log_Storage`
 
-### Raft Machine State
+The log is no longer a single growing array. **`Shifted_Log`** keeps a fixed **physical** capacity (`MAX_PHYSICAL_INDEX`, default 100 slots) while **logical** indices grow without bound:
 
-Handle all the state's specific behaviour and divise the implementation into localized implementation. The machine state contains a reference to the state. 
+- `Base` — first logical index stored in `Slots`
+- `Upper` — exclusive end of the logical range
+- slot = `logical_index - Base + 1`
 
+Compaction **rebases** `Base` via `Compact_Prefix` / `Reset_After_Snapshot`. If the retained suffix exceeds physical capacity → `Log_Full`.
 
-### Application state and snapshots
+`Raft.Snapshot` exposes `Log_Term_At`, `Log_Entry_At`, `Has_Log_Entry_At` so RPC handlers use logical indices without touching slot math.
 
-Raft replicates the **log**; the library user owns the **application state**
-updated by committed commands. Extend `Raft.State_Machine.Application_State`:
+## Snapshots and compaction — `Raft.Snapshot`
 
-- `Apply_Command` — apply one committed log entry to local state
-- `Save_Snapshot` / `Restore_Snapshot` — serialize state into the snapshot blob
-  (after the 8-byte `lastIncludedIndex` / `lastIncludedTerm` header)
+Triggered after commit advances (`Compact_If_Needed`):
 
-Register an instance on each node via `Create_Machine` (`App_State` parameter).
-When `commitIndex` advances, `Apply_Committed_Entries` applies all pending
-entries (`lastApplied` .. `commitIndex`). Compaction stores the application
-image in the snapshot; `InstallSnapshot` restores it and replays the log suffix.
+1. Build snapshot blob: 8-byte header (`lastIncludedIndex`, `lastIncludedTerm`) + optional application payload.
+2. Set `Has_Snapshot` and snapshot metadata on the node.
+3. Trim the physical log prefix (see retention below).
 
+**`COMPACT_THRESHOLD`** — minimum committed entries since last snapshot before compacting.
 
+**`COMPACT_LOG_RETENTION`** (default **0**, opt-in) — after compact, keep the last *N* committed entries in the physical log (snapshot still covers full commit). Lagging followers inside that window catch up via **AppendEntries** instead of **InstallSnapshot** / long `nextIndex` backtracking. Retention is capped when uncommitted entries fill the physical log.
 
-## Implementation review
+`Follower_Needs_Snapshot` — `false` when `nextIndex` falls inside the retained physical range (`>= Base_Index`).
 
-- Message serialization, type serialization
-- Simplicity of starting a new project
-- Possible applications, illustrations
+Leader replication decisions are logged under **`[ leader N replication ]`** (reject reason, backtracking, retention vs snapshot path).
 
+## Application state
 
+Raft replicates the **log**; the user owns **application state** via `Raft.State_Machine.Application_State`:
 
+- `Apply_Command` — one committed entry
+- `Save_Snapshot` / `Restore_Snapshot` — blob after the 8-byte header
 
+Register with `Create_Machine` (`App_State`). On commit advance, `Apply_Committed_Entries` runs `lastApplied .. commitIndex`. `InstallSnapshot` restores application state and replays the log suffix.
 
+## Tests
+
+Layers: buffer units, isolated RPCs, 3-node scenarios, compaction/snapshot, **log storage** units, long command runs with periodic compact. See [tests.md](tests.md).
