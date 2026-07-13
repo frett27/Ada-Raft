@@ -17,7 +17,7 @@ AdaRaft is tiny compared to those industrial codebases, but it tries to borrow t
 - **A path to proof** — [SPARK](doc/spark.md) contracts on parts of the communication and buffer layers; we would like to extend that gradually, not pretend the whole crate is verified yet.
 - **Same language for core and tests** — Ada end to end, which matches how many large Ada projects keep implementation and validation close together.
 
-We do **not** claim aviation-grade certification for this repo. We simply hope Ada’s experience from large, correctness-sensitive projects can **power** a consensus core that is small enough to test thoroughly before I/O complexity piles on.
+We do **not** claim aviation-grade certification for this repo. We simply hope Ada's experience from large, correctness-sensitive projects can **power** a consensus core that is small enough to test thoroughly before I/O complexity piles on.
 
 ## Why this project?
 
@@ -27,11 +27,11 @@ What we wanted here was a place to **test that behaviour extensively and determi
 
 - **Repeatable runs** — same epoch steps and message delivery order give the same outcome; useful when refactoring election or snapshot code.
 - **Edge cases on demand** — split votes, stale leaders, partitions, lagging followers, compaction: scenarios that are painful to reproduce with wall-clock timing alone.
-- **Regression safety net** — the suite is small (27 tests at last count) but meant to grow; each fix for a protocol corner case can stay pinned by a test that runs the same way every CI run.
+- **Regression safety net** — **35 tests** at last count (states, protocol RPCs, log storage, compaction, 3-node system runs including a long command stream); meant to grow as corner cases are pinned.
 
 AdaRaft is a modest attempt to implement [Raft](https://raft.github.io/) in **Ada** with that testing posture in mind, together with:
 
-- Ada’s emphasis on **clarity and correctness** (see [Why Ada?](#why-ada) above)
+- Ada's emphasis on **clarity and correctness** (see [Why Ada?](#why-ada) above)
 - a design that prioritises **protocol edge cases** before exhaustive I/O error handling (yet)
 - a small codebase (easier to read than to deploy)
 - a deterministic harness — details in [Correctness approach](#correctness-approach) below
@@ -51,7 +51,7 @@ Consensus bugs are often timing-dependent and awkward to reproduce. Here we trie
 | Deterministic messaging | RPCs pass through a **message buffer** with explicit delivery — partitions and reordering without flaky wall-clock races. |
 | Reproducible runs | `Advance_One_Epoch`, `Run_Steps`, etc. in [doc/tests.md](doc/tests.md). |
 | Paper as guide | Tests are loosely mapped to Raft **Figure 2** (elections, terms, log match, commit, snapshots). |
-| Layered tests | Buffer units, isolated RPCs, 3-node cases, partitions/compaction, and an 11-node stress run. |
+| Layered tests | Buffer units, isolated RPCs, **shifted-log** units, 3-node compaction/snapshot, long-run replication (1000+ commands), 11-node stress. |
 | Contracts | SPARK on some paths — in the spirit of Ada/SPARK work on large systems; more proof coverage would be welcome. |
 
 The in-memory hub is intentional for that first phase: it keeps edge cases testable. Production-style transport and I/O error paths would sit on top — if someone needs them — once the core behaviour is better understood.
@@ -69,16 +69,16 @@ Probably **not** for you if you need production etcd-like service, real networki
 - [X] Basic Raft algorithm (follower / candidate / leader)
 - [X] Leader election
 - [X] Log replication
+- [X] **Shifted transaction log** (`Raft.Log_Storage`) — fixed physical slots, unbounded logical indices via compaction rebase
 - [X] Log compaction + `InstallSnapshot` (including application state in snapshots)
+- [X] Optional **log retention** after compact (`Set_Compact_Log_Retention`) — keep a suffix of committed entries for incremental follower catch-up
 - [X] Application state machine (`Apply_Command`, snapshot/restore)
-- [X] Deterministic test harness (epochs, message buffer)
-  - [X] Queued messages and reproducible delivery order
+- [X] Deterministic test harness (epochs, message buffer, partitions, node reset)
+- [X] Leader replication debug lines (`[ leader N replication ]` in traces)
 - [ ] Client handling / commit broadcast
 - [ ] Formal verification (SPARK proof coverage still in progress)
 
 Core Raft through **log compaction (§7)** is in place. Client protocol and membership changes are not.
-
-Known limits: bounded log, AppendEntries batches capped at 10 entries (compile-time), in-memory messaging only.
 
 ## Quick start
 
@@ -91,7 +91,7 @@ gprbuild -P tests_raft.gpr
 ./bin/tests_raft
 ```
 
-If all goes well, tests report `OK` with no failed assertions.
+If all goes well, tests report **35** routines with no failed assertions.
 
 > **Note:** `alr build` inside `tests/` may fail due to an Alire dependency issue. `gprbuild` after `alr printenv` is what we use day to day — see [doc/tests.md](doc/tests.md).
 
@@ -104,8 +104,12 @@ Nodes talk through a **local message hub** and **message buffer**, with **extern
                          ↓
               Apply committed entries to application state
                          ↓
-              Compact log / send snapshot when needed
+              Compact log (snapshot + optional retention window)
+                         ↓
+              InstallSnapshot when follower is behind snapshot boundary
 ```
+
+The replicated log is a **`Shifted_Log`**: logical indices grow with the cluster; compaction drops prefixes and advances `Base` while keeping at most `MAX_PHYSICAL_INDEX` (100) slots in memory.
 
 More detail: [doc/conception.md](doc/conception.md)
 
@@ -115,12 +119,19 @@ More detail: [doc/conception.md](doc/conception.md)
 
 ## Application state
 
-Raft replicates the log; your program holds the meaningful state. You can extend `Raft.State_Machine.Application_State` and pass it to `Create_Machine`:
+Raft replicates the log; your program holds the meaningful state. Extend `Raft.State_Machine.Application_State` and pass it to `Create_Machine`:
 
 - `Apply_Command` — one committed entry
-- `Save_Snapshot` / `Restore_Snapshot` — blob format after the 8-byte Raft header
+- `Save_Snapshot` / `Restore_Snapshot` — blob format after the 8-byte Raft header (`lastIncludedIndex`, `lastIncludedTerm`)
 
 There is a tiny example (`Test_Application_State`, a running sum) in `tests/src/test_raft.ads`.
+
+Compaction settings (optional, for tests or tuning):
+
+```ada
+Raft.Snapshot.Set_Compact_Threshold (100);      -- entries before compact
+Raft.Snapshot.Set_Compact_Log_Retention (20);   -- 0 = trim through commit (default)
+```
 
 ## Status
 
@@ -178,6 +189,7 @@ Things we might look at eventually (no promises):
 - [ ] Membership changes
 - [ ] Pre-vote, log transmission tweaks
 - [ ] Network transport
+- [ ] Durable persistence for `Shifted_Log` and snapshots
 
 ## License
 
@@ -186,4 +198,4 @@ MIT OR Apache-2.0 WITH LLVM-exception (see `alire.toml`).
 ## Changelog
 
 - **2024-08-15** — Raft system testing (clearer tests)
-- **2026** — Log compaction, application state machine, more tests
+- **2026** — Log compaction, application state machine, `Shifted_Log` / `Raft.Log_Storage`, optional post-compact log retention, long-run compaction tests, leader replication debug traces
