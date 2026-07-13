@@ -70,6 +70,14 @@ package body Test_Raft is
         (T,
          Test_Client_Duplicate_Command_Suppressed'Access,
          "Client duplicate command suppressed");
+      Register_Routine
+        (T,
+         Test_Client_Session_Lifecycle'Access,
+         "Client session lifecycle");
+      Register_Routine
+        (T,
+         Test_Client_Inflight_Send_After_Leader_Change'Access,
+         "Client auto reconnect send after leader change");
    end Register_Tests;
 
    -- Register routines to be run
@@ -309,14 +317,17 @@ package body Test_Raft is
          "client registration must complete within step budget");
    end Client_Await_Register;
 
-   function Client_Await_Send
+      function Client_Await_Send
      (Client    : in out Raft_Client;
       Cmd       : Command_Type;
-      Max_Steps : Natural := 100) return Response_Send_Command
+      Max_Steps : Natural := 100;
+      Label     : String := "") return Response_Send_Command
    is
    begin
       if Client_Id (Client) = NO_CLIENT_ID then
          Client_Await_Register (Client, Max_Steps);
+      elsif not Has_Leader (Client) then
+         Reconnect_To_Leader (Client, Max_Steps);
       end if;
 
       Start_Send_Command (Client, Cmd);
@@ -327,12 +338,17 @@ package body Test_Raft is
          if Poll (Client) then
             null;
          end if;
-         Client_Process_Cluster;
+         Client_Step_Cluster;
+
+         if Phase (Client) = Sending then
+            Retry_Pending_Command (Client);
+         end if;
       end loop;
 
       Assert
         (Send_Complete (Client),
-         "client command must commit within step budget");
+         (if Label = "" then "client command must commit within step budget"
+          else "client command must commit: " & Label));
       return Last_Command_Response (Client);
    end Client_Await_Send;
 
@@ -1012,9 +1028,8 @@ package body Test_Raft is
       Client_Attach_Inbox;
       Drain_Client_Inbox;
 
-      --  Reconnect: drop stale leader hint and rediscover via async polling.
-      Forget_Leader (Client);
-      Client_Await_Register (Client, 100);
+      --  Reconnect after election (book §6.2 leader redirect).
+      Reconnect_To_Leader (Client, 100);
       Assert
         (Known_Leader (Client) = Leader,
          "client must rediscover the current leader after election churn");
@@ -1110,6 +1125,140 @@ package body Test_Raft is
               " must not observe a duplicated command");
       end loop;
    end Test_Client_Duplicate_Command_Suppressed;
+
+   procedure Test_Client_Session_Lifecycle
+     (T : in out Test_Cases.Test_Case'Class)
+   is
+      Client   : Raft_Client;
+      Leader   : ServerID_Type;
+      First_Id : Client_Id_Type;
+      Second_Id : Client_Id_Type;
+      Res      : Response_Send_Command;
+   begin
+      Banner ("Client session lifecycle");
+      Client_Epoch := 0;
+      Client_RS.Initialize_System;
+      Client_Install_Application_State;
+      Create_Inbox (Client_Inbox);
+
+      Create
+        (Client,
+         Client_RS.SYSTEM_SERVER_NUMBER,
+         Client_Send_To_Server'Access,
+         Client_Inbox'Access,
+         Client_Process_Cluster'Access);
+
+      Leader := Client_RS.Elect_Leader (Starter => 1, Max_Epochs => 60);
+      Assert (Leader /= NULL_SERVER, "cluster must elect a leader");
+      Client_Epoch := 60;
+      Client_RS.Run_Steps (5);
+      Client_Attach_Inbox;
+
+      Assert
+        (Session_State (Client) = Unregistered,
+         "new client should start unregistered");
+
+      Client_Await_Register (Client);
+      First_Id := Client_Id (Client);
+      Assert (Session_Active (Client), "session should be active after register");
+      Assert (Is_Registered (Client), "Is_Registered must match active session");
+
+      Res := Client_Await_Send (Client, new Test_Command'(Value => 3), 100, "first send");
+      Assert (Res.Command_Committed, "command must commit in active session");
+      Assert
+        (Session_State (Client) = Active,
+         "session returns to active after send completes");
+
+      End_Session (Client);
+      Assert
+        (Session_State (Client) = Unregistered,
+         "End_Session must return to unregistered");
+      Assert (not Session_Active (Client), "session must not stay active after end");
+      Assert
+        (Client_Id (Client) = NO_CLIENT_ID,
+         "client id must be cleared on End_Session");
+
+      begin
+         Start_Send_Command (Client, new Test_Command'(Value => 99));
+         Assert (False, "send on ended session should raise");
+      exception
+         when Client_Not_Registered =>
+            null;
+      end;
+
+      Client_Await_Register (Client, 100);
+      Client_RS.Run_Steps (5);
+      Second_Id := Client_Id (Client);
+      Assert (Session_Active (Client), "re-opened session must be active");
+      Assert
+        (Second_Id /= First_Id and then Second_Id > First_Id,
+         "new session must receive a fresh client id");
+
+      Res := Client_Await_Send (Client, new Test_Command'(Value => 4), 100, "after reopen");
+      Assert (Res.Command_Committed, "command must commit after session reopen");
+      Assert
+        (Res.Serial = Client_Serial_Type'First,
+         "serial must restart at zero for a new session");
+   end Test_Client_Session_Lifecycle;
+
+   procedure Test_Client_Inflight_Send_After_Leader_Change
+     (T : in out Test_Cases.Test_Case'Class)
+   is
+      Client       : Raft_Client;
+      First_Leader : ServerID_Type;
+      New_Leader   : ServerID_Type;
+      Res          : Response_Send_Command;
+   begin
+      Banner ("Client auto reconnect send after leader change");
+      Client_Epoch := 0;
+      Client_RS.Initialize_System;
+      Client_Install_Application_State;
+      Create_Inbox (Client_Inbox);
+
+      Create
+        (Client,
+         Client_RS.SYSTEM_SERVER_NUMBER,
+         Client_Send_To_Server'Access,
+         Client_Inbox'Access,
+         Client_Process_Cluster'Access);
+
+      First_Leader := Client_RS.Elect_Leader (Starter => 1, Max_Epochs => 60);
+      Assert (First_Leader /= NULL_SERVER, "cluster must elect a leader");
+      Client_Epoch := 60;
+      Client_RS.Run_Steps (5);
+      Client_Attach_Inbox;
+
+      Client_Await_Register (Client);
+      Res := Client_Await_Send (Client, new Test_Command'(Value => 5), 100, "before churn");
+      Assert (Res.Command_Committed, "baseline send must commit");
+
+      Client_RS.TimeOut_SID_Election_Timer (2);
+      for Round in 1 .. 80 loop
+         Client_Step_Cluster;
+         exit when Client_RS.Leader_Id /= NULL_SERVER
+           and then Client_RS.Leader_Id /= First_Leader;
+      end loop;
+
+      New_Leader := Client_RS.Leader_Id;
+      Assert (New_Leader /= NULL_SERVER, "cluster must elect a new leader");
+      Client_Attach_Inbox;
+      Drain_Client_Inbox;
+
+      Forget_Leader (Client);
+      Assert (not Has_Leader (Client), "leader hint must be cleared");
+      Assert (Client_Id (Client) /= NO_CLIENT_ID, "session id kept across reconnect");
+
+      Res := Client_Await_Send (Client, new Test_Command'(Value => 7), 100, "after churn");
+      Assert (Res.Command_Committed, "send must commit after auto reconnect");
+      Assert
+        (Known_Leader (Client) = New_Leader,
+         "client must track the new leader");
+      Assert
+        (Res.Leader_Id = New_Leader,
+         "response must come from the new leader");
+
+      Client_Wait_For_Application_Sum (12);
+   end Test_Client_Inflight_Send_After_Leader_Change;
 
 begin
    Register_Command_Stream_IO

@@ -72,6 +72,27 @@ procedure Raft_Client is
                      & " (start the cluster with ./launch.sh start)");
             end;
 
+         when Reconnect =>
+            begin
+               if Reconnect_To_Leader then
+                  Put_Line
+                    ("reconnected client id="
+                     & Client_Id_Type'Image (Registered_Client_Id)
+                     & " leader="
+                     & ServerID_Type'Image (Known_Leader_Id)
+                     & " next_serial="
+                     & Client_Serial_Type'Image (Next_Command_Serial));
+               else
+                  Put_Line
+                    ("reconnect failed (cluster unreachable or no leader)");
+               end if;
+            exception
+               when Cluster_Unreachable =>
+                  Put_Line
+                    ("reconnect failed: cluster unreachable"
+                     & " (start the cluster with ./launch.sh start)");
+            end;
+
          when Send =>
             begin
                if not Ensure_Registered then
@@ -175,6 +196,7 @@ begin
 
 exception
    when E : Example_Cli.Parse_Error =>
+      Shutdown;
       Put_Line (Exception_Message (E));
       Print_Client_Usage;
       Set_Exit_Status (Failure);

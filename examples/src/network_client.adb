@@ -30,6 +30,7 @@ package body Network_Client is
    Server_Num : ServerID_Type := 0;
    Net_Links  : ServerId_NetLink (1 .. Cluster_Config.Max_Nodes);
    Local_Link : Net_Link;
+   Ready      : Boolean := False;
 
    type Queue_Entry is record
       Length : Stream_Element_Offset := 0;
@@ -225,7 +226,7 @@ package body Network_Client is
 
       Create_Link
         (Hub_Access,
-         To_Unbounded_String (Client_Sender_Name),
+         To_Unbounded_String (Cluster_Config.Client_Sender_Name (Config)),
          Link_Callback'Unrestricted_Access,
          Local_Link);
 
@@ -235,7 +236,7 @@ package body Network_Client is
              (Hub_Access, To_Unbounded_String (Server_Hostname (SID)));
       end loop;
 
-      Start_Listener (Hub, Config.Client_Port);
+      Start_Listener (Hub, Config.Client_Port, Allow_Port_Reuse => True);
       Create_Inbox (Inbox);
 
       Create
@@ -244,11 +245,17 @@ package body Network_Client is
          Client_Send_To_Server'Access,
          Inbox'Access,
          Run_Step'Access);
+      Ready := True;
    end Initialize;
 
    procedure Shutdown is
    begin
+      if not Ready then
+         return;
+      end if;
+      End_Session (Client);
       Communication.UDP.Shutdown (Hub);
+      Ready := False;
    end Shutdown;
 
    function Register_With_Cluster return Boolean is
@@ -256,6 +263,10 @@ package body Network_Client is
    begin
       if Is_Registered (Client) then
          return True;
+      end if;
+
+      if Client_Id (Client) /= NO_CLIENT_ID then
+         return Reconnect_To_Leader;
       end if;
 
       Start_Register (Client);
@@ -277,12 +288,29 @@ package body Network_Client is
       return Register_With_Cluster;
    end Ensure_Registered;
 
+   function Reconnect_To_Leader return Boolean is
+      Max_Rounds : constant Natural :=
+        Natural (Float (Client_Timeout_S / Loop_Interval) + 1.0);
+   begin
+      Raft.Client.Reconnect_To_Leader (Client, Max_Rounds);
+      return Register_Complete (Client);
+   exception
+      when Client_No_Leader | Client_Timeout =>
+         return False;
+   end Reconnect_To_Leader;
+
    function Send_Command (Value : Integer) return Response_Send_Command is
       Deadline : constant Time := Clock + Client_Timeout_S;
       Cmd      : constant Command_Type := Make_Command (Value);
    begin
       if not Ensure_Registered then
          raise Client_No_Leader;
+      end if;
+
+      if not Has_Leader (Client) then
+         if not Reconnect_To_Leader then
+            raise Client_No_Leader;
+         end if;
       end if;
 
       Start_Send_Command (Client, Cmd);

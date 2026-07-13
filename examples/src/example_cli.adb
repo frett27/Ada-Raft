@@ -52,6 +52,7 @@ package body Example_Cli is
       Put_Line ("options:");
       Put_Line ("  -c, --config PATH      cluster TOML configuration file");
       Put_Line ("  -s, --server-id ID     server id in the cluster (1..N)");
+      Put_Line ("  -v, --verbose          log every client RPC on this node");
       Put_Line ("  -h, --help             show this help");
    end Print_Server_Usage;
 
@@ -63,6 +64,7 @@ package body Example_Cli is
       Put_Line ("  -h, --help             show this help");
       Put_Line ("commands:");
       Put_Line ("  register               open a client session with the leader");
+      Put_Line ("  reconnect              rediscover leader after an election");
       Put_Line ("  send <int> [<int> ...] send one or more commands (session serial)");
       Put_Line ("  status                 show client session state");
       Put_Line ("  audit                  print network audit counters");
@@ -74,6 +76,7 @@ package body Example_Cli is
    begin
       Put_Line ("commands:");
       Put_Line ("  register               open a client session with the leader");
+      Put_Line ("  reconnect              rediscover leader after an election");
       Put_Line ("  send <int> [<int> ...] send one or more commands (session serial)");
       Put_Line ("  status                 show client session state");
       Put_Line ("  audit                  print network audit counters");
@@ -91,6 +94,8 @@ package body Example_Cli is
    begin
       if Arg = "register" then
          Args.Command := Register;
+      elsif Arg = "reconnect" then
+         Args.Command := Reconnect;
       elsif Arg = "audit" then
          Args.Command := Audit;
       elsif Arg = "help" then
@@ -223,6 +228,11 @@ package body Example_Cli is
                raise Parse_Error with "register takes no arguments";
             end if;
             Append_Command (Script, Register);
+         elsif Cmd (1 .. Cmd_Len) = "reconnect" then
+            if Peek_Word /= "" then
+               raise Parse_Error with "reconnect takes no arguments";
+            end if;
+            Append_Command (Script, Reconnect);
          elsif Cmd (1 .. Cmd_Len) = "audit" then
             if Peek_Word /= "" then
                raise Parse_Error with "audit takes no arguments";
@@ -299,6 +309,8 @@ package body Example_Cli is
                Args.Server_Id :=
                  Natural'Value (Trim (Option_Value (I), Both));
                I := I + 1;
+            elsif Arg = "-v" or else Arg = "--verbose" then
+               Args.Verbose := True;
             elsif Is_Option (Arg) then
                raise Parse_Error with "unknown option: " & Arg;
             else

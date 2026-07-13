@@ -15,6 +15,21 @@ servers = 3
 host = "127.0.0.1"
 port = 9200
 
+[[clients]]
+name = "client"
+host = "127.0.0.1"
+port = 9200
+
+[[clients]]
+name = "client-a"
+host = "127.0.0.1"
+port = 9200
+
+[[clients]]
+name = "client-b"
+host = "127.0.0.1"
+port = 9201
+
 [[nodes]]
 id = 1
 host = "127.0.0.1"

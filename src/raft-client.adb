@@ -19,6 +19,25 @@ package body Raft.Client is
       Message_Type'Class'Output (Inbox.Buffer, M);
    end Deliver;
 
+   procedure Clear_Inbox (Inbox : in out Response_Inbox) is
+   begin
+      if Inbox.Buffer = null then
+         return;
+      end if;
+
+      loop
+         declare
+            Discard : Message_Type'Class :=
+              Message_Type'Class'Input (Inbox.Buffer);
+         begin
+            pragma Unreferenced (Discard);
+         end;
+      end loop;
+   exception
+      when Ada.IO_Exceptions.End_Error =>
+         null;
+   end Clear_Inbox;
+
    function Try_Dequeue
      (Inbox : in out Response_Inbox; Found : out Boolean)
       return Message_Type'Class
@@ -46,6 +65,19 @@ package body Raft.Client is
       end if;
    end Step_If_Configured;
 
+   procedure Reset_Session_State (C : in out Raft_Client) is
+   begin
+      C.Client_Id               := NO_CLIENT_ID;
+      C.Next_Serial             := Client_Serial_Type'First;
+      C.Leader_Id               := NULL_SERVER;
+      C.Op_Phase                := Idle;
+      C.Probe_Server            := 1;
+      C.Pending_Command         := null;
+      C.Pending_Serial          := Client_Serial_Type'First;
+      C.Last_Send_Result        := (others => <>);
+      C.Resume_After_Register   := False;
+   end Reset_Session_State;
+
    procedure Create
      (C            : in out Raft_Client;
       Server_Count : ServerID_Type;
@@ -68,12 +100,7 @@ package body Raft.Client is
       C.Send             := Send;
       C.Inbox            := Inbox;
       C.On_Step          := On_Step;
-      C.Client_Id        := NO_CLIENT_ID;
-      C.Next_Serial      := Client_Serial_Type'First;
-      C.Leader_Id        := NULL_SERVER;
-      C.Op_Phase         := Idle;
-      C.Probe_Server     := 1;
-      C.Pending_Command  := null;
+      Reset_Session_State (C);
    end Create;
 
    procedure Attach_Inbox_To_Node
@@ -92,10 +119,85 @@ package body Raft.Client is
       return C.Op_Phase;
    end Phase;
 
+   function Session_State (C : Raft_Client) return Session_Status is
+   begin
+      if C.Client_Id = NO_CLIENT_ID then
+         if C.Op_Phase = Registering then
+            return Registering;
+         end if;
+         return Unregistered;
+      end if;
+
+      case C.Op_Phase is
+         when Registering =>
+            return Registering;
+         when Sending =>
+            return Sending;
+         when Idle =>
+            return Active;
+      end case;
+   end Session_State;
+
+   function Session_Active (C : Raft_Client) return Boolean is
+   begin
+      return Session_State (C) = Active;
+   end Session_Active;
+
+   procedure Begin_Session (C : in out Raft_Client) is
+   begin
+      Start_Register (C);
+   end Begin_Session;
+
+   procedure End_Session (C : in out Raft_Client) is
+   begin
+      Reset_Session_State (C);
+      if C.Inbox /= null then
+         Clear_Inbox (C.Inbox.all);
+      end if;
+   end End_Session;
+
    procedure Forget_Leader (C : in out Raft_Client) is
    begin
       C.Leader_Id := NULL_SERVER;
    end Forget_Leader;
+
+   function Has_Leader (C : Raft_Client) return Boolean is
+   begin
+      return C.Leader_Id /= NULL_SERVER;
+   end Has_Leader;
+
+   procedure Reconnect_To_Leader (C : in out Raft_Client) is
+   begin
+      Reconnect_To_Leader (C, 100);
+   end Reconnect_To_Leader;
+
+   procedure Reconnect_To_Leader
+     (C : in out Raft_Client; Max_Steps : Natural)
+   is
+   begin
+      if C.Op_Phase /= Idle then
+         raise Client_Timeout with "client busy: operation in flight";
+      end if;
+
+      if C.Client_Id = NO_CLIENT_ID then
+         Register_With_Cluster (C, Max_Steps);
+         return;
+      end if;
+
+      --  Always probe: cached Leader_Id may be stale after an election.
+      C.Leader_Id := NULL_SERVER;
+      Begin_Session (C);
+
+      for Round in 1 .. Max_Steps loop
+         if Poll (C) and then Register_Complete (C) then
+            return;
+         end if;
+
+         Step_If_Configured (C);
+      end loop;
+
+      raise Client_No_Leader;
+   end Reconnect_To_Leader;
 
    procedure Send_Register_Probe (C : in out Raft_Client) is
    begin
@@ -111,6 +213,27 @@ package body Raft.Client is
             Client_Id => C.Client_Id,
             Serial    => C.Pending_Serial));
    end Send_Pending_Command;
+
+   procedure Resume_Pending_After_Register (C : in out Raft_Client) is
+   begin
+      if not C.Resume_After_Register or else C.Pending_Command = null then
+         C.Resume_After_Register := False;
+         C.Op_Phase              := Idle;
+         return;
+      end if;
+
+      C.Resume_After_Register := False;
+
+      if C.Client_Id = NO_CLIENT_ID or else C.Leader_Id = NULL_SERVER then
+         C.Op_Phase := Idle;
+         return;
+      end if;
+
+      C.Pending_Serial := C.Next_Serial;
+      C.Next_Serial    := Client_Serial_Type'Succ (C.Pending_Serial);
+      C.Op_Phase       := Sending;
+      Send_Pending_Command (C);
+   end Resume_Pending_After_Register;
 
    procedure Start_Register (C : in out Raft_Client) is
    begin
@@ -140,10 +263,16 @@ package body Raft.Client is
    is
    begin
       if not Res.Not_Leader and then not Res.Error then
-         C.Client_Id     := Res.Client_Id;
-         C.Leader_Id     := Res.Leader_Id;
-         C.Op_Phase      := Idle;
-         C.Next_Serial   := Client_Serial_Type'First;
+         C.Client_Id   := Res.Client_Id;
+         C.Leader_Id   := Res.Leader_Id;
+         C.Next_Serial := Client_Serial_Type'First;
+
+         if C.Resume_After_Register then
+            Resume_Pending_After_Register (C);
+            return C.Op_Phase = Idle;
+         end if;
+
+         C.Op_Phase := Idle;
          return True;
       end if;
 
@@ -189,8 +318,10 @@ package body Raft.Client is
 
       if Res.Error and then not Res.Not_Leader then
          --  Session unknown or expired on the leader: register again (book §6.3).
-         C.Client_Id     := NO_CLIENT_ID;
-         C.Next_Serial   := Client_Serial_Type'First;
+         C.Resume_After_Register :=
+           C.Op_Phase = Sending and then C.Pending_Command /= null;
+         C.Client_Id   := NO_CLIENT_ID;
+         C.Next_Serial := Client_Serial_Type'First;
          if C.Leader_Id /= NULL_SERVER then
             C.Probe_Server := C.Leader_Id;
          end if;
@@ -274,7 +405,9 @@ package body Raft.Client is
 
    function Register_Complete (C : Raft_Client) return Boolean is
    begin
-      return C.Op_Phase = Idle and then C.Client_Id /= NO_CLIENT_ID;
+      return C.Op_Phase = Idle
+        and then C.Client_Id /= NO_CLIENT_ID
+        and then C.Leader_Id /= NULL_SERVER;
    end Register_Complete;
 
    function Send_Complete (C : Raft_Client) return Boolean is
@@ -300,7 +433,7 @@ package body Raft.Client is
          return;
       end if;
 
-      Start_Register (C);
+      Begin_Session (C);
 
       for Round in 1 .. Max_Steps loop
          if Poll (C) then
@@ -329,6 +462,8 @@ package body Raft.Client is
    begin
       if C.Client_Id = NO_CLIENT_ID then
          Register_With_Cluster (C, Max_Steps);
+      elsif not Has_Leader (C) then
+         Reconnect_To_Leader (C, Max_Steps);
       end if;
 
       Start_Send_Command (C, Cmd);

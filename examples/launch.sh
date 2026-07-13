@@ -3,14 +3,24 @@
 #
 # Usage:
 #   ./launch.sh run            build if needed, stream logs to console, Ctrl+C to stop
-#   ./launch.sh start          start nodes in the background (logs under logs/)
-#   ./launch.sh stop           stop running nodes
+#   ./launch.sh start          start nodes in the background (auto-restart if killed)
+#   ./launch.sh stop           stop running nodes (disables auto-restart)
 #   ./launch.sh status         show node PIDs
 #
 # Client (in another terminal, after the cluster is up):
 #   ./client.sh register
 #   ./client.sh send 42
 #   ./client.sh audit
+#   ./scripts/send_load_dual_clients.sh   # 1000 commands, 2 client entities
+#
+# Kill/restart experiment (start mode only):
+#   pkill -f 'raft_server -c .* -s 2'   # kill node 2; supervisor restarts it
+#   tail -f logs/node-2.log               # watch [supervisor] restart lines
+#   ./launch.sh stop                      # stops supervisors and disables restart
+
+# Environment:
+#   RAFT_NODE_VERBOSE=1   log every client RPC on each node (-v)
+#   CONFIG                cluster TOML (default: cluster.toml)
 
 set -euo pipefail
 
@@ -18,6 +28,10 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
 CONFIG="${CONFIG:-cluster.toml}"
+SERVER_VERBOSE=()
+if [[ "${RAFT_NODE_VERBOSE:-0}" == "1" ]]; then
+   SERVER_VERBOSE=(-v)
+fi
 SERVER="$ROOT/bin/raft_server"
 LOG_DIR="$ROOT/logs"
 PID_DIR="$ROOT/run"
@@ -38,6 +52,10 @@ pid_file() {
    echo "$PID_DIR/node-$1.pid"
 }
 
+stop_file() {
+   echo "$PID_DIR/node-$1.stop"
+}
+
 log_file() {
    echo "$LOG_DIR/node-$1.log"
 }
@@ -51,6 +69,33 @@ is_running() {
    kill -0 "$pid" 2>/dev/null
 }
 
+run_node_supervisor() {
+   local id="$1"
+   local log stop exit_code=0
+   log="$(log_file "$id")"
+   stop="$(stop_file "$id")"
+
+   set +e
+   while [[ ! -f "$stop" ]]; do
+      printf '[supervisor] %s starting node %s\n' "$(date -Iseconds)" "$id" >>"$log"
+      "$SERVER" -c "$CONFIG" -s "$id" "${SERVER_VERBOSE[@]}" >>"$log" 2>&1
+      exit_code=$?
+      if [[ -f "$stop" ]]; then
+         break
+      fi
+      if [[ "$exit_code" -eq 2 ]]; then
+         printf '[supervisor] %s node %s fatal error (%s), not restarting\n' \
+            "$(date -Iseconds)" "$id" "$exit_code" >>"$log"
+         break
+      fi
+      printf '[supervisor] %s node %s exited (%s), restarting in 0.5s\n' \
+         "$(date -Iseconds)" "$id" "$exit_code" >>"$log"
+      sleep 0.5
+   done
+   printf '[supervisor] %s node %s supervisor stopped\n' \
+      "$(date -Iseconds)" "$id" >>"$log"
+}
+
 start_node() {
    local id="$1"
    if is_running "$id"; then
@@ -59,27 +104,36 @@ start_node() {
    fi
 
    mkdir -p "$LOG_DIR" "$PID_DIR"
+   rm -f "$(stop_file "$id")"
    : >"$(log_file "$id")"
-   "$SERVER" -c "$CONFIG" -s "$id" >>"$(log_file "$id")" 2>&1 &
+   run_node_supervisor "$id" &
    echo "$!" >"$(pid_file "$id")"
-   echo "started node $id (pid $!, log: $(log_file "$id"))"
+   echo "started node $id (supervisor pid $!, auto-restart on kill, log: $(log_file "$id"))"
 }
 
 stop_node() {
    local id="$1"
-   local pid_file
-   pid_file="$(pid_file "$id")"
-   if [[ ! -f "$pid_file" ]]; then
+   local pid_file_path stop_file_path pid
+   pid_file_path="$(pid_file "$id")"
+   stop_file_path="$(stop_file "$id")"
+   if [[ ! -f "$pid_file_path" ]]; then
       return
    fi
 
-   local pid
-   pid="$(<"$pid_file")"
+   pid="$(<"$pid_file_path")"
+   touch "$stop_file_path"
    if kill -0 "$pid" 2>/dev/null; then
       kill -- -"$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
-      echo "stopped node $id (pid $pid)"
+      for _ in 1 2 3 4 5 6 7 8 9 10; do
+         kill -0 "$pid" 2>/dev/null || break
+         sleep 0.1
+      done
+      if kill -0 "$pid" 2>/dev/null; then
+         kill -9 -- -"$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
+      fi
+      echo "stopped node $id (supervisor pid $pid)"
    fi
-   rm -f "$pid_file"
+   rm -f "$pid_file_path" "$stop_file_path"
 }
 
 start_cluster_background() {
@@ -137,7 +191,7 @@ show_status() {
    local any=false
    for id in "${NODE_IDS[@]}"; do
       if is_running "$id"; then
-         echo "node $id: running (pid $(<"$(pid_file "$id")"))"
+         echo "node $id: running (supervisor pid $(<"$(pid_file "$id")"), auto-restart)"
          any=true
       else
          echo "node $id: stopped"

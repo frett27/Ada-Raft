@@ -7,6 +7,7 @@ with Raft.Node;         use Raft.Node;
 with Cluster_Config;    use Cluster_Config;
 with Example_Cli;      use Example_Cli;
 with Network_Node;     use Network_Node;
+with Communication.UDP; use Communication.UDP;
 
 procedure Raft_Server is
 
@@ -56,6 +57,10 @@ begin
 
    Next_Audit_Epoch := Natural (Config.Raft.Audit_Interval_Epochs);
 
+   if Args.Verbose then
+      Set_Verbose_Logging (True);
+   end if;
+
    Initialize (Config, Server_Id);
 
    --  Let peer listeners bind before the first election timeouts.
@@ -87,6 +92,14 @@ exception
       Put_Line (Exception_Message (E));
       Print_Server_Usage;
       Set_Exit_Status (Failure);
+   when E : Server_Instance_Error =>
+      Shutdown;
+      Put_Line ("fatal: " & Exception_Message (E));
+      Set_Exit_Status (2);
+   when E : Network_IO_Error =>
+      Shutdown;
+      Put_Line ("fatal: " & Exception_Message (E));
+      Set_Exit_Status (2);
    when E : others =>
       Shutdown;
       Put_Line (Exception_Information (E));

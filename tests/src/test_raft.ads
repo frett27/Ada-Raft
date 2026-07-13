@@ -34,6 +34,12 @@ package Test_Raft is
    procedure Test_Client_Duplicate_Command_Suppressed
      (T : in out Test_Cases.Test_Case'Class);
 
+   procedure Test_Client_Session_Lifecycle
+     (T : in out Test_Cases.Test_Case'Class);
+
+   procedure Test_Client_Inflight_Send_After_Leader_Change
+     (T : in out Test_Cases.Test_Case'Class);
+
    type Test_Command is new Command_Type_Implementation with record
       Value : Integer := 0;
    end record;

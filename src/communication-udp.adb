@@ -61,7 +61,11 @@ package body Communication.UDP is
       end if;
    end Safe_Close;
 
-   procedure Open_Socket (Socket : in out Socket_Type; Local_Port : Port_Type) is
+   procedure Open_Socket
+     (Socket           : in out Socket_Type;
+      Local_Port       : Port_Type;
+      Allow_Port_Reuse : Boolean)
+   is
       Addr : Sock_Addr_Type :=
         (Family => Family_Inet,
          Addr   => Any_Inet_Addr,
@@ -72,11 +76,22 @@ package body Communication.UDP is
       end if;
 
       Create_Socket (Socket, Family => Family_Inet, Mode => Socket_Datagram);
-      Set_Socket_Option
-        (Socket,
-         Socket_Level,
-         (Reuse_Address, Enabled => True));
-      Bind_Socket (Socket, Addr);
+      if Allow_Port_Reuse then
+         Set_Socket_Option
+           (Socket,
+            Socket_Level,
+            (Reuse_Address, Enabled => True));
+      end if;
+      begin
+         Bind_Socket (Socket, Addr);
+      exception
+         when Socket_Error =>
+            Safe_Close (Socket);
+            raise Network_IO_Error
+              with "UDP port "
+                   & Port_Type'Image (Local_Port)
+                   & " already in use";
+      end;
       Apply_IO_Timeouts (Socket, 0.0, Recv_Timeout);
       Set_Socket_Option
         (Socket,
@@ -339,8 +354,6 @@ package body Communication.UDP is
       end loop;
 
       Free_Frame (Buffer);
-
-      accept Await_Termination;
    end Receiver_Worker;
 
    procedure Create_Hub (H : out UdpHub) is
@@ -394,12 +407,20 @@ package body Communication.UDP is
       raise Address_Not_Found with To_String (Hostname);
    end Find_Address;
 
-   procedure Open_Hub_Socket (H : in out UdpHub; Local_Port : Port_Type) is
+   procedure Open_Hub_Socket
+     (H                : in out UdpHub;
+      Local_Port       : Port_Type;
+      Allow_Port_Reuse : Boolean)
+   is
    begin
-      Open_Socket (H.Socket, Local_Port);
+      Open_Socket (H.Socket, Local_Port, Allow_Port_Reuse);
    end Open_Hub_Socket;
 
-   procedure Start_Listener (H : in out UdpHub; Local_Port : Port_Type) is
+   procedure Start_Listener
+     (H                : in out UdpHub;
+      Local_Port       : Port_Type;
+      Allow_Port_Reuse : Boolean := False)
+   is
    begin
       if H.Active then
          return;
@@ -407,7 +428,7 @@ package body Communication.UDP is
       H.Local_Port    := Local_Port;
       H.Active        := True;
       H.Stop_Receiver := False;
-      Open_Hub_Socket (H, Local_Port);
+      Open_Hub_Socket (H, Local_Port, Allow_Port_Reuse);
       H.Receiver := new Receiver_Worker;
       H.Receiver.Start (H'Unchecked_Access);
    end Start_Listener;
@@ -419,16 +440,14 @@ package body Communication.UDP is
       end if;
       H.Stop_Receiver := True;
       H.Active        := False;
-      Safe_Close (H.Socket);
+      if H.Socket /= No_Socket then
+         Apply_IO_Timeouts (H.Socket, 0.0, 0.01);
+         Safe_Close (H.Socket);
+      end if;
       if H.Receiver /= null then
-         for I in 1 .. 40 loop
-            select
-               H.Receiver.Await_Termination;
-               H.Receiver := null;
-               return;
-            or
-               delay 0.05;
-            end select;
+         --  Wait for the receiver task to leave its loop (no rendezvous).
+         for I in 1 .. 25 loop
+            delay 0.02;
          end loop;
          H.Receiver := null;
       end if;

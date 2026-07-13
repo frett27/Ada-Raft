@@ -23,7 +23,10 @@ package Communication.UDP is
       Hostname : Unbounded_String;
       Addr     : Node_Address);
 
-   procedure Start_Listener (H : in out UdpHub; Local_Port : Port_Type);
+   procedure Start_Listener
+     (H                : in out UdpHub;
+      Local_Port       : Port_Type;
+      Allow_Port_Reuse : Boolean := False);
 
    procedure Shutdown (H : in out UdpHub);
 
@@ -75,7 +78,6 @@ private
 
    task type Receiver_Worker is
       entry Start (Hub : UdpHub_Access);
-      entry Await_Termination;
    end Receiver_Worker;
 
    type Receiver_Access is access Receiver_Worker;

@@ -11,6 +11,9 @@ package Raft.Client is
 
    type Client_Phase is (Idle, Registering, Sending);
 
+   --  Book §6.3 client session lifecycle (register → active → end / renew).
+   type Session_Status is (Unregistered, Registering, Active, Sending);
+
    --  Buffered client responses delivered by Raft nodes.
    type Response_Inbox is limited private;
 
@@ -27,6 +30,8 @@ package Raft.Client is
    function Inbox_Buffer (Inbox : Response_Inbox) return Message_Buffer_Access;
 
    procedure Deliver (Inbox : in out Response_Inbox; M : Message_Type'Class);
+
+   procedure Clear_Inbox (Inbox : in out Response_Inbox);
 
    function Try_Dequeue
      (Inbox : in out Response_Inbox; Found : out Boolean)
@@ -52,7 +57,27 @@ package Raft.Client is
 
    function Phase (C : Raft_Client) return Client_Phase;
 
+   function Session_State (C : Raft_Client) return Session_Status;
+
+   function Session_Active (C : Raft_Client) return Boolean;
+
+   --  Open a session with the cluster (RegisterClient RPC).
+   procedure Begin_Session (C : in out Raft_Client);
+
+   --  Close the local session; next Begin_Session starts a fresh one.
+   procedure End_Session (C : in out Raft_Client);
+
    procedure Forget_Leader (C : in out Raft_Client);
+
+   --  Rediscover the current leader after an election (book §6.2 redirect).
+   --  Keeps the client usable: re-registers a session on the new leader when
+   --  needed. No-op when already connected to a known leader.
+   procedure Reconnect_To_Leader (C : in out Raft_Client);
+
+   procedure Reconnect_To_Leader
+     (C : in out Raft_Client; Max_Steps : Natural);
+
+   function Has_Leader (C : Raft_Client) return Boolean;
 
    procedure Start_Register (C : in out Raft_Client);
 
@@ -117,6 +142,7 @@ private
       Pending_Serial  : Client_Serial_Type;
       Pending_Command : Command_Type;
       Last_Send_Result : Response_Send_Command;
+      Resume_After_Register : Boolean := False;
    end record;
 
 end Raft.Client;

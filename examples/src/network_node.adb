@@ -1,10 +1,16 @@
 with Ada.Streams;           use Ada.Streams;
 with Ada.Text_IO;           use Ada.Text_IO;
 with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
+with Ada.Strings.Fixed;     use Ada.Strings.Fixed;
+with Ada.Strings;           use Ada.Strings;
 with Ada.IO_Exceptions;     use Ada.IO_Exceptions;
 with Ada.Numerics.Float_Random;
 with Ada.Unchecked_Deallocation;
 with Ada.Exceptions;         use Ada.Exceptions;
+with Ada.Tags;               use Ada.Tags;
+with Ada.Environment_Variables; use Ada.Environment_Variables;
+with Ada.Integer_Text_IO;
+with Interfaces.C;
 
 with Raft;                   use Raft;
 with Raft.Node;             use Raft.Node;
@@ -33,9 +39,448 @@ package body Network_Node is
    Net_Links   : ServerId_NetLink (1 .. Cluster_Config.Max_Nodes);
    Server_Num  : ServerID_Type := 0;
    Local_Id    : ServerID_Type := 0;
+   Epoch_Number  : Natural := 0;
    Client_Host : Unbounded_String;
    Client_Port : Port_Type;
    Raft_Cfg    : Raft_Settings := Default_Raft_Settings;
+   Registered_Client_Names : array (1 .. Max_Clients) of Unbounded_String :=
+     (others => Null_Unbounded_String);
+   Registered_Client_Name_Count : Natural := 0;
+
+   type Client_Route_Entry is record
+      Client_Id : Client_Id_Type := NO_CLIENT_ID;
+      Remote    : Unbounded_String := Null_Unbounded_String;
+   end record;
+
+   Client_Routes : array (1 .. Max_Clients) of Client_Route_Entry :=
+     (others => <>);
+   Pending_Register_Sender : Unbounded_String := Null_Unbounded_String;
+   Default_Client_Remote   : Unbounded_String := Null_Unbounded_String;
+
+   Verbose_Logging         : Boolean := False;
+   Verbose_Logging_Set     : Boolean := False;
+   Last_Logged_Role        : RaftStateEnum := FOLLOWER;
+   Client_Sends_Received   : Natural := 0;
+   Client_Responses_Sent   : Natural := 0;
+   Inbound_Enqueued        : Natural := 0;
+   Inbound_Processed       : Natural := 0;
+   Last_Progress_Sends     : Natural := 0;
+
+   Log_Progress_Epochs     : constant Natural := 40;
+   Client_Send_Log_Sample  : constant Positive := 10;
+
+   Lock_Directory : constant String := "run";
+   Lock_Path      : String (1 .. 128);
+   Lock_Path_Len  : Natural := 0;
+   Lock_Held      : Boolean := False;
+
+   function Current_Process_Id return Integer is
+      function C_Getpid return Interfaces.C.int;
+      pragma Import (C, C_Getpid, "getpid");
+   begin
+      return Integer (C_Getpid);
+   end Current_Process_Id;
+
+   function Process_Alive (Pid : Integer) return Boolean is
+      function C_Kill (Pid : Interfaces.C.int; Sig : Interfaces.C.int)
+         return Interfaces.C.int;
+      pragma Import (C, C_Kill, "kill");
+      Result : Interfaces.C.int;
+   begin
+      if Pid <= 0 then
+         return False;
+      end if;
+      Result := C_Kill (Interfaces.C.int (Pid), Interfaces.C.int (0));
+      return Integer (Result) = 0;
+   end Process_Alive;
+
+   procedure Remove_File (Path : String) is
+      function C_Unlink (Path : Interfaces.C.char_array) return Interfaces.C.int;
+      pragma Import (C, C_Unlink, "unlink");
+      Unused : Interfaces.C.int;
+   begin
+      Unused := C_Unlink (Interfaces.C.To_C (Path));
+   exception
+      when others =>
+         null;
+   end Remove_File;
+
+   function Lock_Directory_Exists return Boolean is
+      function C_Access
+        (Path : Interfaces.C.char_array; Mode : Interfaces.C.int)
+         return Interfaces.C.int;
+      pragma Import (C, C_Access, "access");
+      Result : Interfaces.C.int;
+   begin
+      Result := C_Access (Interfaces.C.To_C (Lock_Directory), 0);
+      return Integer (Result) = 0;
+   end Lock_Directory_Exists;
+
+   procedure Ensure_Lock_Directory is
+      function C_Mkdir
+        (Path : Interfaces.C.char_array; Mode : Interfaces.C.int)
+         return Interfaces.C.int;
+      pragma Import (C, C_Mkdir, "mkdir");
+      Unused : Interfaces.C.int;
+   begin
+      if Lock_Directory_Exists then
+         return;
+      end if;
+      Unused := C_Mkdir (Interfaces.C.To_C (Lock_Directory), 8#755#);
+   exception
+      when others =>
+         null;
+   end Ensure_Lock_Directory;
+
+   function Lock_File_Exists (Path : String) return Boolean is
+      function C_Access
+        (Name : Interfaces.C.char_array; Mode : Interfaces.C.int)
+         return Interfaces.C.int;
+      pragma Import (C, C_Access, "access");
+      Result : Interfaces.C.int;
+   begin
+      Result := C_Access (Interfaces.C.To_C (Path), 0);
+      return Integer (Result) = 0;
+   end Lock_File_Exists;
+
+   function Lock_Path_Image return String is
+   begin
+      if Lock_Path_Len = 0 then
+         raise Server_Instance_Error with "server lock path not set";
+      end if;
+      return Lock_Path (Lock_Path'First .. Lock_Path'First + Lock_Path_Len - 1);
+   end Lock_Path_Image;
+
+   procedure Set_Lock_Path (Server_Id : ServerID_Type) is
+      Name : constant String :=
+        Lock_Directory
+        & "/raft-server-"
+        & Trim (ServerID_Type'Image (Server_Id), Left)
+        & ".lock";
+   begin
+      if Name'Length > Lock_Path'Length then
+         raise Server_Instance_Error with "server lock path too long";
+      end if;
+      Lock_Path (Lock_Path'First .. Lock_Path'First + Name'Length - 1) := Name;
+      Lock_Path_Len := Name'Length;
+   end Set_Lock_Path;
+
+   procedure Read_Lock_File
+     (Path : String; Pid : out Integer; Port : out Port_Type; Ok : out Boolean)
+   is
+      File : File_Type;
+      Port_Int : Integer;
+   begin
+      Pid  := 0;
+      Port := 0;
+      Ok   := False;
+      Open (File, In_File, Path);
+      begin
+         Ada.Integer_Text_IO.Get (File, Pid);
+         Ada.Integer_Text_IO.Get (File, Port_Int);
+         Port := Port_Type (Port_Int);
+         Ok := True;
+      exception
+         when others =>
+            Ok := False;
+      end;
+      Close (File);
+   exception
+      when others =>
+         Ok := False;
+   end Read_Lock_File;
+
+   procedure Write_Lock_File
+     (Path : String; Pid : Integer; Port : Port_Type)
+   is
+      File : File_Type;
+   begin
+      Ensure_Lock_Directory;
+      Create (File, Out_File, Path);
+      Ada.Integer_Text_IO.Put (File, Pid);
+      New_Line (File);
+      Ada.Integer_Text_IO.Put (File, Integer (Port));
+      New_Line (File);
+      Close (File);
+   exception
+      when others =>
+         if Is_Open (File) then
+            Close (File);
+         end if;
+         raise;
+   end Write_Lock_File;
+
+   procedure Acquire_Instance_Lock
+     (Server_Id : ServerID_Type; Port : Port_Type)
+   is
+      Path : constant String := Lock_Path_Image;
+      Old_Pid : Integer;
+      Old_Port : Port_Type;
+      Found : Boolean;
+      My_Pid : constant Integer := Current_Process_Id;
+   begin
+      if Lock_Held then
+         return;
+      end if;
+
+      if Lock_File_Exists (Path) then
+         Read_Lock_File (Path, Old_Pid, Old_Port, Found);
+         if Found and then Process_Alive (Old_Pid) then
+            raise Server_Instance_Error
+              with "server id "
+                   & Trim (ServerID_Type'Image (Server_Id), Left)
+                   & " already running (pid "
+                   & Integer'Image (Old_Pid)
+                   & ", port "
+                   & Port_Type'Image (Old_Port)
+                   & ")";
+         end if;
+         Remove_File (Path);
+      end if;
+
+      Write_Lock_File (Path, My_Pid, Port);
+      Lock_Held := True;
+   end Acquire_Instance_Lock;
+
+   procedure Release_Instance_Lock is
+      Path : constant String := Lock_Path_Image;
+      Old_Pid : Integer;
+      Old_Port : Port_Type;
+      Found : Boolean;
+      My_Pid : constant Integer := Current_Process_Id;
+   begin
+      if not Lock_Held then
+         return;
+      end if;
+
+      if Lock_File_Exists (Path) then
+         Read_Lock_File (Path, Old_Pid, Old_Port, Found);
+         if Found and then Old_Pid = My_Pid then
+            Remove_File (Path);
+         end if;
+      end if;
+      Lock_Held := False;
+   exception
+      when others =>
+         Lock_Held := False;
+   end Release_Instance_Lock;
+
+   procedure Set_Verbose_Logging (Enabled : Boolean) is
+   begin
+      Verbose_Logging := Enabled;
+      Verbose_Logging_Set := True;
+   end Set_Verbose_Logging;
+
+   function Verbose_Logging_Enabled return Boolean is
+   begin
+      return Verbose_Logging;
+   end Verbose_Logging_Enabled;
+
+   function Env_Flag_Enabled (Name : String) return Boolean is
+   begin
+      if not Ada.Environment_Variables.Exists (Name) then
+         return False;
+      end if;
+
+      declare
+         Setting : constant String := Ada.Environment_Variables.Value (Name);
+      begin
+         if Setting = "" then
+            return False;
+         end if;
+         return Setting (Setting'First) in '1' | 'T' | 't' | 'Y' | 'y';
+      end;
+   end Env_Flag_Enabled;
+
+   procedure Configure_Logging is
+   begin
+      if not Verbose_Logging_Set then
+         Verbose_Logging := Env_Flag_Enabled ("RAFT_NODE_VERBOSE");
+      end if;
+   end Configure_Logging;
+
+   function Node_Prefix return String is
+   begin
+      return
+        Trim (ServerID_Type'Image (Local_Id), Left)
+        & " epoch="
+        & Natural'Image (Epoch_Number);
+   end Node_Prefix;
+
+   procedure Node_Log (Message : String) is
+   begin
+      Put_Line ("[node " & Node_Prefix & "] " & Message);
+   end Node_Log;
+
+   function Command_Value_Image (Cmd : Command_Type) return String is
+   begin
+      if Cmd /= null and then Cmd.all in Test_Command'Class then
+         return Integer'Image (Test_Command (Cmd.all).Value);
+      end if;
+      return "?";
+   end Command_Value_Image;
+
+   procedure Log_Client_Request
+     (Sender : String; M : Message_Type'Class)
+   is
+   begin
+      if M'Tag = Request_Register_Client'Tag then
+         Node_Log ("<- client " & Sender & " register");
+      elsif M'Tag = Request_Send_Command'Tag then
+         declare
+            Req : constant Request_Send_Command := Request_Send_Command (M);
+         begin
+            Client_Sends_Received := Client_Sends_Received + 1;
+            if Verbose_Logging
+              or else Client_Sends_Received mod Client_Send_Log_Sample = 1
+            then
+               Node_Log
+                 ("<- client "
+                  & Sender
+                  & " send id="
+                  & Trim (Client_Id_Type'Image (Req.Client_Id), Left)
+                  & " serial="
+                  & Trim (Client_Serial_Type'Image (Req.Serial), Left)
+                  & " value="
+                  & Trim (Command_Value_Image (Req.Command), Left)
+                  & " (#"
+                  & Natural'Image (Client_Sends_Received)
+                  & ")");
+            end if;
+         end;
+      end if;
+   end Log_Client_Request;
+
+   procedure Log_Client_Response
+     (Remote : Unbounded_String; M : Message_Type'Class)
+   is
+      Remote_Image : constant String := To_String (Remote);
+   begin
+      Client_Responses_Sent := Client_Responses_Sent + 1;
+
+      if M'Tag = Response_Register_Client'Tag then
+         declare
+            Res : constant Response_Register_Client :=
+              Response_Register_Client (M);
+         begin
+            Node_Log
+              ("-> client "
+               & Remote_Image
+               & " register id="
+               & Trim (Client_Id_Type'Image (Res.Client_Id), Left)
+               & " leader="
+               & Trim (ServerID_Type'Image (Res.Leader_Id), Left));
+         end;
+      elsif M'Tag = Response_Send_Command'Tag then
+         declare
+            Res : constant Response_Send_Command := Response_Send_Command (M);
+         begin
+            if Verbose_Logging
+              or else Client_Responses_Sent mod Client_Send_Log_Sample = 1
+            then
+               Node_Log
+                 ("-> client "
+                  & Remote_Image
+                  & " send id="
+                  & Trim (Client_Id_Type'Image (Res.Client_Id), Left)
+                  & " serial="
+                  & Trim (Client_Serial_Type'Image (Res.Serial), Left)
+                  & " committed="
+                  & Boolean'Image (Res.Command_Committed)
+                  & " index="
+                  & Trim
+                       (TransactionLogIndex_Type'Image (Res.Log_Index), Left)
+                  & " (#"
+                  & Natural'Image (Client_Responses_Sent)
+                  & ")");
+            end if;
+         end;
+      end if;
+   end Log_Client_Response;
+
+   procedure Log_Role_Change is
+      Current : constant RaftStateEnum := Node.State.Current_Raft_State;
+   begin
+      if Current /= Last_Logged_Role then
+         Node_Log
+           ("role "
+            & RaftStateEnum'Image (Last_Logged_Role)
+            & " -> "
+            & RaftStateEnum'Image (Current));
+         Last_Logged_Role := Current;
+      end if;
+   end Log_Role_Change;
+
+   procedure Log_Progress is
+      Pending : Natural := 0;
+   begin
+      if Epoch_Number mod Log_Progress_Epochs /= 0 then
+         return;
+      end if;
+
+      if Client_Sends_Received = Last_Progress_Sends
+        and then Node.State.Current_Raft_State /= LEADER
+      then
+         return;
+      end if;
+
+      if Inbound_Enqueued > Inbound_Processed then
+         Pending := Inbound_Enqueued - Inbound_Processed;
+      end if;
+
+      Node_Log
+        ("progress role="
+         & RaftStateEnum'Image (Node.State.Current_Raft_State)
+         & " pending_inbound="
+         & Natural'Image (Pending)
+         & " client_sends="
+         & Natural'Image (Client_Sends_Received)
+         & " client_responses="
+         & Natural'Image (Client_Responses_Sent)
+         & " app_sum="
+         & Integer'Image (Application_Sum));
+      Last_Progress_Sends := Client_Sends_Received;
+   end Log_Progress;
+
+   procedure Set_Client_Route
+     (Client_Id : Client_Id_Type; Remote : Unbounded_String)
+   is
+   begin
+      if Client_Id = NO_CLIENT_ID then
+         return;
+      end if;
+
+      for I in Client_Routes'Range loop
+         if Client_Routes (I).Client_Id = Client_Id then
+            Client_Routes (I).Remote := Remote;
+            return;
+         end if;
+      end loop;
+
+      for I in Client_Routes'Range loop
+         if Client_Routes (I).Client_Id = NO_CLIENT_ID then
+            Client_Routes (I) := (Client_Id => Client_Id, Remote => Remote);
+            return;
+         end if;
+      end loop;
+   end Set_Client_Route;
+
+   function Find_Client_Route
+     (Client_Id : Client_Id_Type) return Unbounded_String
+   is
+   begin
+      if Client_Id = NO_CLIENT_ID then
+         return Null_Unbounded_String;
+      end if;
+
+      for I in Client_Routes'Range loop
+         if Client_Routes (I).Client_Id = Client_Id then
+            return Client_Routes (I).Remote;
+         end if;
+      end loop;
+
+      return Null_Unbounded_String;
+   end Find_Client_Route;
 
    Inbound_Queue_Size   : constant := 8192;
    Max_Drain_Rounds     : constant Positive := 16;
@@ -43,7 +488,6 @@ package body Network_Node is
    --  Extra election delay while the cluster binds listeners (startup race).
    Startup_Grace_Epochs : constant Natural := 20;
 
-   Epoch_Number    : Natural := 0;
    Last_Drop_Report : Natural := 0;
 
    type Timer_Table is array (Timer_Type) of Natural;
@@ -237,9 +681,106 @@ package body Network_Node is
       Send_Outbound_Payload (Remote, To_Stream_Element_Array (MB));
    end Send_Outbound_Message;
 
+   function Is_Configured_Client (Sender : String) return Boolean is
+   begin
+      for I in 1 .. Registered_Client_Name_Count loop
+         if Sender = To_String (Registered_Client_Names (I)) then
+            return True;
+         end if;
+      end loop;
+      return Sender = Client_Sender_Name;
+   end Is_Configured_Client;
+
+   function Response_Client_Id (M : Message_Type'Class) return Client_Id_Type is
+   begin
+      if M'Tag = Response_Send_Command'Tag then
+         return Response_Send_Command (M).Client_Id;
+      elsif M'Tag = Response_Register_Client'Tag then
+         return Response_Register_Client (M).Client_Id;
+      elsif M'Tag = Response_Client_Query'Tag then
+         return Response_Client_Query (M).Client_Id;
+      else
+         return NO_CLIENT_ID;
+      end if;
+   end Response_Client_Id;
+
+   procedure Track_Client_Route
+     (Sender : Unbounded_String; M : Message_Type'Class)
+   is
+      Sender_Image : constant String := To_String (Sender);
+   begin
+      if not Is_Configured_Client (Sender_Image) then
+         return;
+      end if;
+
+      if M'Tag = Request_Register_Client'Tag then
+         Pending_Register_Sender := Sender;
+         if Verbose_Logging then
+            Node_Log
+              ("route pending register from " & Sender_Image);
+         end if;
+      elsif M'Tag = Request_Send_Command'Tag then
+         declare
+            Req : constant Request_Send_Command := Request_Send_Command (M);
+         begin
+            if Req.Client_Id /= NO_CLIENT_ID then
+               Set_Client_Route (Req.Client_Id, Sender);
+            end if;
+         end;
+      elsif M'Tag = Request_Client_Query'Tag then
+         declare
+            Query : constant Request_Client_Query := Request_Client_Query (M);
+         begin
+            if Query.Client_Id /= NO_CLIENT_ID then
+               Set_Client_Route (Query.Client_Id, Sender);
+            end if;
+         end;
+      end if;
+   end Track_Client_Route;
+
+   function Resolve_Client_Remote
+     (M : Message_Type'Class) return Unbounded_String
+   is
+      Id : constant Client_Id_Type := Response_Client_Id (M);
+   begin
+      if M'Tag = Response_Register_Client'Tag
+        and then Pending_Register_Sender /= Null_Unbounded_String
+      then
+         declare
+            Assigned : constant Client_Id_Type :=
+              Response_Register_Client (M).Client_Id;
+         begin
+            if Assigned /= NO_CLIENT_ID then
+               Set_Client_Route (Assigned, Pending_Register_Sender);
+               if Verbose_Logging then
+                  Node_Log
+                    ("route client id="
+                     & Trim (Client_Id_Type'Image (Assigned), Left)
+                     & " -> "
+                     & To_String (Pending_Register_Sender));
+               end if;
+            end if;
+            return Pending_Register_Sender;
+         end;
+      end if;
+
+      declare
+         Known : constant Unbounded_String := Find_Client_Route (Id);
+      begin
+         if Known /= Null_Unbounded_String then
+            return Known;
+         end if;
+      end;
+
+      if Default_Client_Remote /= Null_Unbounded_String then
+         return Default_Client_Remote;
+      end if;
+
+      return To_Unbounded_String (Client_Sender_Name);
+   end Resolve_Client_Remote;
+
    procedure Enqueue_Client_Responses is
-      Remote : constant Unbounded_String :=
-        To_Unbounded_String (Client_Sender_Name);
+      Remote : Unbounded_String;
    begin
       if Node = null or else Node.State.Client_Inbox = null then
          return;
@@ -251,6 +792,11 @@ package body Network_Node is
                M : Message_Type'Class :=
                  Message_Type'Class'Input (Node.State.Client_Inbox);
             begin
+               Remote := Resolve_Client_Remote (M);
+               if M'Tag = Response_Register_Client'Tag then
+                  Pending_Register_Sender := Null_Unbounded_String;
+               end if;
+               Log_Client_Response (Remote, M);
                Send_Outbound_Message (Remote, M);
             end;
          exception
@@ -287,6 +833,7 @@ package body Network_Node is
    is
       pragma Unreferenced (To);
    begin
+      Inbound_Enqueued := Inbound_Enqueued + 1;
       Inbound_Queue.Enqueue (Get_Host_Name (From), Copy_To_Heap (Message));
    end Link_Callback;
 
@@ -299,11 +846,11 @@ package body Network_Node is
       declare
          M : Message_Type'Class := Message_Type'Class'Input (MB'Access);
       begin
-         if To_String (Sender) = Client_Sender_Name then
-            Handle_Message (Node, M);
-         else
-            Handle_Message (Node, M);
+         if Is_Configured_Client (To_String (Sender)) then
+            Log_Client_Request (To_String (Sender), M);
          end if;
+         Track_Client_Route (Sender, M);
+         Handle_Message (Node, M);
       end;
    end Handle_Raft_Message;
 
@@ -338,6 +885,7 @@ package body Network_Node is
          declare
             Data : constant Stream_Element_Array := Payload.all;
          begin
+            Inbound_Processed := Inbound_Processed + 1;
             Handle_Raft_Message (Sender, Data);
          end;
          Free_Payload (Payload);
@@ -379,6 +927,8 @@ package body Network_Node is
       Run_Epoch_Step;
       Drain_Inbound_Messages;
       Epoch_Number := Epoch_Number + 1;
+      Log_Role_Change;
+      Log_Progress;
    end Process_Network_Round;
 
    procedure Configure_Addresses (Config : Cluster_Configuration) is
@@ -405,10 +955,18 @@ package body Network_Node is
          end;
       end loop;
 
-      Configure_Address
-        (Hub,
-         To_Unbounded_String (Client_Sender_Name),
-         (Host => Client_Host, Port => Client_Port));
+      for I in 1 .. Configured_Client_Count (Config) loop
+         declare
+            Client : constant Client_Endpoint_Config :=
+              Client_Endpoint (Config, I);
+         begin
+            Configure_Address
+              (Hub,
+               To_Unbounded_String (Client_Endpoint_Name (Client)),
+               (Host => To_Unbounded_String (Client_Endpoint_Host (Client)),
+                Port => Client.Port));
+         end;
+      end loop;
    end Configure_Addresses;
 
    procedure Initialize
@@ -418,13 +976,29 @@ package body Network_Node is
         new Test_Application_State'(Sum => 0);
    begin
       Register_Command_Streaming;
+      Configure_Logging;
       Server_Num     := Config.Server_Count;
       Local_Id       := Server_Id;
+      Set_Lock_Path (Local_Id);
       Raft_Cfg       := Config.Raft;
       Client_Host    := To_Unbounded_String (Client_Host_Image (Config));
       Client_Port    := Config.Client_Port;
       Epoch_Number   := 0;
       Last_Drop_Report := 0;
+      Client_Routes := (others => <>);
+      Pending_Register_Sender := Null_Unbounded_String;
+      Registered_Client_Name_Count := Config.Client_Count;
+
+      for I in 1 .. Registered_Client_Name_Count loop
+         Registered_Client_Names (I) :=
+           To_Unbounded_String (Client_Endpoint_Name (Config.Clients (I)));
+      end loop;
+
+      if Registered_Client_Name_Count > 0 then
+         Default_Client_Remote := Registered_Client_Names (1);
+      else
+         Default_Client_Remote := To_Unbounded_String (Client_Sender_Name);
+      end if;
 
       Set_Compact_Threshold (Raft_Cfg.Compact_Threshold);
       Set_Compact_Log_Retention (Raft_Cfg.Compact_Log_Retention);
@@ -432,7 +1006,12 @@ package body Network_Node is
       Ada.Numerics.Float_Random.Reset (Gen);
 
       Create_Hub (Hub);
-      Set_Client_Endpoint (Hub, Client_Sender_Name);
+      if Registered_Client_Name_Count > 0 then
+         Set_Client_Endpoint
+           (Hub, To_String (Registered_Client_Names (1)));
+      else
+         Set_Client_Endpoint (Hub, Client_Sender_Name);
+      end if;
       Set_Inter_Server_Timeout (Hub, Raft_Cfg.Inter_Server_Timeout);
       Configure_Addresses (Config);
 
@@ -467,13 +1046,36 @@ package body Network_Node is
          Sending'Unrestricted_Access,
          App);
 
+      Last_Logged_Role := Node.State.Current_Raft_State;
+      if Verbose_Logging then
+         Node_Log
+           ("verbose logging on, registered "
+            & Natural'Image (Registered_Client_Name_Count)
+            & " client endpoint(s)");
+      else
+         Node_Log
+           ("logging client traffic (every "
+            & Positive'Image (Client_Send_Log_Sample)
+            & " sends); set RAFT_NODE_VERBOSE=1 for all");
+      end if;
+
       Node.State.Client_Inbox := new Message_Buffer_Type;
       Create (Node.State.Client_Inbox.all);
 
       for I in 1 .. Cluster_Config.Max_Nodes loop
          exit when Config.Nodes (I).Id = 0;
          if Config.Nodes (I).Id = Local_Id then
-            Start_Listener (Hub, Config.Nodes (I).Port);
+            Acquire_Instance_Lock (Local_Id, Config.Nodes (I).Port);
+            begin
+               Start_Listener
+                 (Hub,
+                  Config.Nodes (I).Port,
+                  Allow_Port_Reuse => False);
+            exception
+               when E : Network_IO_Error =>
+                  Release_Instance_Lock;
+                  raise Server_Instance_Error with Exception_Message (E);
+            end;
             exit;
          end if;
       end loop;
@@ -481,6 +1083,7 @@ package body Network_Node is
 
    procedure Shutdown is
    begin
+      Release_Instance_Lock;
       Communication.UDP.Shutdown (Hub);
    end Shutdown;
 

@@ -10,6 +10,13 @@ package Network_Node is
 
    Client_Sender_Name : constant String := "client";
 
+   --  Exit status 2 in raft_server: duplicate server id or UDP port conflict.
+   Server_Instance_Error : exception;
+
+   procedure Set_Verbose_Logging (Enabled : Boolean);
+
+   function Verbose_Logging_Enabled return Boolean;
+
    procedure Initialize
      (Config : Cluster_Configuration; Server_Id : ServerID_Type);
 

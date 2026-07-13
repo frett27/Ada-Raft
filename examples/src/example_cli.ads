@@ -2,12 +2,14 @@ package Example_Cli is
 
    Max_Path_Length : constant := 256;
 
-   type Client_Command is (None, Register, Send, Audit, Help, Quit, Status);
+   type Client_Command is
+     (None, Register, Send, Reconnect, Audit, Help, Quit, Status);
 
    type Server_Args is record
       Config_Path : String (1 .. Max_Path_Length);
       Config_Len  : Natural := 0;
       Server_Id   : Natural := 0;
+      Verbose     : Boolean := False;
       Help        : Boolean := False;
    end record;
 

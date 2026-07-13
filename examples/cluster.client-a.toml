@@ -1,0 +1,25 @@
+# Raft client entity "client-a" (UDP port 9200).
+# Use with the cluster started from cluster.toml (includes [[clients]] entries).
+
+[cluster]
+servers = 3
+
+[client]
+name = "client-a"
+host = "127.0.0.1"
+port = 9200
+
+[[nodes]]
+id = 1
+host = "127.0.0.1"
+port = 9101
+
+[[nodes]]
+id = 2
+host = "127.0.0.1"
+port = 9102
+
+[[nodes]]
+id = 3
+host = "127.0.0.1"
+port = 9103
