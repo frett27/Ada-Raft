@@ -93,6 +93,11 @@ package Raft.Client is
 
    function Client_Id (C : Raft_Client) return Client_Id_Type;
 
+   --  Next serial number assigned to a new command (book §6.3 session).
+   function Next_Command_Serial (C : Raft_Client) return Client_Serial_Type;
+
+   function Is_Registered (C : Raft_Client) return Boolean;
+
 private
 
    type Response_Inbox is limited record

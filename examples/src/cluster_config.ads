@@ -1,4 +1,5 @@
 with GNAT.Sockets; use GNAT.Sockets;
+with Ada.Calendar; use Ada.Calendar;
 with Raft;       use Raft;
 
 package Cluster_Config is
@@ -17,12 +18,26 @@ package Cluster_Config is
 
    type Node_Config_Table is array (1 .. Max_Nodes) of Node_Config;
 
+   type Raft_Settings is record
+      Epoch_Interval            : Duration;
+      Election_Timeout_Epochs   : Positive;
+      Heartbeat_Interval_Epochs : Positive;
+      Election_Jitter_Epochs    : Positive;
+      Audit_Interval_Epochs     : Positive;
+      Compact_Threshold         : Natural;
+      Compact_Log_Retention     : Natural;
+      Inter_Server_Timeout      : Duration;
+   end record;
+
+   function Default_Raft_Settings return Raft_Settings;
+
    type Cluster_Configuration is record
       Server_Count : ServerID_Type := 0;
       Nodes        : Node_Config_Table;
       Client_Host  : Host_String;
       Client_Host_Length : Natural := 0;
       Client_Port  : Port_Type := 9200;
+      Raft         : Raft_Settings;
    end record;
 
    Config_Error : exception;

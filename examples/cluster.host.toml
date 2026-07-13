@@ -1,6 +1,8 @@
 # Cluster config for raft_client running on the host machine.
 # Node ports match the published ports in docker-compose.yml.
 
+# Optional Raft tuning - see cluster.toml for [raft] keys and defaults.
+
 [cluster]
 servers = 3
 

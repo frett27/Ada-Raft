@@ -13,6 +13,122 @@ package body Communication.TCP is
    Active_Hub     : TcpHub_Access;
    Stop_Requested : Boolean := False;
 
+   Max_Pending_Connections : constant Positive := 1024;
+   Listen_Backlog          : constant Natural := 512;
+   Connection_Worker_Count : constant Positive := 32;
+   Worker_Batch_Limit      : constant Positive := 64;
+
+   Empty_Peer : constant Sock_Addr_Type :=
+     (Family => Family_Inet, Addr => Any_Inet_Addr, Port => 0);
+
+   type Accepted_Connection is record
+      Client : Socket_Type;
+      Peer   : Sock_Addr_Type;
+   end record;
+
+   type Accepted_Queue_Type is
+     array (1 .. Max_Pending_Connections) of Accepted_Connection;
+
+   protected Accepted_Connection_Queue is
+      procedure Reset;
+      procedure Enqueue (Client : in out Socket_Type; Peer : Sock_Addr_Type);
+      procedure Dequeue
+        (Client : out Socket_Type;
+         Peer   : out Sock_Addr_Type;
+         Found  : out Boolean);
+      function Has_Room return Boolean;
+      function Depth return Natural;
+   private
+      Items : Accepted_Queue_Type :=
+        (others => (Client => No_Socket, Peer => Empty_Peer));
+      Head  : Positive := 1;
+      Count : Natural := 0;
+   end Accepted_Connection_Queue;
+
+   protected body Accepted_Connection_Queue is
+      function Tail_Index return Positive is
+      begin
+         if Count = 0 then
+            return Head;
+         end if;
+         declare
+            Pos : Natural := Head + Count - 1;
+         begin
+            if Pos > Items'Last then
+               Pos := Pos - Items'Length;
+            end if;
+            return Positive (Pos);
+         end;
+      end Tail_Index;
+
+      procedure Reset is
+      begin
+         Head  := Items'First;
+         Count := 0;
+      end Reset;
+
+      procedure Enqueue (Client : in out Socket_Type; Peer : Sock_Addr_Type) is
+         Pos : constant Positive := Tail_Index;
+      begin
+         if Client = No_Socket then
+            return;
+         end if;
+
+         if Count >= Items'Length then
+            Put_Line
+              ("TCP network: accepted connection queue full (depth="
+               & Natural'Image (Count)
+               & "), dropping");
+            Close_Socket (Client);
+            Client := No_Socket;
+            return;
+         end if;
+         Items (Pos) := (Client => Client, Peer => Peer);
+         Count := Count + 1;
+         Client := No_Socket;
+      end Enqueue;
+
+      procedure Dequeue
+        (Client : out Socket_Type;
+         Peer   : out Sock_Addr_Type;
+         Found  : out Boolean)
+      is
+      begin
+         if Count = 0 then
+            Client := No_Socket;
+            Peer   := Empty_Peer;
+            Found  := False;
+            return;
+         end if;
+         Client := Items (Head).Client;
+         Peer   := Items (Head).Peer;
+         Items (Head) := (Client => No_Socket, Peer => Empty_Peer);
+         Head   := Head + 1;
+         if Head > Items'Last then
+            Head := Items'First;
+         end if;
+         Count := Count - 1;
+         Found := True;
+      end Dequeue;
+
+      function Has_Room return Boolean is
+      begin
+         return Count < Items'Length;
+      end Has_Room;
+
+      function Depth return Natural is
+      begin
+         return Count;
+      end Depth;
+   end Accepted_Connection_Queue;
+
+   task type Connection_Worker_Task_Type is
+      entry Start (Hub : TcpHub_Access);
+   end Connection_Worker_Task_Type;
+
+   Connection_Workers : array (1 .. Connection_Worker_Count)
+     of Connection_Worker_Task_Type;
+
    task Listener_Task is
       entry Start (Hub : TcpHub_Access; Port : Port_Type);
    end Listener_Task;
@@ -189,8 +305,83 @@ package body Communication.TCP is
       return null;
    end Find_Callback;
 
+   function Is_Client_Endpoint
+     (H : TcpHub; Name : Unbounded_String) return Boolean
+   is
+   begin
+      return Name = H.Client_Endpoint;
+   end Is_Client_Endpoint;
+
+   function Is_Inter_Server_Send
+     (H : TcpHub; Sender, To : Net_Link) return Boolean
+   is
+   begin
+      return not Is_Client_Endpoint (H, Sender.HostName)
+        and then not Is_Client_Endpoint (H, To.HostName);
+   end Is_Inter_Server_Send;
+
+   procedure Apply_IO_Timeouts (Socket : Socket_Type; Timeout : Duration) is
+   begin
+      if Timeout <= 0.0 then
+         return;
+      end if;
+      Set_Socket_Option
+        (Socket,
+         Socket_Level,
+         (Name => Send_Timeout, Timeout => Timeout));
+      Set_Socket_Option
+        (Socket,
+         Socket_Level,
+         (Name => Receive_Timeout, Timeout => Timeout));
+   end Apply_IO_Timeouts;
+
+   procedure Connect_With_Timeout
+     (Socket : Socket_Type;
+      Peer   : Sock_Addr_Type;
+      Timeout : Duration)
+   is
+      Status : Selector_Status;
+   begin
+      if Timeout <= 0.0 then
+         Connect_Socket (Socket, Peer);
+         return;
+      end if;
+
+      Connect_Socket (Socket, Peer, Timeout, null, Status);
+
+      if Status = Expired then
+         raise Network_IO_Error
+           with "connect timed out after " & Duration'Image (Timeout);
+      elsif Status /= Completed then
+         raise Network_IO_Error
+           with "connect failed (" & Selector_Status'Image (Status) & ")";
+      end if;
+   end Connect_With_Timeout;
+
+   procedure Log_Network_Error
+     (Prefix : String; Detail : String)
+   is
+   begin
+      Put_Line ("TCP network: " & Prefix & " " & Detail);
+   end Log_Network_Error;
+
+   Incoming_Read_Timeout : constant Duration := 1.0;
+
+   procedure Safe_Close (Socket : in out Socket_Type) is
+   begin
+      if Socket /= No_Socket then
+         begin
+            Close_Socket (Socket);
+         exception
+            when Socket_Error =>
+               null;
+         end;
+         Socket := No_Socket;
+      end if;
+   end Safe_Close;
+
    procedure Handle_Connection
-     (Hub : TcpHub_Access; Client : Socket_Type; Peer : Sock_Addr_Type)
+     (Hub : TcpHub_Access; Client : in out Socket_Type; Peer : Sock_Addr_Type)
    is
       Header     : Stream_Element_Array (1 .. Header_Size);
       Frame_Body : access Stream_Element_Array;
@@ -202,6 +393,12 @@ package body Communication.TCP is
       Sender_Link : Net_Link;
       Local_Link  : Net_Link;
    begin
+      if Client = No_Socket then
+         return;
+      end if;
+
+      Apply_IO_Timeouts (Client, Incoming_Read_Timeout);
+
       Read_Full (Client, Header);
       Body_Len :=
         Stream_Element_Offset (From_BE32 (Header));
@@ -241,14 +438,14 @@ package body Communication.TCP is
          end;
       end if;
 
-      Close_Socket (Client);
+      Safe_Close (Client);
    exception
       when E : others =>
-         Close_Socket (Client);
+         Safe_Close (Client);
          Put_Line
-           ("TCP receive error from "
+           ("TCP network: receive from "
             & Image (Peer)
-            & " -> "
+            & " failed: "
             & Exception_Information (E));
    end Handle_Connection;
 
@@ -275,25 +472,72 @@ package body Communication.TCP is
             Socket_Level,
             (Reuse_Address, Enabled => True));
          Bind_Socket (Server, Addr);
-         Listen_Socket (Server);
+         Listen_Socket (Server, Listen_Backlog);
 
          while not Stop_Requested loop
+            while not Accepted_Connection_Queue.Has_Room loop
+               exit when Stop_Requested;
+               delay 0.001;
+            end loop;
+
+            exit when Stop_Requested;
+
             declare
                Client : Socket_Type;
                Peer   : Sock_Addr_Type;
             begin
                Accept_Socket (Server, Client, Peer);
-               Handle_Connection (Hub_Ptr, Client, Peer);
+               Accepted_Connection_Queue.Enqueue (Client, Peer);
             exception
+               when Socket_Error =>
+                  Safe_Close (Client);
                when E : others =>
+                  Safe_Close (Client);
                   Put_Line
-                    ("TCP accept error: " & Exception_Information (E));
+                    ("TCP network: accept failed: "
+                     & Exception_Information (E));
             end;
          end loop;
 
          Close_Socket (Server);
       end;
    end Listener_Task;
+
+   task body Connection_Worker_Task_Type is
+      Hub_Ptr : TcpHub_Access;
+      Client  : Socket_Type;
+      Peer    : Sock_Addr_Type;
+      Found   : Boolean;
+   begin
+      accept Start (Hub : TcpHub_Access) do
+         Hub_Ptr := Hub;
+      end Start;
+
+      while not Stop_Requested loop
+         declare
+            Processed : Natural := 0;
+         begin
+            loop
+               Accepted_Connection_Queue.Dequeue (Client, Peer, Found);
+               exit when not Found;
+
+               if Client /= No_Socket then
+                  Handle_Connection (Hub_Ptr, Client, Peer);
+               else
+                  Put_Line
+                    ("TCP network: ignored invalid queued connection");
+               end if;
+
+               Processed := Processed + 1;
+               exit when Processed >= Worker_Batch_Limit or else Stop_Requested;
+            end loop;
+
+            if Processed = 0 then
+               delay 0.01;
+            end if;
+         end;
+      end loop;
+   end Connection_Worker_Task_Type;
 
    procedure Create_Hub (H : out TcpHub) is
       Audit : Audit_State_Access;
@@ -351,6 +595,11 @@ package body Communication.TCP is
       H.Local_Port := Local_Port;
       H.Active     := True;
       Active_Hub   := H'Unchecked_Access;
+      Stop_Requested := False;
+      Accepted_Connection_Queue.Reset;
+      for I in Connection_Workers'Range loop
+         Connection_Workers (I).Start (Active_Hub);
+      end loop;
       Listener_Task.Start (Active_Hub, Local_Port);
    end Start_Listener;
 
@@ -359,6 +608,18 @@ package body Communication.TCP is
       Stop_Requested := True;
       H.Active       := False;
    end Shutdown;
+
+   procedure Set_Inter_Server_Timeout (H : in out TcpHub; Timeout : Duration) is
+   begin
+      H.Inter_Server_Timeout := Timeout;
+   end Set_Inter_Server_Timeout;
+
+   procedure Set_Client_Endpoint
+     (H : in out TcpHub; Endpoint_Name : String)
+   is
+   begin
+      H.Client_Endpoint := To_Unbounded_String (Endpoint_Name);
+   end Set_Client_Endpoint;
 
    overriding
    procedure Register
@@ -384,11 +645,20 @@ package body Communication.TCP is
       Frame    : constant Stream_Element_Array :=
         Encode_Frame (Sender.HostName, Message);
       Client   : Socket_Type;
+      Client_Open : Boolean := False;
       Endpoint : constant Sock_Addr_Type :=
         Network_Socket_Address (Host_To_Inet_Addr (Dest.Host), Dest.Port);
+      Timeout  : Duration := 0.0;
+      Dest_Name : constant String := To_String (To.HostName);
    begin
+      if Is_Inter_Server_Send (L, Sender, To) then
+         Timeout := L.Inter_Server_Timeout;
+      end if;
+
       Create_Socket (Client);
-      Connect_Socket (Client, Endpoint);
+      Client_Open := True;
+      Apply_IO_Timeouts (Client, Timeout);
+      Connect_With_Timeout (Client, Endpoint, Timeout);
       Send_Full (Client, Frame);
       Close_Socket (Client);
 
@@ -397,9 +667,21 @@ package body Communication.TCP is
       end if;
    exception
       when E : others =>
+         if Client_Open then
+            begin
+               Close_Socket (Client);
+            exception
+               when others => null;
+            end;
+         end if;
+         if Is_Inter_Server_Send (L, Sender, To) then
+            Log_Network_Error
+              ("inter-server send to " & Dest_Name & " failed:",
+               Exception_Information (E));
+         end if;
          raise Network_IO_Error
            with "send to "
-                & To_String (To.HostName)
+                & Dest_Name
                 & " failed: "
                 & Exception_Information (E);
    end Send;

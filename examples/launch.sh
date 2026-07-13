@@ -91,6 +91,7 @@ start_cluster_background() {
 
    for id in "${NODE_IDS[@]}"; do
       start_node "$id"
+      sleep 0.3
    done
 }
 

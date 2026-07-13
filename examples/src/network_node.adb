@@ -1,27 +1,32 @@
 with Ada.Streams;           use Ada.Streams;
-with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
 with Ada.Text_IO;           use Ada.Text_IO;
-with Ada.Tags;              use Ada.Tags;
+with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
 with Ada.IO_Exceptions;     use Ada.IO_Exceptions;
 with Ada.Numerics.Float_Random;
-with Ada.Calendar;          use Ada.Calendar;
+with Ada.Unchecked_Deallocation;
+with Ada.Exceptions;         use Ada.Exceptions;
 
 with Raft;                   use Raft;
 with Raft.Node;             use Raft.Node;
 with Raft.Comm;             use Raft.Comm;
 with Raft.Messages;         use Raft.Messages;
 with Communication;         use Communication;
-with Communication.TCP;     use Communication.TCP;
+with Communication.UDP;     use Communication.UDP;
 with GNAT.Sockets;          use GNAT.Sockets;
 with Raft.State_Machine;   use Raft.State_Machine;
 with Communication.Network_Audit; use Communication.Network_Audit;
 with Cluster_Config;         use Cluster_Config;
 with Example_Commands;      use Example_Commands;
-with Example_Config;       use Example_Config;
+with Raft.Snapshot;         use Raft.Snapshot;
 
 package body Network_Node is
 
-   Hub         : aliased TcpHub;
+   --  Match deterministic tests (TestRaftSystem):
+   --    Process_Pending_Messages before Advance_One_Epoch.
+   --  UDP uses synchronous Send (like Communication.Local) plus inbound
+   --  draining so RPCs are delivered before timers tick each epoch.
+
+   Hub         : aliased UdpHub;
    Hub_Access  : Net_Hub_Wide_Access := Hub'Unchecked_Access;
    NHBinding   : NetHub_Binding_Access;
    Node        : Raft_Node_Access;
@@ -30,47 +35,101 @@ package body Network_Node is
    Local_Id    : ServerID_Type := 0;
    Client_Host : Unbounded_String;
    Client_Port : Port_Type;
+   Raft_Cfg    : Raft_Settings := Default_Raft_Settings;
 
-   type Timer_Table is
-     array (Timer_Type) of Natural;
+   Inbound_Queue_Size   : constant := 8192;
+   Max_Drain_Rounds     : constant Positive := 16;
+   Drain_Yield          : constant Duration := 0.001;
+   --  Extra election delay while the cluster binds listeners (startup race).
+   Startup_Grace_Epochs : constant Natural := 20;
+
+   Epoch_Number    : Natural := 0;
+   Last_Drop_Report : Natural := 0;
+
+   type Timer_Table is array (Timer_Type) of Natural;
 
    Timers : Timer_Table := (others => 0);
    Gen    : Ada.Numerics.Float_Random.Generator;
 
    type Payload_Access is access Stream_Element_Array;
+   procedure Free_Payload is new Ada.Unchecked_Deallocation
+     (Stream_Element_Array, Payload_Access);
+
+   function Copy_To_Heap (Data : Stream_Element_Array) return Payload_Access is
+   begin
+      return new Stream_Element_Array'(Data);
+   end Copy_To_Heap;
 
    type Queue_Entry is record
       Sender  : Unbounded_String;
       Payload : Payload_Access;
    end record;
 
-   type Queue_Type is array (1 .. 256) of Queue_Entry;
+   type Queue_Type is array (1 .. Inbound_Queue_Size) of Queue_Entry;
 
    protected Inbound_Queue is
-      procedure Enqueue
-        (Sender : Unbounded_String; Payload : Stream_Element_Array);
+      procedure Enqueue (Sender : Unbounded_String; Payload : Payload_Access);
       procedure Dequeue
         (Sender : out Unbounded_String;
          Payload : out Payload_Access;
          Found : out Boolean);
+      function Is_Empty return Boolean;
+      function Dropped_Count return Natural;
    private
-      Items : Queue_Type;
-      First : Natural := 1;
-      Last  : Natural := 1;
+      Items   : Queue_Type;
+      First   : Positive := 1;
+      Count   : Natural := 0;
+      Dropped : Natural := 0;
+
+      procedure Drop_Oldest;
    end Inbound_Queue;
 
    protected body Inbound_Queue is
-      procedure Enqueue
-        (Sender : Unbounded_String; Payload : Stream_Element_Array)
-      is
-         Next : constant Natural := Last + 1;
+
+      function Tail_Index return Positive is
       begin
-         if Next > Items'Last then
+         if Count = 0 then
+            return First;
+         end if;
+         declare
+            Pos : Natural := First + Count - 1;
+         begin
+            if Pos > Items'Length then
+               Pos := Pos - Items'Length;
+            end if;
+            return Positive (Pos);
+         end;
+      end Tail_Index;
+
+      procedure Drop_Oldest is
+         Old : Payload_Access;
+      begin
+         if Count = 0 then
             return;
          end if;
-         Items (Last) :=
-           (Sender => Sender, Payload => new Stream_Element_Array'(Payload));
-         Last := Next;
+         Old := Items (First).Payload;
+         if Old /= null then
+            Free_Payload (Old);
+         end if;
+         First := First + 1;
+         if First > Items'Last then
+            First := Items'First;
+         end if;
+         Count   := Count - 1;
+         Dropped := Dropped + 1;
+      end Drop_Oldest;
+
+      procedure Enqueue (Sender : Unbounded_String; Payload : Payload_Access) is
+         Pos : constant Positive := Tail_Index;
+      begin
+         if Payload = null then
+            return;
+         end if;
+         while Count >= Items'Length loop
+            Drop_Oldest;
+         end loop;
+         Items (Pos) := (Sender => Sender, Payload => Payload);
+         Count := Count + 1;
       end Enqueue;
 
       procedure Dequeue
@@ -79,15 +138,29 @@ package body Network_Node is
          Found : out Boolean)
       is
       begin
-         if First >= Last then
+         if Count = 0 then
             Found := False;
             return;
          end if;
          Sender  := Items (First).Sender;
          Payload := Items (First).Payload;
          First   := First + 1;
-         Found   := True;
+         if First > Items'Last then
+            First := Items'First;
+         end if;
+         Count := Count - 1;
+         Found := True;
       end Dequeue;
+
+      function Is_Empty return Boolean is
+      begin
+         return Count = 0;
+      end Is_Empty;
+
+      function Dropped_Count return Natural is
+      begin
+         return Dropped;
+      end Dropped_Count;
    end Inbound_Queue;
 
    procedure Set_Timer
@@ -101,13 +174,15 @@ package body Network_Node is
      (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type)
    is
       Counter : Natural :=
-        Ticks (Election_Timeout)
+        Raft_Cfg.Election_Timeout_Epochs
         + Natural
-            (Float (Ticks (Election_Jitter))
+            (Float (Raft_Cfg.Election_Jitter_Epochs)
              * Ada.Numerics.Float_Random.Random (Gen));
    begin
       if Timer_Instance = Heartbeat_Timer then
-         Counter := Ticks (Heartbeat_Interval);
+         Counter := Raft_Cfg.Heartbeat_Interval_Epochs;
+      elsif Epoch_Number < Startup_Grace_Epochs then
+         Counter := Counter + Startup_Grace_Epochs;
       end if;
       Set_Timer (Timer_Instance, Counter);
    end Ask_For_Timer_Start;
@@ -120,26 +195,51 @@ package body Network_Node is
       Set_Timer (Timer_Instance, 0);
    end Ask_For_Cancel_Timer;
 
-   procedure Sending
-     (RSS : in out RaftNodeStruct;
-      To_ServerID_Or_All : ServerID_Type;
-      M   : Message_Type'Class)
+   procedure Send_Outbound_Payload
+     (Remote : Unbounded_String; Payload : Stream_Element_Array)
    is
    begin
-      if To_ServerID_Or_All = RSS.Current_Id then
-         Handle_Message (Node, M);
-      elsif To_ServerID_Or_All <= Server_Num then
-         begin
-            Raft.Comm.Send
-              (NHBinding, RSS.Current_Id, To_ServerID_Or_All, M);
-         exception
-            when Raft.Comm.Network_Error =>
-               null;
-         end;
+      if Local_Id < 1 or else Local_Id > Server_Num then
+         return;
       end if;
-   end Sending;
 
-   procedure Deliver_Client_Responses_Over_Tcp is
+      begin
+         Communication.Send
+           (Net_Links (Local_Id),
+            Make_Remote_Link (Hub_Access, Remote),
+            Payload);
+      exception
+         when E : Network_IO_Error =>
+            Put_Line
+              ("network error node "
+               & ServerID_Type'Image (Local_Id)
+               & " -> "
+               & To_String (Remote)
+               & ": "
+               & Exception_Message (E));
+         when E : others =>
+            Put_Line
+              ("network error node "
+               & ServerID_Type'Image (Local_Id)
+               & " -> "
+               & To_String (Remote)
+               & ": "
+               & Exception_Information (E));
+      end;
+   end Send_Outbound_Payload;
+
+   procedure Send_Outbound_Message
+     (Remote : Unbounded_String; M : Message_Type'Class)
+   is
+      MB : aliased Message_Buffer_Type;
+   begin
+      Message_Type'Class'Output (MB'Access, M);
+      Send_Outbound_Payload (Remote, To_Stream_Element_Array (MB));
+   end Send_Outbound_Message;
+
+   procedure Enqueue_Client_Responses is
+      Remote : constant Unbounded_String :=
+        To_Unbounded_String (Client_Sender_Name);
    begin
       if Node = null or else Node.State.Client_Inbox = null then
          return;
@@ -150,25 +250,29 @@ package body Network_Node is
             declare
                M : Message_Type'Class :=
                  Message_Type'Class'Input (Node.State.Client_Inbox);
-               MB : aliased Message_Buffer_Type;
-               Remote : constant Net_Link :=
-                 Make_Remote_Link
-                   (Hub_Access, To_Unbounded_String (Client_Sender_Name));
-               Local  : constant Net_Link := Net_Links (Local_Id);
             begin
-               Message_Type'Class'Output (MB'Access, M);
-               Send
-                 (Hub,
-                  Local,
-                  Remote,
-                  To_Stream_Element_Array (MB));
+               Send_Outbound_Message (Remote, M);
             end;
          exception
             when Ada.IO_Exceptions.End_Error =>
                exit;
          end;
       end loop;
-   end Deliver_Client_Responses_Over_Tcp;
+   end Enqueue_Client_Responses;
+
+   procedure Sending
+     (RSS : in out RaftNodeStruct;
+      To_ServerID_Or_All : ServerID_Type;
+      M   : Message_Type'Class)
+   is
+   begin
+      if To_ServerID_Or_All = RSS.Current_Id then
+         Handle_Message (Node, M);
+      elsif To_ServerID_Or_All <= Server_Num then
+         Send_Outbound_Message
+           (To_Unbounded_String (Server_Hostname (To_ServerID_Or_All)), M);
+      end if;
+   end Sending;
 
    procedure NHB_Message_Received
      (NH : NetHub_Binding_Access; SID : ServerID_Type; M : Message_Type'Class)
@@ -181,11 +285,12 @@ package body Network_Node is
    procedure Link_Callback
      (From, To : in Net_Link; Message : in Stream_Element_Array)
    is
+      pragma Unreferenced (To);
    begin
-      Inbound_Queue.Enqueue (Get_Host_Name (From), Message);
+      Inbound_Queue.Enqueue (Get_Host_Name (From), Copy_To_Heap (Message));
    end Link_Callback;
 
-   procedure Handle_Inbound
+   procedure Handle_Raft_Message
      (Sender : Unbounded_String; Payload : Stream_Element_Array)
    is
       MB : aliased Message_Buffer_Type;
@@ -196,12 +301,26 @@ package body Network_Node is
       begin
          if To_String (Sender) = Client_Sender_Name then
             Handle_Message (Node, M);
-            Deliver_Client_Responses_Over_Tcp;
          else
             Handle_Message (Node, M);
          end if;
       end;
-   end Handle_Inbound;
+   end Handle_Raft_Message;
+
+   procedure Report_Inbound_Drops is
+      Dropped : constant Natural := Inbound_Queue.Dropped_Count;
+   begin
+      if Dropped > Last_Drop_Report then
+         Put_Line
+           ("network node "
+            & ServerID_Type'Image (Local_Id)
+            & ": dropped "
+            & Natural'Image (Dropped - Last_Drop_Report)
+            & " stale inbound message(s), total="
+            & Natural'Image (Dropped));
+         Last_Drop_Report := Dropped;
+      end if;
+   end Report_Inbound_Drops;
 
    procedure Process_Inbound_Messages is
       Sender  : Unbounded_String;
@@ -211,9 +330,34 @@ package body Network_Node is
       loop
          Inbound_Queue.Dequeue (Sender, Payload, Found);
          exit when not Found;
-         Handle_Inbound (Sender, Payload.all);
+
+         if Payload = null then
+            goto Next_Message;
+         end if;
+
+         declare
+            Data : constant Stream_Element_Array := Payload.all;
+         begin
+            Handle_Raft_Message (Sender, Data);
+         end;
+         Free_Payload (Payload);
+
+         <<Next_Message>>
+         null;
       end loop;
+
+      Enqueue_Client_Responses;
+      Report_Inbound_Drops;
    end Process_Inbound_Messages;
+
+   procedure Drain_Inbound_Messages is
+   begin
+      for Round in 1 .. Max_Drain_Rounds loop
+         Process_Inbound_Messages;
+         exit when Inbound_Queue.Is_Empty;
+         delay Drain_Yield;
+      end loop;
+   end Drain_Inbound_Messages;
 
    procedure Run_Epoch_Step is
    begin
@@ -228,6 +372,14 @@ package body Network_Node is
          end if;
       end loop;
    end Run_Epoch_Step;
+
+   procedure Process_Network_Round is
+   begin
+      Drain_Inbound_Messages;
+      Run_Epoch_Step;
+      Drain_Inbound_Messages;
+      Epoch_Number := Epoch_Number + 1;
+   end Process_Network_Round;
 
    procedure Configure_Addresses (Config : Cluster_Configuration) is
    begin
@@ -266,14 +418,22 @@ package body Network_Node is
         new Test_Application_State'(Sum => 0);
    begin
       Register_Command_Streaming;
-      Server_Num  := Config.Server_Count;
-      Local_Id    := Server_Id;
-      Client_Host := To_Unbounded_String (Client_Host_Image (Config));
-      Client_Port := Config.Client_Port;
+      Server_Num     := Config.Server_Count;
+      Local_Id       := Server_Id;
+      Raft_Cfg       := Config.Raft;
+      Client_Host    := To_Unbounded_String (Client_Host_Image (Config));
+      Client_Port    := Config.Client_Port;
+      Epoch_Number   := 0;
+      Last_Drop_Report := 0;
+
+      Set_Compact_Threshold (Raft_Cfg.Compact_Threshold);
+      Set_Compact_Log_Retention (Raft_Cfg.Compact_Log_Retention);
 
       Ada.Numerics.Float_Random.Reset (Gen);
 
       Create_Hub (Hub);
+      Set_Client_Endpoint (Hub, Client_Sender_Name);
+      Set_Inter_Server_Timeout (Hub, Raft_Cfg.Inter_Server_Timeout);
       Configure_Addresses (Config);
 
       for SID in 1 .. Server_Num loop
@@ -321,7 +481,7 @@ package body Network_Node is
 
    procedure Shutdown is
    begin
-      Communication.TCP.Shutdown (Hub);
+      Communication.UDP.Shutdown (Hub);
    end Shutdown;
 
    function Local_Node return Raft_Node_Access is

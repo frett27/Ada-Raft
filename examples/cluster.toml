@@ -1,3 +1,13 @@
+# Optional Raft tuning (defaults shown). Omit [raft] to use these values.
+# [raft]
+# epoch_interval_ms = 50
+# election_timeout_epochs = 30   # must be >= 4 * heartbeat_interval_epochs
+# heartbeat_interval_epochs = 4
+# election_jitter_epochs = 3
+# audit_interval_epochs = 100
+# compact_threshold = 100
+# inter_server_timeout_ms = 200
+
 [cluster]
 servers = 3
 

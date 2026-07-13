@@ -1,6 +1,6 @@
 # AdaRaft network examples
 
-TCP-based Raft cluster demo: three `raft_server` nodes and a `raft_client` that registers and sends test commands.
+UDP-based Raft cluster demo: three `raft_server` nodes and a `raft_client` that registers and sends test commands.
 
 ## Build
 
@@ -11,7 +11,7 @@ alr build
 
 Binaries are produced in `bin/raft_server` and `bin/raft_client`.
 
-Timing for the examples (loop interval, client timeout, election/heartbeat, audit) is defined in seconds in `src/example_config.ads`.
+Timing defaults live in `src/example_config.ads` and can be overridden per cluster in the TOML `[raft]` section (see table above). Client timeout remains wall-clock (`Client_Timeout_S` in `example_config.ads`).
 
 ## Run locally
 
@@ -100,6 +100,32 @@ Run a single command and exit (useful for scripts):
 | `cluster.host.toml` | Client on host talking to Docker-published ports |
 | `cluster.docker.toml` | Cluster inside Docker Compose |
 
+### Raft parameters (`[raft]`)
+
+All keys are optional; defaults match `src/example_config.ads` and `Raft.Snapshot`.
+`election_timeout_epochs` must be at least **4×** `heartbeat_interval_epochs` (enforced at load time; see `Election_Heartbeat_Ratio` in `example_config.ads`).
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `epoch_interval_ms` | 50 | Wall-clock duration of one server epoch |
+| `election_timeout_epochs` | 30 | Election timer (epochs); must be >= 4 × heartbeat |
+| `heartbeat_interval_epochs` | 4 | Leader heartbeat timer (epochs) |
+| `election_jitter_epochs` | 3 | Random election jitter (epochs) |
+| `audit_interval_epochs` | 100 | Server audit log period (epochs) |
+| `compact_threshold` | 100 | Log entries before compaction/snapshot |
+| `compact_log_retention` | 0 | Committed entries kept after compact (0 = trim to commit) |
+| `inter_server_timeout_ms` | 200 (1 heartbeat) | UDP send timeout for server-to-server only |
+
+Example:
+
+```toml
+[raft]
+election_timeout_epochs = 40
+heartbeat_interval_epochs = 5
+compact_threshold = 200
+compact_log_retention = 10
+```
+
 Override the config used by `launch.sh`:
 
 ```bash
@@ -151,3 +177,13 @@ raft_client -c <config.toml> audit
 ```
 
 See [Client shell](#client-shell) for interactive usage. Client operation timeout defaults to 10 seconds (`Client_Timeout_S` in `example_config.ads`).
+
+## Integration tests
+
+Network integration tests live under `tests/`. They start a 3-node cluster, exercise multiple client connections (Ada API and CLI), and check replication and election stability in server logs.
+
+```bash
+./tests/run_tests.sh
+```
+
+See [tests/README.md](tests/README.md) for options (`--no-start`, `CONFIG`, `WAIT_LEADER`) and troubleshooting.

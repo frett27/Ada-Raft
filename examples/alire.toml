@@ -1,5 +1,5 @@
 name = "raft_examples"
-description = "TCP network examples for the AdaRaft library"
+description = "UDP network examples for the AdaRaft library"
 version = "0.1.0-dev"
 
 authors = ["Patrice Freydiere"]

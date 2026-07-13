@@ -1,0 +1,27 @@
+with "../config/raft_examples_config.gpr";
+
+project Tests_Network is
+
+   for Source_Dirs use ("src/", "../src/");
+   for Object_Dir use "../obj/tests/" & Raft_Examples_Config.Build_Profile;
+   for Exec_Dir use "../bin";
+   for Main use ("network_integration_test.adb", "udp_benchmark.adb");
+   for Create_Missing_Dirs use "True";
+
+   package Compiler is
+      for Default_Switches ("Ada") use Raft_Examples_Config.Ada_Compiler_Switches;
+      for Switches ("udp_benchmark.adb") use
+        ("-Og", "-g", "-gnatwa", "-gnatVa");
+   end Compiler;
+
+   package Binder is
+      for Switches ("Ada") use ("-Es");
+   end Binder;
+
+   package Builder is
+      for Executable ("network_integration_test.adb") use
+        "network_integration_test";
+      for Executable ("udp_benchmark.adb") use "udp_benchmark";
+   end Builder;
+
+end Tests_Network;

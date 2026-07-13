@@ -140,9 +140,10 @@ package body Raft.Client is
    is
    begin
       if not Res.Not_Leader and then not Res.Error then
-         C.Client_Id  := Res.Client_Id;
-         C.Leader_Id  := Res.Leader_Id;
-         C.Op_Phase   := Idle;
+         C.Client_Id     := Res.Client_Id;
+         C.Leader_Id     := Res.Leader_Id;
+         C.Op_Phase      := Idle;
+         C.Next_Serial   := Client_Serial_Type'First;
          return True;
       end if;
 
@@ -188,7 +189,8 @@ package body Raft.Client is
 
       if Res.Error and then not Res.Not_Leader then
          --  Session unknown or expired on the leader: register again (book §6.3).
-         C.Client_Id := NO_CLIENT_ID;
+         C.Client_Id     := NO_CLIENT_ID;
+         C.Next_Serial   := Client_Serial_Type'First;
          if C.Leader_Id /= NULL_SERVER then
             C.Probe_Server := C.Leader_Id;
          end if;
@@ -208,6 +210,10 @@ package body Raft.Client is
 
       if C.Leader_Id = NULL_SERVER then
          raise Client_No_Leader;
+      end if;
+
+      if C.Op_Phase /= Idle then
+         raise Client_Timeout with "client busy: command still in flight";
       end if;
 
       C.Pending_Command := Cmd;
@@ -290,6 +296,10 @@ package body Raft.Client is
      (C : in out Raft_Client; Max_Steps : Natural)
    is
    begin
+      if Register_Complete (C) then
+         return;
+      end if;
+
       Start_Register (C);
 
       for Round in 1 .. Max_Steps loop
@@ -357,5 +367,15 @@ package body Raft.Client is
    begin
       return C.Client_Id;
    end Client_Id;
+
+   function Next_Command_Serial (C : Raft_Client) return Client_Serial_Type is
+   begin
+      return C.Next_Serial;
+   end Next_Command_Serial;
+
+   function Is_Registered (C : Raft_Client) return Boolean is
+   begin
+      return Register_Complete (C);
+   end Is_Registered;
 
 end Raft.Client;

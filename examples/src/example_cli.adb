@@ -62,8 +62,9 @@ package body Example_Cli is
       Put_Line ("  -c, --config PATH      cluster TOML configuration file");
       Put_Line ("  -h, --help             show this help");
       Put_Line ("commands:");
-      Put_Line ("  register               register with the cluster");
-      Put_Line ("  send <integer>         send a test command value");
+      Put_Line ("  register               open a client session with the leader");
+      Put_Line ("  send <int> [<int> ...] send one or more commands (session serial)");
+      Put_Line ("  status                 show client session state");
       Put_Line ("  audit                  print network audit counters");
       Put_Line ("");
       Put_Line ("Without a command, raft_client starts an interactive shell.");
@@ -72,11 +73,16 @@ package body Example_Cli is
    procedure Print_Client_Shell_Help is
    begin
       Put_Line ("commands:");
-      Put_Line ("  register               register with the cluster");
-      Put_Line ("  send <integer>         send a test command value");
+      Put_Line ("  register               open a client session with the leader");
+      Put_Line ("  send <int> [<int> ...] send one or more commands (session serial)");
+      Put_Line ("  status                 show client session state");
       Put_Line ("  audit                  print network audit counters");
       Put_Line ("  help                   show this help");
       Put_Line ("  quit, exit             leave the shell");
+      Put_Line ("");
+      Put_Line ("Examples:");
+      Put_Line ("  send 1 2 3             three commands in one line");
+      Put_Line ("  send 1 send 2 send 3   same, explicit send keywords");
    end Print_Client_Shell_Help;
 
    procedure Parse_Client_Command
@@ -89,6 +95,8 @@ package body Example_Cli is
          Args.Command := Audit;
       elsif Arg = "help" then
          Args.Command := Help;
+      elsif Arg = "status" then
+         Args.Command := Status;
       elsif Arg = "quit" or else Arg = "exit" then
          Args.Command := Quit;
       elsif Arg = "send" then
@@ -103,8 +111,45 @@ package body Example_Cli is
       end if;
    end Parse_Client_Command;
 
-   procedure Parse_Client_Command_Line
-     (Words : String; Args : in out Client_Args)
+   function Is_Integer_Literal (Token : String) return Boolean is
+      Start : Natural := Token'First;
+   begin
+      if Token = "" then
+         return False;
+      end if;
+
+      if Token (Start) = '-' then
+         if Token'Last = Start then
+            return False;
+         end if;
+         Start := Start + 1;
+      end if;
+
+      for I in Start .. Token'Last loop
+         if Token (I) not in '0' .. '9' then
+            return False;
+         end if;
+      end loop;
+
+      return True;
+   end Is_Integer_Literal;
+
+   procedure Append_Command
+     (Script : in out Client_Script; Cmd : Client_Command; Value : Integer := 0)
+   is
+   begin
+      if Script.Count >= Max_Script_Commands then
+         raise Parse_Error with "too many commands on one line";
+      end if;
+
+      Script.Count := Script.Count + 1;
+      Script.Commands (Script.Count) := (others => <>);
+      Script.Commands (Script.Count).Command := Cmd;
+      Script.Commands (Script.Count).Send_Value := Value;
+   end Append_Command;
+
+   procedure Parse_Client_Script_Line
+     (Words : String; Script : out Client_Script)
    is
       First : Natural := Words'First;
       Last  : Natural := Words'Last;
@@ -131,61 +176,109 @@ package body Example_Cli is
          return Words (Token_First .. Token_Last);
       end Next_Word;
 
-      function Remaining return String is
+      function Peek_Word return String is
+         Saved : constant Natural := First;
+         Token : constant String  := Next_Word;
       begin
-         while First <= Last
-           and then Words (First) in ' ' | ASCII.HT
-         loop
-            First := First + 1;
-         end loop;
-         if First > Last then
-            return "";
-         end if;
-         return Words (First .. Last);
-      end Remaining;
+         First := Saved;
+         return Token;
+      end Peek_Word;
 
-      Cmd : constant String := Next_Word;
-      Rest : String := Remaining;
+      procedure Append_Send_Values is
+      begin
+         loop
+            declare
+               Peeked : constant String := Peek_Word;
+            begin
+               exit when Peeked = "" or else not Is_Integer_Literal (Peeked);
+            end;
+            declare
+               Consumed : constant String := Next_Word;
+            begin
+               Append_Command
+                 (Script, Send, Integer'Value (Consumed));
+            end;
+         end loop;
+      end Append_Send_Values;
+
+      Cmd : String (1 .. 64);
+      Cmd_Len : Natural;
    begin
-      if Cmd = "" then
+      Script.Count := 0;
+
+      loop
+         declare
+            Word : constant String := Next_Word;
+         begin
+            exit when Word = "";
+            if Word'Length > Cmd'Length then
+               raise Parse_Error with "command too long: " & Word;
+            end if;
+            Cmd_Len := Word'Length;
+            Cmd (1 .. Cmd_Len) := Word;
+         end;
+
+         if Cmd (1 .. Cmd_Len) = "register" then
+            if Peek_Word /= "" then
+               raise Parse_Error with "register takes no arguments";
+            end if;
+            Append_Command (Script, Register);
+         elsif Cmd (1 .. Cmd_Len) = "audit" then
+            if Peek_Word /= "" then
+               raise Parse_Error with "audit takes no arguments";
+            end if;
+            Append_Command (Script, Audit);
+         elsif Cmd (1 .. Cmd_Len) = "status" then
+            if Peek_Word /= "" then
+               raise Parse_Error with "status takes no arguments";
+            end if;
+            Append_Command (Script, Status);
+         elsif Cmd (1 .. Cmd_Len) = "help" then
+            if Peek_Word /= "" then
+               raise Parse_Error with "help takes no arguments";
+            end if;
+            Append_Command (Script, Help);
+         elsif Cmd (1 .. Cmd_Len) = "quit"
+           or else Cmd (1 .. Cmd_Len) = "exit"
+         then
+            if Peek_Word /= "" then
+               raise Parse_Error with "quit takes no arguments";
+            end if;
+            Append_Command (Script, Quit);
+         elsif Cmd (1 .. Cmd_Len) = "send" then
+            if Peek_Word = "" or else not Is_Integer_Literal (Peek_Word) then
+               raise Parse_Error
+                 with "send requires at least one integer value";
+            end if;
+            Append_Send_Values;
+         elsif Is_Integer_Literal (Cmd (1 .. Cmd_Len)) then
+            raise Parse_Error
+              with "bare integer '"
+               & Cmd (1 .. Cmd_Len)
+               & "'; use send "
+               & Cmd (1 .. Cmd_Len);
+         else
+            raise Parse_Error
+              with "unknown command: " & Cmd (1 .. Cmd_Len);
+         end if;
+      end loop;
+   end Parse_Client_Script_Line;
+
+   procedure Parse_Client_Command_Line
+     (Words : String; Args : in out Client_Args)
+   is
+      Script : Client_Script;
+   begin
+      Parse_Client_Script_Line (Words, Script);
+      if Script.Count = 0 then
          return;
       end if;
-
-      if Cmd = "register" then
-         if Rest /= "" then
-            raise Parse_Error with "register takes no arguments";
-         end if;
-         Args.Command := Register;
-      elsif Cmd = "audit" then
-         if Rest /= "" then
-            raise Parse_Error with "audit takes no arguments";
-         end if;
-         Args.Command := Audit;
-      elsif Cmd = "help" then
-         if Rest /= "" then
-            raise Parse_Error with "help takes no arguments";
-         end if;
-         Args.Command := Help;
-      elsif Cmd = "quit" or else Cmd = "exit" then
-         if Rest /= "" then
-            raise Parse_Error with "quit takes no arguments";
-         end if;
-         Args.Command := Quit;
-      elsif Cmd = "send" then
-         Rest := Trim (Rest, Both);
-         if Rest = "" then
-            raise Parse_Error with "send requires an integer value";
-         end if;
-         for I in Rest'Range loop
-            if Rest (I) in ' ' | ASCII.HT then
-               raise Parse_Error with "send expects a single integer value";
-            end if;
-         end loop;
-         Args.Command := Send;
-         Args.Send_Value := Integer'Value (Rest);
-      else
-         raise Parse_Error with "unknown command: " & Cmd;
+      if Script.Count > 1 then
+         raise Parse_Error
+           with "multiple commands on one line;"
+            & " use the interactive shell or separate invocations";
       end if;
+      Args := Script.Commands (1);
    end Parse_Client_Command_Line;
 
    procedure Parse_Server (Args : out Server_Args) is
@@ -228,10 +321,11 @@ package body Example_Cli is
       end if;
    end Parse_Server;
 
-   procedure Parse_Client (Args : out Client_Args) is
+   procedure Parse_Client (Args : out Client_Args; Script : out Client_Script) is
       I : Positive := 1;
    begin
       Args := (others => <>);
+      Script.Count := 0;
 
       while I <= Argument_Count loop
          declare
@@ -244,10 +338,39 @@ package body Example_Cli is
                I := I + 1;
             elsif Is_Option (Arg) then
                raise Parse_Error with "unknown option: " & Arg;
-            elsif Args.Command = None then
-               Parse_Client_Command (Arg, Args, I);
             else
-               raise Parse_Error with "unexpected argument: " & Arg;
+               declare
+                  Tail : String (1 .. 4096);
+                  Len  : Natural := 0;
+               begin
+                  while I <= Argument_Count loop
+                     declare
+                        Token : constant String := Argument (I);
+                     begin
+                        if Is_Option (Token) then
+                           exit;
+                        end if;
+                        if Len > 0 then
+                           Len := Len + 1;
+                           Tail (Len) := ' ';
+                        end if;
+                        for C of Token loop
+                           Len := Len + 1;
+                           if Len > Tail'Length then
+                              raise Parse_Error with "command line too long";
+                           end if;
+                           Tail (Len) := C;
+                        end loop;
+                     end;
+                     I := I + 1;
+                  end loop;
+
+                  if Len > 0 then
+                     Parse_Client_Script_Line
+                       (Tail (Tail'First .. Tail'First + Len - 1), Script);
+                  end if;
+                  exit;
+               end;
             end if;
          end;
          I := I + 1;
@@ -262,10 +385,10 @@ package body Example_Cli is
       end if;
    end Parse_Client;
 
-   procedure Parse_Client_Line (Line : String; Args : out Client_Args) is
+   procedure Parse_Client_Line (Line : String; Script : out Client_Script) is
    begin
-      Args := (others => <>);
-      Parse_Client_Command_Line (Trim (Line, Both), Args);
+      Script.Count := 0;
+      Parse_Client_Script_Line (Trim (Line, Both), Script);
    exception
       when Constraint_Error =>
          raise Parse_Error with "invalid integer value for send";

@@ -639,6 +639,12 @@ package body Raft.Node is
                   Clear_Known_Leader (A.MState);
                   --  move to follower
                   New_State                        := FOLLOWER;
+               elsif AER.Leader_Term = A.MState.Node_State.Current_Term
+                 and then AER.Leader_ID /= A.MState.Current_Id
+                 and then A.MState.Current_Raft_State = LEADER
+               then
+                  --  another leader in the same term: step down
+                  New_State := FOLLOWER;
                end if;
             end;
          elsif M'Tag = Install_Snapshot_Request'Tag then
@@ -764,6 +770,9 @@ package body Raft.Node is
 
             Machine.State.Snapshot_Send_Offset := (others => 0);
             Machine.State.Snapshot_Send_Active := (others => False);
+
+            Machine.Current_Machine_State.Timer_Cancel
+              (Machine.Current_Machine_State.MState.all, Election_Timer);
 
             --  Start or reset the heartbeat timer
             Machine.Current_Machine_State.Timer_Cancel
@@ -1279,6 +1288,19 @@ package body Raft.Node is
             if Req.Leader_Term >= Machine_State.MState.Node_State.Current_Term
             then
                New_Raft_State_Machine := FOLLOWER;
+            elsif Req.Leader_Term
+              < Machine_State.MState.Node_State.Current_Term
+            then
+               --  Reply so a stale leader discovers the higher term.
+               Machine_State.Sending_Message
+                 (Machine_State.MState.all,
+                  Req.Leader_ID,
+                  Append_Entries_Response'
+                    (Success               => False,
+                     SID                   => Machine_State.MState.Current_Id,
+                     Matching_Index_Strict => TransactionLogIndex_Type'First,
+                     T                     =>
+                       Machine_State.MState.Node_State.Current_Term));
             end if;
          end;
       elsif M'Tag = Install_Snapshot_Request'Tag then
@@ -1562,6 +1584,10 @@ package body Raft.Node is
          if Timer_Timeout (M).Timer_Instance = Heartbeat_Timer then
             --  send heartbeat to all using append rpc
 
+            Debug_Put_Line
+              (Machine_State,
+               "[heartbeat timer fired, sending AppendEntries]");
+
             --  restart the heartbeat timer
             Machine_State.Timer_Start
               (Machine_State.MState.all, Heartbeat_Timer);
@@ -1589,6 +1615,34 @@ package body Raft.Node is
          begin
             Handle_Client_Query (Machine_State, Query);
          end;
+      elsif M'Tag = Append_Entries_Request'Tag then
+         declare
+            Req : constant Append_Entries_Request :=
+              Append_Entries_Request (M);
+         begin
+            if Req.Leader_Term < Machine_State.MState.Node_State.Current_Term
+            then
+               Debug_Put_Line
+                 (Machine_State,
+                  "[rejecting stale AppendEntries from leader term "
+                  & Req.Leader_Term'Image
+                  & ", current term "
+                  & Machine_State.MState.Node_State.Current_Term'Image
+                  & "]");
+               Machine_State.Sending_Message
+                 (Machine_State.MState.all,
+                  Req.Leader_ID,
+                  Append_Entries_Response'
+                    (Success               => False,
+                     SID                   => Machine_State.MState.Current_Id,
+                     Matching_Index_Strict => TransactionLogIndex_Type'First,
+                     T                     =>
+                       Machine_State.MState.Node_State.Current_Term));
+            end if;
+         end;
+      elsif M'Tag = Install_Snapshot_Request'Tag then
+         Handle_InstallSnapshot_Request
+           (Machine_State, Install_Snapshot_Request (M));
       else
          --  unsupported message type for leader
          Put_Line
@@ -1669,6 +1723,12 @@ package body Raft.Node is
                   Client_Id  => Query.Client_Id,
                   Serial     => Query.Serial));
          end;
+         return;
+      elsif M'Tag = Append_Entries_Response'Tag
+        or else M'Tag = Request_Vote_Response'Tag
+        or else M'Tag = Install_Snapshot_Response'Tag
+      then
+         --  ignore stale RPC responses after stepping down from leader
          return;
       end if;
 

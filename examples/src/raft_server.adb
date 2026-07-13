@@ -1,21 +1,20 @@
 with Ada.Text_IO;       use Ada.Text_IO;
 with Ada.Command_Line; use Ada.Command_Line;
 with Ada.Exceptions;    use Ada.Exceptions;
-with Ada.Calendar;     use Ada.Calendar;
 
 with Raft;             use Raft;
 with Raft.Node;         use Raft.Node;
 with Cluster_Config;    use Cluster_Config;
 with Example_Cli;      use Example_Cli;
 with Network_Node;     use Network_Node;
-with Example_Config;   use Example_Config;
 
 procedure Raft_Server is
 
-   Args        : Server_Args;
-   Config      : Cluster_Configuration;
-   Server_Id   : ServerID_Type;
-   Last_Audit  : Time := Clock;
+   Args             : Server_Args;
+   Config           : Cluster_Configuration;
+   Server_Id        : ServerID_Type;
+   Current_Epoch    : Natural := 0;
+   Next_Audit_Epoch : Natural;
 
 begin
    Parse_Server (Args);
@@ -43,25 +42,44 @@ begin
       & Server_Hostname (Server_Id)
       & " using "
       & Config_Image (Args));
+   Put_Line
+     ("epoch interval "
+      & Duration'Image (Config.Raft.Epoch_Interval)
+      & " s, election "
+      & Positive'Image (Config.Raft.Election_Timeout_Epochs)
+      & " epochs, heartbeat "
+      & Positive'Image (Config.Raft.Heartbeat_Interval_Epochs)
+      & " epochs, compact_threshold "
+      & Natural'Image (Config.Raft.Compact_Threshold)
+      & ", compact_log_retention "
+      & Natural'Image (Config.Raft.Compact_Log_Retention));
+
+   Next_Audit_Epoch := Natural (Config.Raft.Audit_Interval_Epochs);
 
    Initialize (Config, Server_Id);
 
-   loop
-      Process_Inbound_Messages;
-      Run_Epoch_Step;
+   --  Let peer listeners bind before the first election timeouts.
+   delay Duration (Server_Id) * Config.Raft.Epoch_Interval;
 
-      if Clock - Last_Audit >= Audit_Interval then
+   loop
+      Process_Network_Round;
+      Current_Epoch := Current_Epoch + 1;
+
+      if Current_Epoch >= Next_Audit_Epoch then
          Put_Line ("audit: " & Audit_Report);
          Put_Line
            ("state: "
             & RaftStateEnum'Image
               (Local_Node.State.Current_Raft_State)
+            & " epoch="
+            & Natural'Image (Current_Epoch)
             & " app="
             & Integer'Image (Application_Sum));
-         Last_Audit := Clock;
+         Next_Audit_Epoch :=
+           Current_Epoch + Natural (Config.Raft.Audit_Interval_Epochs);
       end if;
 
-      delay Loop_Interval;
+      delay Config.Raft.Epoch_Interval;
    end loop;
 
 exception

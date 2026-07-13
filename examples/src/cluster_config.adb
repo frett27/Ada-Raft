@@ -3,8 +3,41 @@ with Ada.Strings.Fixed; use Ada.Strings.Fixed;
 
 with TOML;         use TOML;
 with TOML.File_IO; use TOML.File_IO;
+with Example_Config; use Example_Config;
 
 package body Cluster_Config is
+
+   function Default_Raft_Settings return Raft_Settings is
+   begin
+      return
+        (Epoch_Interval            => Example_Config.Epoch_Interval,
+         Election_Timeout_Epochs   => Example_Config.Election_Timeout_Epochs,
+         Heartbeat_Interval_Epochs =>
+           Example_Config.Heartbeat_Interval_Epochs,
+         Election_Jitter_Epochs    => Example_Config.Election_Jitter_Epochs,
+         Audit_Interval_Epochs     => Example_Config.Audit_Interval_Epochs,
+         Compact_Threshold         => 100,
+         Compact_Log_Retention     => 0,
+         Inter_Server_Timeout      =>
+           Example_Config.Default_Inter_Server_Timeout);
+   end Default_Raft_Settings;
+
+   procedure Validate_Raft_Timing (Settings : Raft_Settings) is
+      Min_Election : constant Positive :=
+        Example_Config.Election_Heartbeat_Ratio
+        * Settings.Heartbeat_Interval_Epochs;
+   begin
+      if Settings.Election_Timeout_Epochs < Min_Election then
+         raise Config_Error
+           with "raft.election_timeout_epochs must be at least "
+                & Positive'Image (Example_Config.Election_Heartbeat_Ratio)
+                & " * raft.heartbeat_interval_epochs (min "
+                & Positive'Image (Min_Election)
+                & ", got "
+                & Positive'Image (Settings.Election_Timeout_Epochs)
+                & ")";
+      end if;
+   end Validate_Raft_Timing;
 
    procedure Set_Host
      (Into : out Host_String; Len : out Natural; Value : String)
@@ -60,6 +93,113 @@ package body Cluster_Config is
       return Value.As_String;
    end As_Config_String;
 
+   procedure Apply_Optional_Positive
+     (Table : TOML_Value; Key : String; Value : in out Positive)
+   is
+      Item : constant TOML_Value := Table.Get_Or_Null (Key);
+   begin
+      if Item.Is_Present then
+         declare
+            N : constant Integer :=
+              As_Config_Integer (Item, "raft." & Key);
+         begin
+            if N < 1 then
+               raise Config_Error
+                 with "raft." & Key & " must be >= 1";
+            end if;
+            Value := Positive (N);
+         end;
+      end if;
+   end Apply_Optional_Positive;
+
+   procedure Apply_Optional_Natural
+     (Table : TOML_Value; Key : String; Value : in out Natural)
+   is
+      Item : constant TOML_Value := Table.Get_Or_Null (Key);
+   begin
+      if Item.Is_Present then
+         declare
+            N : constant Integer :=
+              As_Config_Integer (Item, "raft." & Key);
+         begin
+            if N < 0 then
+               raise Config_Error
+                 with "raft." & Key & " must be >= 0";
+            end if;
+            Value := Natural (N);
+         end;
+      end if;
+   end Apply_Optional_Natural;
+
+   procedure Apply_Optional_Epoch_Interval
+     (Table : TOML_Value; Key : String; Value : in out Duration)
+   is
+      Item : constant TOML_Value := Table.Get_Or_Null (Key);
+   begin
+      if Item.Is_Present then
+         declare
+            Ms : constant Integer :=
+              As_Config_Integer (Item, "raft." & Key);
+         begin
+            if Ms < 1 then
+               raise Config_Error
+                 with "raft." & Key & " must be >= 1";
+            end if;
+            Value := Duration (Ms) / 1000.0;
+         end;
+      end if;
+   end Apply_Optional_Epoch_Interval;
+
+   procedure Load_Raft_Settings
+     (Root : TOML_Value; Settings : out Raft_Settings)
+   is
+      Raft : TOML_Value := Root.Get_Or_Null ("raft");
+      Has_Inter_Server_Timeout : Boolean := False;
+   begin
+      Settings := Default_Raft_Settings;
+
+      if not Raft.Is_Present then
+         Validate_Raft_Timing (Settings);
+         return;
+      end if;
+
+      Raft := Require_Table (Raft, "raft");
+
+      if Raft.Has ("inter_server_timeout_ms") then
+         Has_Inter_Server_Timeout := True;
+      end if;
+
+      Apply_Optional_Epoch_Interval
+        (Raft, "epoch_interval_ms", Settings.Epoch_Interval);
+      Apply_Optional_Positive
+        (Raft, "election_timeout_epochs", Settings.Election_Timeout_Epochs);
+      Apply_Optional_Positive
+        (Raft, "heartbeat_interval_epochs", Settings.Heartbeat_Interval_Epochs);
+      Apply_Optional_Positive
+        (Raft, "election_jitter_epochs", Settings.Election_Jitter_Epochs);
+      Apply_Optional_Positive
+        (Raft, "audit_interval_epochs", Settings.Audit_Interval_Epochs);
+      Apply_Optional_Natural
+        (Raft, "compact_threshold", Settings.Compact_Threshold);
+      Apply_Optional_Natural
+        (Raft, "compact_log_retention", Settings.Compact_Log_Retention);
+      Apply_Optional_Epoch_Interval
+        (Raft, "inter_server_timeout_ms", Settings.Inter_Server_Timeout);
+
+      if not Has_Inter_Server_Timeout then
+         Settings.Inter_Server_Timeout :=
+           Settings.Epoch_Interval
+           * Duration (Settings.Heartbeat_Interval_Epochs);
+      end if;
+
+      if Settings.Compact_Threshold = 0 then
+         raise Config_Error
+           with "raft.compact_threshold must be >= 1 when set";
+      end if;
+
+      Validate_Raft_Timing (Settings);
+   end Load_Raft_Settings;
+
    procedure Load_Node (Node_Value : TOML_Value; Node : out Node_Config) is
       Table : constant TOML_Value :=
         Require_Table (Node_Value, "nodes entry");
@@ -112,6 +252,7 @@ package body Cluster_Config is
       Nodes   : TOML_Value;
    begin
       Config := (others => <>);
+      Config.Raft := Default_Raft_Settings;
 
       if not Result.Success then
          raise Config_Error with Format_Error (Result);
@@ -166,6 +307,7 @@ package body Cluster_Config is
       end loop;
 
       Validate_Node_Coverage (Config);
+      Load_Raft_Settings (Root, Config.Raft);
    end Load;
 
    function Node_Host (Node : Node_Config) return String is

@@ -13,10 +13,39 @@ with Network_Client;    use Network_Client;
 
 procedure Raft_Client is
 
-   Args   : Client_Args;
-   Config : Cluster_Configuration;
-   Line   : String (1 .. 256);
-   Last   : Natural;
+   Config_Args : Client_Args;
+   Script      : Client_Script;
+   Config      : Cluster_Configuration;
+   Line        : String (1 .. 256);
+   Last        : Natural;
+
+   procedure Print_Session_Status is
+   begin
+      if Is_Registered then
+         Put_Line
+           ("session client_id="
+            & Client_Id_Type'Image (Registered_Client_Id)
+            & " leader="
+            & ServerID_Type'Image (Known_Leader_Id)
+            & " next_serial="
+            & Client_Serial_Type'Image (Next_Command_Serial));
+      else
+         Put_Line ("session not registered (use register or send)");
+      end if;
+   end Print_Session_Status;
+
+   procedure Print_Send_Result (Res : Response_Send_Command) is
+   begin
+      Put_Line
+        ("send serial="
+         & Client_Serial_Type'Image (Res.Serial)
+         & " committed="
+         & Boolean'Image (Res.Command_Committed)
+         & " leader="
+         & ServerID_Type'Image (Res.Leader_Id)
+         & " index="
+         & TransactionLogIndex_Type'Image (Res.Log_Index));
+   end Print_Send_Result;
 
    procedure Execute_Command (Cmd : Client_Args) is
       Res : Response_Send_Command;
@@ -29,7 +58,9 @@ procedure Raft_Client is
                     ("registered client id="
                      & Client_Id_Type'Image (Registered_Client_Id)
                      & " leader="
-                     & ServerID_Type'Image (Known_Leader_Id));
+                     & ServerID_Type'Image (Known_Leader_Id)
+                     & " next_serial="
+                     & Client_Serial_Type'Image (Next_Command_Serial));
                else
                   Put_Line
                     ("registration failed (cluster unreachable or no leader)");
@@ -42,21 +73,16 @@ procedure Raft_Client is
             end;
 
          when Send =>
-            if not Register_With_Cluster then
-               Put_Line
-                 ("registration failed (cluster unreachable or no leader)");
-               return;
-            end if;
-
             begin
+               if not Ensure_Registered then
+                  Put_Line
+                    ("send failed: not registered"
+                     & " (cluster unreachable or no leader)");
+                  return;
+               end if;
+
                Res := Send_Command (Cmd.Send_Value);
-               Put_Line
-                 ("send result committed="
-                  & Boolean'Image (Res.Command_Committed)
-                  & " leader="
-                  & ServerID_Type'Image (Res.Leader_Id)
-                  & " index="
-                  & TransactionLogIndex_Type'Image (Res.Log_Index));
+               Print_Send_Result (Res);
             exception
                when Cluster_Unreachable =>
                   Put_Line
@@ -67,6 +93,9 @@ procedure Raft_Client is
                when Client_No_Leader =>
                   Put_Line ("send failed: no leader known");
             end;
+
+         when Status =>
+            Print_Session_Status;
 
          when Audit =>
             Put_Line (Audit_Report);
@@ -81,10 +110,29 @@ procedure Raft_Client is
       Run_Step;
    end Execute_Command;
 
-   procedure Run_Shell is
-      Line_Args : Client_Args;
+   procedure Execute_Script (Items : Client_Script) is
    begin
-      Put_Line ("AdaRaft client shell (type help for commands, quit to exit)");
+      for I in 1 .. Items.Count loop
+         Execute_Command (Items.Commands (I));
+      end loop;
+   end Execute_Script;
+
+   function Execute_Script_Until_Quit (Items : Client_Script) return Boolean is
+   begin
+      for I in 1 .. Items.Count loop
+         if Items.Commands (I).Command = Quit then
+            return True;
+         end if;
+         Execute_Command (Items.Commands (I));
+      end loop;
+      return False;
+   end Execute_Script_Until_Quit;
+
+   procedure Run_Shell is
+      Line_Script : Client_Script;
+   begin
+      Put_Line
+        ("AdaRaft client shell (type help for commands, quit to exit)");
       loop
          Put ("> ");
          Flush;
@@ -92,17 +140,14 @@ procedure Raft_Client is
          Get_Line (Line, Last);
          begin
             Parse_Client_Line
-              (Trim (Line (Line'First .. Last), Both), Line_Args);
+              (Trim (Line (Line'First .. Last), Both), Line_Script);
          exception
             when E : Parse_Error =>
                Put_Line (Exception_Message (E));
                goto Continue;
          end;
 
-         exit when Line_Args.Command = Quit;
-         if Line_Args.Command /= None then
-            Execute_Command (Line_Args);
-         end if;
+         exit when Execute_Script_Until_Quit (Line_Script);
 
          <<Continue>>
          null;
@@ -110,20 +155,20 @@ procedure Raft_Client is
    end Run_Shell;
 
 begin
-   Parse_Client (Args);
+   Parse_Client (Config_Args, Script);
 
-   if Args.Help then
+   if Config_Args.Help then
       Print_Client_Usage;
       return;
    end if;
 
-   Load (Config_Image (Args), Config);
+   Load (Config_Image (Config_Args), Config);
    Initialize (Config);
 
-   if Args.Command = None then
+   if Script.Count = 0 then
       Run_Shell;
    else
-      Execute_Command (Args);
+      Execute_Script (Script);
    end if;
 
    Shutdown;

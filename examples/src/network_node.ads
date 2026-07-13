@@ -3,7 +3,7 @@ with Raft.Node;         use Raft.Node;
 with Raft.Comm;         use Raft.Comm;
 with Raft.Messages;     use Raft.Messages;
 with Communication;     use Communication;
-with Communication.TCP; use Communication.TCP;
+with Communication.UDP; use Communication.UDP;
 with Cluster_Config;    use Cluster_Config;
 
 package Network_Node is
@@ -18,6 +18,9 @@ package Network_Node is
    procedure Run_Epoch_Step;
 
    procedure Process_Inbound_Messages;
+
+   --  One epoch: drain RPCs, tick timers, drain responses (test order).
+   procedure Process_Network_Round;
 
    function Local_Node return Raft_Node_Access;
 
