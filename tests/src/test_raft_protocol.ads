@@ -52,4 +52,7 @@ package Test_Raft_Protocol is
    procedure Test_RequestVote_LastLogIndex_Uses_Upper_Bound
      (T : in out Test_Cases.Test_Case'Class);
 
+   procedure Test_Log_Conflict_Term_Fast_Backtrack
+     (T : in out Test_Cases.Test_Case'Class);
+
 end Test_Raft_Protocol;

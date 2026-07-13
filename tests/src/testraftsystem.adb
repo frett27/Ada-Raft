@@ -64,6 +64,13 @@ package body TestRaftSystem is
                ServerID_Type'Value (To_String (Get_Host_Name (To)));
 
         begin
+            if not Node_Alive (SID_To) then
+               Debug_Test_Message
+                 ("Dropping message to dead node "
+                  & ServerID_Type'Image (SID_To));
+               return;
+            end if;
+
             Debug_Test_Message
                ("Deliver_Message_To_Node: " & To_String (Get_Host_Name (To)) &
                 " : " & Ada.tags.Expanded_Name (M'Tag) & " Serialized Message length : " & Message'Length'Image);
@@ -403,9 +410,29 @@ package body TestRaftSystem is
     begin
        for I in 1 .. SERVER_NUMBER loop
           Node_Connected (I) := True;
+          Node_Alive (I)    := True;
        end loop;
        Debug_Test_Message ("Connect_All_Nodes");
     end Connect_All_Nodes;
+
+    procedure Kill_Node (SID : ServerID_Type) is
+    begin
+       Node_Connected (SID) := False;
+       Node_Alive (SID)     := False;
+       Debug_Test_Message ("Kill_Node: " & ServerID_Type'Image (SID));
+    end Kill_Node;
+
+    procedure Revive_Node (SID : ServerID_Type) is
+    begin
+       Node_Connected (SID) := True;
+       Node_Alive (SID)     := True;
+       Debug_Test_Message ("Revive_Node: " & ServerID_Type'Image (SID));
+    end Revive_Node;
+
+    function Is_Node_Alive (SID : ServerID_Type) return Boolean is
+    begin
+       return Node_Alive (SID);
+    end Is_Node_Alive;
 
     function Is_Node_Connected (SID : ServerID_Type) return Boolean is
     begin
@@ -530,6 +557,7 @@ package body TestRaftSystem is
             Timers (i, Election_Timer)  := 0;
             Timers (i, Heartbeat_Timer) := 0;
             Node_Connected (i)          := True;
+            Node_Alive (i)              := True;
         end loop;
 
         Message_Buffer := new Message_Buffer_Type;
@@ -586,7 +614,9 @@ package body TestRaftSystem is
             begin
                 if SID_From /= SID_To
                   and then (not Node_Connected (SID_From)
-                            or else not Node_Connected (SID_To))
+                            or else not Node_Connected (SID_To)
+                            or else not Node_Alive (SID_From)
+                            or else not Node_Alive (SID_To))
                 then
                     Debug_Test_Message
                        ("Dropping message from "
@@ -650,7 +680,8 @@ package body TestRaftSystem is
         Debug_Test_Message ("Start_New_Epoch: " & Epoch_Type'Image (Epoch));
 
         for i in Timers'Range (1) loop
-            for j in Timers'Range (2) loop
+            if Node_Alive (i) then
+               for j in Timers'Range (2) loop
                 Debug_Test_Message
                    (">> Timer " & Timer_Type'Image (j) & " counter: " &
                     Natural'Image (Timers (i, j)));
@@ -667,7 +698,8 @@ package body TestRaftSystem is
                             Timer_Timeout'(Timer_Instance => j));
                     end if;
                 end;
-            end loop;
+               end loop;
+            end if;
         end loop;
 
     end Start_New_Epoch_And_Handle_Timers;

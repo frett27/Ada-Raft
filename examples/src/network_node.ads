@@ -33,6 +33,8 @@ package Network_Node is
 
    function Application_Sum return Integer;
 
+   function Application_State_Image return String;
+
    function Audit_Report return String;
 
    function Server_Count return ServerID_Type;

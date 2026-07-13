@@ -123,6 +123,13 @@ package TestRaftSystem is
 
     procedure Connect_All_Nodes;
 
+    --  Simulate process death: no timers, no RPC delivery in or out.
+    procedure Kill_Node (SID : ServerID_Type);
+
+    procedure Revive_Node (SID : ServerID_Type);
+
+    function Is_Node_Alive (SID : ServerID_Type) return Boolean;
+
     --  Reset one server to its initial follower state (simulates reboot / total
     --  state loss). Network connectivity is unchanged; attach App_State when
     --  the rebooted node should start with a fresh application state.
@@ -166,6 +173,9 @@ private
 
     --  Per-node connectivity for network partition tests.
     Node_Connected : array (ServerID_Type range 1 .. SERVER_NUMBER) of Boolean :=
+      (others => True);
+
+    Node_Alive : array (ServerID_Type range 1 .. SERVER_NUMBER) of Boolean :=
       (others => True);
 
     -- this is the global hub, for nodes communication

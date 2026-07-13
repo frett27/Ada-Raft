@@ -75,6 +75,10 @@ package body Test_Raft_Protocol is
         (T,
          Test_RequestVote_LastLogIndex_Uses_Upper_Bound'Access,
          "RequestVote lastLogIndex from last entry");
+      Register_Routine
+        (T,
+         Test_Log_Conflict_Term_Fast_Backtrack'Access,
+         "Log conflict term fast backtrack");
    end Register_Tests;
 
    function Name (T : Raft_Protocol_Tests) return Message_String is
@@ -470,5 +474,54 @@ package body Test_Raft_Protocol is
         (Req.Last_Log_Index_Strict /= RS.Node_Log_Upper_Bound (1),
          "lastLogIndex must not send the next free log slot");
    end Test_RequestVote_LastLogIndex_Uses_Upper_Bound;
+
+   procedure Test_Log_Conflict_Term_Fast_Backtrack
+     (T : in out Test_Cases.Test_Case'Class)
+   is
+      Leader    : ServerID_Type;
+      First_Ix  : constant TransactionLogIndex_Type :=
+        TransactionLogIndex_Type'First;
+      Last_Old  : constant TransactionLogIndex_Type :=
+        TransactionLogIndex_Type (30);
+      Old_Entry : constant Command_And_Term_Entry_Type :=
+        (C => null, T => Term_Type (1));
+      New_Entry : constant Command_And_Term_Entry_Type :=
+        (C => null, T => Term_Type (5));
+   begin
+      Banner ("Log conflict term fast backtrack");
+      RS.Initialize_System;
+
+      for SID in 1 .. RS.SYSTEM_SERVER_NUMBER loop
+         RS.Set_Node_Term (SID, Term_Type (5));
+         for I in First_Ix .. Last_Old loop
+            RS.Set_Node_Log_Entry (SID, I, Term_Type (1), Old_Entry);
+         end loop;
+         RS.Set_Node_Log_Upper_Bound
+           (SID, TransactionLogIndex_Type'Succ (Last_Old));
+      end loop;
+
+      for I in First_Ix .. Last_Old loop
+         RS.Set_Node_Log_Entry (1, I, Term_Type (5), New_Entry);
+      end loop;
+
+      RS.TimeOut_SID_Election_Timer (1);
+      RS.Run_Steps (40);
+
+      Leader := RS.Leader_Id;
+      Assert (Leader /= NULL_SERVER, "node 1 should become leader");
+      Assert (Leader = 1, "configured leader should win election");
+
+      RS.Send_Client_Command
+        (Leader, new Test_Raft.Test_Command'(Value => 99));
+      RS.Run_Steps (35);
+
+      Assert
+        (RS.Node_Log_Term (3, Last_Old) = Term_Type (5),
+         "follower must converge after conflict-term backtrack"
+         & " without per-index linear backtracking");
+      Assert
+        (RS.Node_Log_Upper_Bound (3) > TransactionLogIndex_Type'Succ (Last_Old),
+         "follower should receive the new leader entry");
+   end Test_Log_Conflict_Term_Fast_Backtrack;
 
 end Test_Raft_Protocol;

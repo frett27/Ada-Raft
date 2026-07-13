@@ -40,6 +40,10 @@ package body Test_Raft_States is
         (T,
          Test_Network_Partition_Leader_Availability'Access,
          "Network partition leader availability");
+      Register_Routine
+        (T,
+         Test_Leader_Kill_Cluster_Recovers'Access,
+         "Leader kill cluster recovers");
    end Register_Tests;
 
    function Name (T : Raft_States_Tests) return Message_String is
@@ -552,5 +556,52 @@ package body Test_Raft_States is
             & " nodes");
       end;
    end Test_Network_Partition_Leader_Availability;
+
+   procedure Test_Leader_Kill_Cluster_Recovers
+     (T : in out Test_Cases.Test_Case'Class)
+   is
+      Leader     : ServerID_Type;
+      New_Leader : ServerID_Type;
+      Found      : Boolean := False;
+   begin
+      Banner ("Leader kill cluster recovers");
+      RS.Initialize_System;
+
+      Leader := RS.Elect_Leader (Starter => 1, Max_Epochs => 50);
+      Assert (Leader /= NULL_SERVER, "initial leader must be elected");
+
+      RS.Send_Client_Command
+        (Leader, new Test_Raft.Test_Command'(Value => 7));
+      RS.Run_Steps (25);
+
+      RS.Kill_Node (Leader);
+
+      for Epoch in 1 .. 80 loop
+         RS.Process_Pending_Messages;
+         RS.Advance_One_Epoch (RS.Epoch_Type (Epoch));
+
+         New_Leader := RS.Connected_Leader_Id;
+         if New_Leader /= NULL_SERVER and then New_Leader /= Leader then
+            Found := True;
+            exit;
+         end if;
+      end loop;
+
+      Assert
+        (Found,
+         "remaining nodes must elect a new leader after the leader is killed");
+      Assert
+        (RS.Connected_Node_Count = 2,
+         "two nodes must stay connected after killing one server");
+
+      RS.Send_Client_Command
+        (New_Leader, new Test_Raft.Test_Command'(Value => 11));
+      RS.Run_Steps (40);
+
+      Assert
+        (RS.Node_Log_Upper_Bound (New_Leader) >
+           TransactionLogIndex_Type'First,
+         "new leader must accept client commands after failover");
+   end Test_Leader_Kill_Cluster_Recovers;
 
 end Test_Raft_States;

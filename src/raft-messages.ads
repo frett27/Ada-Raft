@@ -18,6 +18,10 @@ package Raft.Messages is
       SID                   : ServerID_Type;
       Success               : Boolean;
       Matching_Index_Strict : TransactionLogIndex_Type;
+      --  Populated on reject: Raft conflict-term optimization (§5.3).
+      Conflict_Term         : Term_Type := 0;
+      Conflict_Index_Strict : TransactionLogIndex_Type :=
+        TransactionLogIndex_Type'First;
    end record;
 
    type Request_Vote_Request is new Request_Message_Type with record

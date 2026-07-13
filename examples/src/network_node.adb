@@ -1097,6 +1097,16 @@ package body Network_Node is
       return Example_Commands.Application_Sum (Node.State.Application_State);
    end Application_Sum;
 
+   function Application_State_Image return String is
+   begin
+      if Node.State.Application_State = null then
+         return "<no application state>";
+      end if;
+
+      return Example_Commands.Image
+        (Test_Application_State (Node.State.Application_State.all));
+   end Application_State_Image;
+
    function Audit_Report return String is
       Audit_State : constant Audit_State_Access := Audit (Hub);
    begin

@@ -78,8 +78,14 @@ begin
               (Local_Node.State.Current_Raft_State)
             & " epoch="
             & Natural'Image (Current_Epoch)
-            & " app="
-            & Integer'Image (Application_Sum));
+            & " snapshot="
+            & TransactionLogIndex_Type'Image
+              (Local_Node.State.Node_State.Snapshot_Last_Included_Index)
+            & "@"
+            & Term_Type'Image
+              (Local_Node.State.Node_State.Snapshot_Last_Included_Term)
+            & " application_state="
+            & Application_State_Image);
          Next_Audit_Epoch :=
            Current_Epoch + Natural (Config.Raft.Audit_Interval_Epochs);
       end if;

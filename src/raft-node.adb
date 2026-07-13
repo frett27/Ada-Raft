@@ -444,6 +444,52 @@ package body Raft.Node is
       return TransactionLogIndex_Type'First;
    end Prev_Log_Index_For_Rpc;
 
+   function Conflict_Run_Start
+     (NS    : Raft_Node_State;
+      Index : TransactionLogIndex_Type) return TransactionLogIndex_Type
+   is
+      Result : TransactionLogIndex_Type := Index;
+      T      : constant Term_Type          := Log_Term_At (NS, Index);
+   begin
+      while Result > TransactionLogIndex_Type'First loop
+         declare
+            Prior : constant TransactionLogIndex_Type :=
+              TransactionLogIndex_Type'Pred (Result);
+         begin
+            if not Has_Log_Entry_At (NS, Prior)
+              or else Log_Term_At (NS, Prior) /= T
+            then
+               exit;
+            end if;
+            Result := Prior;
+         end;
+      end loop;
+      return Result;
+   end Conflict_Run_Start;
+
+   function Last_Log_Index_With_Term
+     (NS : Raft_Node_State; T : Term_Type) return TransactionLogIndex_Type
+   is
+      First_Retained : constant TransactionLogIndex_Type :=
+        First_Retained_Log_Index (NS);
+      Last_Ix        : constant TransactionLogIndex_Type := Last_Log_Index (NS);
+      I              : TransactionLogIndex_Type          := Last_Ix;
+   begin
+      if T = 0 then
+         return TransactionLogIndex_Type'First;
+      end if;
+
+      while I >= First_Retained loop
+         if Has_Log_Entry_At (NS, I) and then Log_Term_At (NS, I) = T then
+            return I;
+         end if;
+         exit when I = TransactionLogIndex_Type'First;
+         I := TransactionLogIndex_Type'Pred (I);
+      end loop;
+
+      return TransactionLogIndex_Type'First;
+   end Last_Log_Index_With_Term;
+
    function Describe_Append_Failure
      (NS             : Raft_Node_State;
       Prev_Log_Index : TransactionLogIndex_Type) return String
@@ -993,7 +1039,8 @@ package body Raft.Node is
             Response : constant Append_Entries_Response :=
               (Success => False, SID => Machine_State.MState.Current_Id,
                Matching_Index_Strict => TransactionLogIndex_Type'First,
-               T => Machine_State.MState.Node_State.Current_Term);
+               T => Machine_State.MState.Node_State.Current_Term,
+               others => <>);
          begin
             --  ignore the message
             Machine_State.Sending_Message
@@ -1034,6 +1081,10 @@ package body Raft.Node is
            Machine_State.MState.Node_State;
          Last_Idx : constant TransactionLogIndex_Type := Last_Log_Index (NS);
          Log_Inconsistent : Boolean := False;
+         Reject_Hint      : TransactionLogIndex_Type := Last_Idx;
+         Conflict_Term    : Term_Type                  := 0;
+         Conflict_Index   : TransactionLogIndex_Type :=
+           TransactionLogIndex_Type'First;
       begin
          if NS.Has_Snapshot
            and then M.Prev_Log_Index_Strict = NS.Snapshot_Last_Included_Index
@@ -1042,12 +1093,34 @@ package body Raft.Node is
             null;
          elsif M.Prev_Log_Index_Strict > Last_Idx then
             Log_Inconsistent := True;
+            Reject_Hint      := Last_Idx;
          elsif M.Prev_Log_Index_Strict < Base_Index (NS.Log) then
             Log_Inconsistent := True;
+            Conflict_Index   := Base_Index (NS.Log);
+            if Conflict_Index > TransactionLogIndex_Type'First then
+               Reject_Hint :=
+                 TransactionLogIndex_Type'Pred (Conflict_Index);
+            else
+               Reject_Hint := TransactionLogIndex_Type'First;
+            end if;
+         elsif M.Prev_Log_Index_Strict = TransactionLogIndex_Type'First
+           and then M.Prev_Log_Term = 0
+         then
+            null;
          elsif Has_Log_Entry_At (NS, M.Prev_Log_Index_Strict) then
             if Log_Term_At (NS, M.Prev_Log_Index_Strict) /= M.Prev_Log_Term
             then
                Log_Inconsistent := True;
+               Conflict_Term  :=
+                 Log_Term_At (NS, M.Prev_Log_Index_Strict);
+               Conflict_Index :=
+                 Conflict_Run_Start (NS, M.Prev_Log_Index_Strict);
+               if Conflict_Index > TransactionLogIndex_Type'First then
+                  Reject_Hint :=
+                    TransactionLogIndex_Type'Pred (Conflict_Index);
+               else
+                  Reject_Hint := TransactionLogIndex_Type'First;
+               end if;
             end if;
          elsif M.Prev_Log_Index_Strict = TransactionLogIndex_Type'First
            and then Is_Empty (NS.Log)
@@ -1055,28 +1128,28 @@ package body Raft.Node is
             null;
          else
             Log_Inconsistent := True;
+            Reject_Hint      := Last_Idx;
          end if;
 
          if Log_Inconsistent then
-            declare
-               Hint : TransactionLogIndex_Type := Last_Idx;
-            begin
-               if NS.Has_Snapshot
-                 and then Hint < NS.Snapshot_Last_Included_Index
-               then
-                  Hint := NS.Snapshot_Last_Included_Index;
-               end if;
+            if NS.Has_Snapshot
+              and then Reject_Hint < NS.Snapshot_Last_Included_Index
+            then
+               Reject_Hint := NS.Snapshot_Last_Included_Index;
+            end if;
 
-               declare
-                  Response : constant Append_Entries_Response :=
-                    (Success => False, SID => Machine_State.MState.Current_Id,
-                     Matching_Index_Strict => Hint,
-                     T => Machine_State.MState.Node_State.Current_Term);
-               begin
-                  Machine_State.Sending_Message
-                    (Machine_State.MState.all, M.Leader_ID, Response);
-                  return;
-               end;
+            declare
+               Response : constant Append_Entries_Response :=
+                 (Success               => False,
+                  SID                   => Machine_State.MState.Current_Id,
+                  Matching_Index_Strict => Reject_Hint,
+                  Conflict_Term         => Conflict_Term,
+                  Conflict_Index_Strict => Conflict_Index,
+                  T => Machine_State.MState.Node_State.Current_Term);
+            begin
+               Machine_State.Sending_Message
+                 (Machine_State.MState.all, M.Leader_ID, Response);
+               return;
             end;
          end if;
       end;
@@ -1110,7 +1183,7 @@ package body Raft.Node is
                     TransactionLogIndex_Type'Succ
                       (M.Prev_Log_Index_Strict);
                elsif M.Prev_Log_Index_Strict = TransactionLogIndex_Type'First
-                 and then Is_Empty (NS.Log)
+                 and then (M.Prev_Log_Term = 0 or else Is_Empty (NS.Log))
                then
                   To_Update_Index_on_Local_Log :=
                     TransactionLogIndex_Type'First;
@@ -1222,7 +1295,8 @@ package body Raft.Node is
               (Success               => Response_Value,
                SID                   => Machine_State.MState.Current_Id,
                Matching_Index_Strict => Match_Index,
-               T => Machine_State.MState.Node_State.Current_Term);
+               T => Machine_State.MState.Node_State.Current_Term,
+               others => <>);
          begin
             Debug_Put_Line
               (Machine_State,
@@ -1348,7 +1422,8 @@ package body Raft.Node is
                      SID                   => Machine_State.MState.Current_Id,
                      Matching_Index_Strict => TransactionLogIndex_Type'First,
                      T                     =>
-                       Machine_State.MState.Node_State.Current_Term));
+                       Machine_State.MState.Node_State.Current_Term,
+                     others => <>));
             end if;
          end;
       elsif M'Tag = Install_Snapshot_Request'Tag then
@@ -1572,19 +1647,52 @@ package body Raft.Node is
               Machine_State.MState.Node_State;
             Old_Next : constant TransactionLogIndex_Type :=
               Machine_State.MState.Leader_State.Next_Index_Strict (Res.SID);
-            New_Next : TransactionLogIndex_Type;
+            Hint_Next : TransactionLogIndex_Type;
+            New_Next  : TransactionLogIndex_Type;
          begin
-            if Res.Matching_Index_Strict >= TransactionLogIndex_Type'First then
-               New_Next :=
+            Debug_Put_Line
+              (Machine_State,
+               "[ leader " & Id_Image (Machine_State.MState.Current_Id) &
+               " replication ] follower " & Res.SID'Image &
+               " rejected AppendEntries at prevLogIndex="
+               & Prev_Log_Index_For_Rpc (Old_Next)'Image
+               & (if Res.Conflict_Term /= 0
+                  then " (conflictTerm=" & Res.Conflict_Term'Image
+                    & " conflictIndex=" & Res.Conflict_Index_Strict'Image
+                    & ")"
+                  else ""));
+
+            if Res.Conflict_Term /= 0 then
+               declare
+                  Last_On_Leader : constant TransactionLogIndex_Type :=
+                    Last_Log_Index_With_Term (NS, Res.Conflict_Term);
+               begin
+                  if Last_On_Leader /= TransactionLogIndex_Type'First
+                    and then Has_Log_Entry_At (NS, Last_On_Leader)
+                    and then Log_Term_At (NS, Last_On_Leader) = Res.Conflict_Term
+                  then
+                     New_Next :=
+                       TransactionLogIndex_Type'Succ (Last_On_Leader);
+                  else
+                     New_Next := Res.Conflict_Index_Strict;
+                  end if;
+               end;
+            elsif Res.Conflict_Index_Strict > TransactionLogIndex_Type'First
+            then
+               New_Next := Res.Conflict_Index_Strict;
+            elsif Res.Matching_Index_Strict >= TransactionLogIndex_Type'First
+            then
+               Hint_Next :=
                  TransactionLogIndex_Type'Max
                    (TransactionLogIndex_Type'First,
                     TransactionLogIndex_Type'Succ
                       (Res.Matching_Index_Strict));
-               if Old_Next > New_Next then
-                  null;
+               if Hint_Next /= Old_Next then
+                  New_Next := Hint_Next;
                elsif Old_Next > TransactionLogIndex_Type'First then
-                  New_Next :=
-                    TransactionLogIndex_Type'Pred (Old_Next);
+                  New_Next := TransactionLogIndex_Type'Pred (Old_Next);
+               else
+                  New_Next := TransactionLogIndex_Type'First;
                end if;
             elsif Old_Next > TransactionLogIndex_Type'First then
                New_Next := TransactionLogIndex_Type'Pred (Old_Next);
@@ -1592,14 +1700,18 @@ package body Raft.Node is
                New_Next := TransactionLogIndex_Type'First;
             end if;
 
-            Debug_Put_Line
-              (Machine_State,
-               "[ leader " & Id_Image (Machine_State.MState.Current_Id) &
-               " replication ] follower " & Res.SID'Image &
-               " rejected AppendEntries at prevLogIndex="
-               & Prev_Log_Index_For_Rpc (Old_Next)'Image & ": " &
-               Describe_Append_Failure
-                 (NS, Prev_Log_Index_For_Rpc (Old_Next)));
+            --  Raft §7: if the follower is behind the leader snapshot, send
+            --  InstallSnapshot instead of walking nextIndex down one entry at a
+            --  time through compacted history (typical after a killed node).
+            if NS.Has_Snapshot
+              and then
+                Res.Matching_Index_Strict < NS.Snapshot_Last_Included_Index
+            then
+               New_Next :=
+                 TransactionLogIndex_Type'Succ
+                   (NS.Snapshot_Last_Included_Index);
+            end if;
+
             Debug_Put_Line
               (Machine_State,
                "[ leader " & Id_Image (Machine_State.MState.Current_Id) &
@@ -1607,8 +1719,36 @@ package body Raft.Node is
                Res.SID'Image & " from " & Old_Next'Image & " to " &
                New_Next'Image & " (match hint "
                & Res.Matching_Index_Strict'Image & ")");
+
             Machine_State.MState.Leader_State.Next_Index_Strict (Res.SID) :=
               New_Next;
+
+            if NS.Has_Snapshot
+              and then
+                (Res.Matching_Index_Strict < NS.Snapshot_Last_Included_Index
+                   or else Res.Conflict_Index_Strict >
+                     TransactionLogIndex_Type'First
+                   or else
+                     (Old_Next =
+                        TransactionLogIndex_Type'Succ
+                          (NS.Snapshot_Last_Included_Index)
+                      and then
+                        Res.Matching_Index_Strict =
+                        NS.Snapshot_Last_Included_Index)
+                   or else Follower_Needs_Snapshot (NS, New_Next))
+            then
+               Machine_State.MState.Snapshot_Send_Offset (Res.SID) := 0;
+               Machine_State.MState.Snapshot_Send_Active (Res.SID) := True;
+               Debug_Put_Line
+                 (Machine_State,
+                  "[ leader " &
+                  Id_Image (Machine_State.MState.Current_Id) &
+                  " replication ] follower " & Res.SID'Image &
+                  " fast-path InstallSnapshot after reject"
+                  & " (nextIndex=" & New_Next'Image & " snapshot=" &
+                  NS.Snapshot_Last_Included_Index'Image & ")");
+               Send_Next_Snapshot_Chunk_To_Follower (Machine_State, Res.SID);
+            end if;
          end;
 
       end if;
@@ -1702,7 +1842,8 @@ package body Raft.Node is
                      SID                   => Machine_State.MState.Current_Id,
                      Matching_Index_Strict => TransactionLogIndex_Type'First,
                      T                     =>
-                       Machine_State.MState.Node_State.Current_Term));
+                       Machine_State.MState.Node_State.Current_Term,
+                     others => <>));
             end if;
          end;
       elsif M'Tag = Install_Snapshot_Request'Tag then
@@ -1829,6 +1970,7 @@ package body Raft.Node is
                Prev_For_Rpc : TransactionLogIndex_Type :=
                  Prev_Log_Index_For_Rpc (First_Entry_To_Send);
                T : Term_Type := NS.Current_Term;
+               Vacuous_Prefix : Boolean := False;
             begin
                if Follower_Needs_Snapshot (NS, Prev_Node_Log_Index_Strict)
                then
@@ -1885,12 +2027,18 @@ package body Raft.Node is
                     and then Prev_For_Rpc = NS.Snapshot_Last_Included_Index
                   then
                      T := NS.Snapshot_Last_Included_Term;
+                  elsif First_Entry_To_Send = TransactionLogIndex_Type'First
+                  then
+                     --  Raft prevLogIndex=0 equivalent: overwrite from index 1.
+                     Prev_For_Rpc   := TransactionLogIndex_Type'First;
+                     T              := 0;
+                     Vacuous_Prefix := True;
                   elsif Prev_For_Rpc >= TransactionLogIndex_Type'First
                   then
                      T := Log_Term_At (NS, Prev_For_Rpc);
                   end if;
 
-                  if T = 0 then
+                  if not Vacuous_Prefix and then T = 0 then
                      T := NS.Current_Term;
                   end if;
 
