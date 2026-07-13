@@ -6,9 +6,18 @@ package Raft.Snapshot is
 
    COMPACT_THRESHOLD : Natural := 100;
 
+   --  After compaction, keep this many committed entries in the physical
+   --  log so lagging followers can catch up via AppendEntries instead of
+   --  InstallSnapshot and nextIndex backtracking.  Zero disables retention.
+   COMPACT_LOG_RETENTION : Natural := 0;
+
    procedure Set_Compact_Threshold (Value : Natural);
 
    function Get_Compact_Threshold return Natural;
+
+   procedure Set_Compact_Log_Retention (Value : Natural);
+
+   function Get_Compact_Log_Retention return Natural;
 
    function First_Retained_Log_Index
      (NS : Raft.Node.Raft_Node_State) return TransactionLogIndex_Type;

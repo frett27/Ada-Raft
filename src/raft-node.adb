@@ -19,6 +19,23 @@ package body Raft.Node is
       return Upper_Bound (NS.Log);
    end Log_Upper_Bound_Strict;
 
+   procedure Debug_Put_Line (Node : Raft_Node_Access; S : String) is
+   begin
+      Put_Line ("[" & Node.State.Current_Id'Image & "] " & S);
+   end Debug_Put_Line;
+
+   procedure Debug_Put_Line
+     (State_Machine : Raft_State_Machine'Class; S : String)
+   is
+   begin
+      Put_Line ("[" & State_Machine.MState.Current_Id'Image & "] " & S);
+   end Debug_Put_Line;
+
+   function Id_Image (Id : ServerID_Type) return String is
+   begin
+      return Trim (Id'Image, Ada.Strings.Left);
+   end Id_Image;
+
    procedure After_Commit_Advanced (MState : RaftNodeStruct_Access) is
    begin
       Apply_Committed_Entries (MState);
@@ -63,14 +80,56 @@ package body Raft.Node is
          if Machine_State.MState.Leader_State.Next_Index_Strict (Server) <=
            NS.Snapshot_Last_Included_Index
          then
-            Machine_State.MState.Leader_State.Next_Index_Strict (Server) :=
-              TransactionLogIndex_Type'Succ (NS.Snapshot_Last_Included_Index);
-            Machine_State.MState.Leader_State.Match_Index_Strict (Server) :=
-              TransactionLogIndex_Type'Min
-                (Machine_State.MState.Leader_State.Match_Index_Strict (Server),
-                 NS.Snapshot_Last_Included_Index);
-            Machine_State.MState.Snapshot_Send_Offset (Server) := 0;
-            Machine_State.MState.Snapshot_Send_Active (Server) := False;
+            if not Is_Empty (NS.Log)
+              and then
+                Machine_State.MState.Leader_State.Next_Index_Strict (Server) >=
+                  Base_Index (NS.Log)
+            then
+               declare
+                  Old_Next : constant TransactionLogIndex_Type :=
+                    Machine_State.MState.Leader_State.Next_Index_Strict
+                      (Server);
+                  New_Next : constant TransactionLogIndex_Type :=
+                    TransactionLogIndex_Type'Max
+                      (Old_Next, Base_Index (NS.Log));
+               begin
+                  Machine_State.MState.Leader_State.Next_Index_Strict
+                    (Server) := New_Next;
+                  Machine_State.MState.Snapshot_Send_Active (Server) :=
+                    False;
+                  Debug_Put_Line
+                    (Machine_State,
+                     "[ leader " &
+                     Id_Image (Machine_State.MState.Current_Id) &
+                     " replication ] follower " & Server'Image &
+                     " post-compact catch-up via retention window"
+                     & " (nextIndex " & Old_Next'Image & " -> " &
+                     New_Next'Image & ", log_base=" &
+                     Base_Index (NS.Log)'Image & " snapshot=" &
+                     NS.Snapshot_Last_Included_Index'Image & ")");
+               end;
+            else
+               Machine_State.MState.Leader_State.Next_Index_Strict (Server) :=
+                 TransactionLogIndex_Type'Succ (NS.Snapshot_Last_Included_Index);
+               Machine_State.MState.Leader_State.Match_Index_Strict (Server) :=
+                 TransactionLogIndex_Type'Min
+                   (Machine_State.MState.Leader_State.Match_Index_Strict
+                      (Server),
+                    NS.Snapshot_Last_Included_Index);
+               Machine_State.MState.Snapshot_Send_Offset (Server) := 0;
+               Machine_State.MState.Snapshot_Send_Active (Server) := False;
+               Debug_Put_Line
+                 (Machine_State,
+                  "[ leader " &
+                  Id_Image (Machine_State.MState.Current_Id) &
+                  " replication ] follower " & Server'Image &
+                  " post-compact reset for InstallSnapshot"
+                  & " (nextIndex -> " &
+                  TransactionLogIndex_Type'Succ
+                    (NS.Snapshot_Last_Included_Index)'Image &
+                  ", snapshot=" & NS.Snapshot_Last_Included_Index'Image &
+                  ")");
+            end if;
          end if;
       end loop;
    end Adjust_Leader_Indices_After_Compact;
@@ -134,22 +193,32 @@ package body Raft.Node is
       end if;
    end Send_Next_Snapshot_Chunk_To_Follower;
 
-   procedure Debug_Put_Line (Node : Raft_Node_Access; S : String) is
-   begin
-      Put_Line ("[" & Node.State.Current_Id'Image & "] " & S);
-   end Debug_Put_Line;
-
-   procedure Debug_Put_Line
-     (State_Machine : Raft_State_Machine'Class; S : String)
+   function Describe_Append_Failure
+     (NS             : Raft_Node_State;
+      Prev_Log_Index : TransactionLogIndex_Type) return String
    is
+      Prior : TransactionLogIndex_Type := Prev_Log_Index;
    begin
-      Put_Line ("[" & State_Machine.MState.Current_Id'Image & "] " & S);
-   end Debug_Put_Line;
+      if Prev_Log_Index > TransactionLogIndex_Type'First then
+         Prior := TransactionLogIndex_Type'Pred (Prev_Log_Index);
+      end if;
 
-   function Id_Image (Id : ServerID_Type) return String is
-   begin
-      return Trim (Id'Image, Ada.Strings.Left);
-   end Id_Image;
+      if Prev_Log_Index >= Log_Upper_Bound_Strict (NS) then
+         return "follower log too short (prevLogIndex at or past log end)";
+      end if;
+
+      if NS.Has_Snapshot and then Prior < Base_Index (NS.Log) then
+         return "follower behind compacted prefix"
+           & " (physical log_base=" & Base_Index (NS.Log)'Image
+           & " snapshot=" & NS.Snapshot_Last_Included_Index'Image & ")";
+      end if;
+
+      if Has_Log_Entry_At (NS, Prior) then
+         return "likely term mismatch at index " & Prior'Image;
+      end if;
+
+      return "follower log too short before index " & Prev_Log_Index'Image;
+   end Describe_Append_Failure;
 
    procedure Dump_Logs (Machine_State : Raft_State_Machine'Class) is
       U : Unbounded_String := To_Unbounded_String ("");
@@ -1137,23 +1206,32 @@ package body Raft.Node is
          end;
 
       else
-         Debug_Put_Line
-           (Machine_State,
-            "[ leader " & Id_Image (Machine_State.MState.Current_Id) &
-            " got a failure response from " & Res.SID'Image & "]");
-         Machine_State.MState.Leader_State.Next_Index_Strict (Res.SID) :=
-           TransactionLogIndex_Type'Max
-             (TransactionLogIndex_Type'First,
-              TransactionLogIndex_Type'Pred
-                (Machine_State.MState.Leader_State.Next_Index_Strict
-                   (Res.SID)));
-         Debug_Put_Line
-           (Machine_State,
-            "[ leader " & Id_Image (Machine_State.MState.Current_Id) &
-            " updated nextIndex_strict to " &
-            Machine_State.MState.Leader_State.Next_Index_Strict (Res.SID)'
-              Image &
-            " for " & Res.SID'Image & "]");
+         declare
+            NS       : constant Raft_Node_State :=
+              Machine_State.MState.Node_State;
+            Old_Next : constant TransactionLogIndex_Type :=
+              Machine_State.MState.Leader_State.Next_Index_Strict (Res.SID);
+            New_Next : constant TransactionLogIndex_Type :=
+              TransactionLogIndex_Type'Max
+                (TransactionLogIndex_Type'First,
+                 TransactionLogIndex_Type'Pred (Old_Next));
+         begin
+            Debug_Put_Line
+              (Machine_State,
+               "[ leader " & Id_Image (Machine_State.MState.Current_Id) &
+               " replication ] follower " & Res.SID'Image &
+               " rejected AppendEntries at prevLogIndex=" &
+               Old_Next'Image & ": " &
+               Describe_Append_Failure (NS, Old_Next));
+            Debug_Put_Line
+              (Machine_State,
+               "[ leader " & Id_Image (Machine_State.MState.Current_Id) &
+               " replication ] backtracking nextIndex for follower " &
+               Res.SID'Image & " from " & Old_Next'Image & " to " &
+               New_Next'Image);
+            Machine_State.MState.Leader_State.Next_Index_Strict (Res.SID) :=
+              New_Next;
+         end;
 
       end if;
    end Handle_Leader_Append_Entries_Response;
@@ -1297,10 +1375,41 @@ package body Raft.Node is
                      Machine_State.MState.Snapshot_Send_Offset (Server) := 0;
                      Machine_State.MState.Snapshot_Send_Active (Server) :=
                        True;
+                     Debug_Put_Line
+                       (Machine_State,
+                        "[ leader " &
+                        Id_Image (Machine_State.MState.Current_Id) &
+                        " replication ] follower " & Server'Image &
+                        " needs InstallSnapshot"
+                        & " (nextIndex=" &
+                        Prev_Node_Log_Index_Strict'Image &
+                        " below physical log_base=" &
+                        Base_Index (NS.Log)'Image & " snapshot=" &
+                        NS.Snapshot_Last_Included_Index'Image & ")");
                   end if;
                   Send_Next_Snapshot_Chunk_To_Follower
                     (Machine_State, Server);
                else
+                  if NS.Has_Snapshot
+                    and then not Is_Empty (NS.Log)
+                    and then
+                      Prev_Node_Log_Index_Strict <=
+                        NS.Snapshot_Last_Included_Index
+                    and then
+                      Prev_Node_Log_Index_Strict >= Base_Index (NS.Log)
+                  then
+                     Debug_Put_Line
+                       (Machine_State,
+                        "[ leader " &
+                        Id_Image (Machine_State.MState.Current_Id) &
+                        " replication ] follower " & Server'Image &
+                        " catch-up via retention window"
+                        & " (nextIndex=" &
+                        Prev_Node_Log_Index_Strict'Image & " log_base=" &
+                        Base_Index (NS.Log)'Image & " snapshot=" &
+                        NS.Snapshot_Last_Included_Index'Image & ")");
+                  end if;
+
                   if NS.Has_Snapshot
                     and then
                       Prev_Node_Log_Index_Strict =
@@ -1365,6 +1474,17 @@ package body Raft.Node is
                            Leader_Commit_Strict  =>
                              Machine_State.MState.Commit_Index_Strict);
 
+                        Debug_Put_Line
+                          (Machine_State,
+                           "[ leader " &
+                           Id_Image (Machine_State.MState.Current_Id) &
+                           " replication ] follower " & Server'Image &
+                           " AppendEntries with " & Batch_Size'Image &
+                           " entr" &
+                           (if Batch_Size = 1 then "y" else "ies") &
+                           " at prevLogIndex=" & Prev_For_Rpc'Image &
+                           " prevLogTerm=" & T'Image);
+
                         Machine_State.Sending_Message
                           (Machine_State.MState.all, Server, AER);
                      end;
@@ -1380,6 +1500,14 @@ package body Raft.Node is
                         Entries_Last_Strict   => TransactionLogIndex_Type'First,
                         Leader_Commit_Strict  =>
                           Machine_State.MState.Commit_Index_Strict);
+
+                     Debug_Put_Line
+                       (Machine_State,
+                        "[ leader " &
+                        Id_Image (Machine_State.MState.Current_Id) &
+                        " replication ] follower " & Server'Image &
+                        " heartbeat at prevLogIndex=" & Prev_For_Rpc'Image &
+                        " prevLogTerm=" & T'Image);
 
                      Machine_State.Sending_Message
                        (Machine_State.MState.all, Server, AER);

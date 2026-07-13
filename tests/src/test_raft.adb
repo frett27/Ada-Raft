@@ -504,6 +504,7 @@ package body Test_Raft is
    begin
       Banner ("Long run log compaction");
       Set_Compact_Threshold (Compact_Threshold_Val);
+      Set_Compact_Log_Retention (0);
       RS.Initialize_System;
 
       for SID in 1 .. RS.SYSTEM_SERVER_NUMBER loop

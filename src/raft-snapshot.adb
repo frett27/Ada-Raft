@@ -18,6 +18,65 @@ package body Raft.Snapshot is
       return COMPACT_THRESHOLD;
    end Get_Compact_Threshold;
 
+   procedure Set_Compact_Log_Retention (Value : Natural) is
+   begin
+      COMPACT_LOG_RETENTION := Value;
+   end Set_Compact_Log_Retention;
+
+   function Get_Compact_Log_Retention return Natural is
+   begin
+      return COMPACT_LOG_RETENTION;
+   end Get_Compact_Log_Retention;
+
+   function Log_Clear_Boundary
+     (NS           : Raft.Node.Raft_Node_State;
+      Commit_Index : TransactionLogIndex_Type) return TransactionLogIndex_Type
+   is
+      Retention : Natural := COMPACT_LOG_RETENTION;
+      Result    : TransactionLogIndex_Type := Commit_Index;
+      Headroom  : constant Natural := 10;
+   begin
+      if not Is_Empty (NS.Log) then
+         declare
+            Uncommitted : Natural :=
+              Natural (Upper_Bound (NS.Log)) - Natural (Commit_Index);
+         begin
+            if Uncommitted + Headroom >= Natural (MAX_PHYSICAL_INDEX) then
+               Retention := 0;
+            else
+               declare
+                  Max_Retain : constant Natural :=
+                    Natural (MAX_PHYSICAL_INDEX) - Uncommitted - Headroom;
+               begin
+                  if Max_Retain < Retention then
+                     Retention := Max_Retain;
+                  end if;
+               end;
+            end if;
+         end;
+      end if;
+
+      if Retention > 0
+        and then Natural (Commit_Index) > Retention
+      then
+         Result :=
+           TransactionLogIndex_Type (Natural (Commit_Index) - Retention);
+      end if;
+
+      if not Is_Empty (NS.Log) then
+         declare
+            Min_Clear : constant TransactionLogIndex_Type :=
+              TransactionLogIndex_Type'Pred (Base_Index (NS.Log));
+         begin
+            if Result < Min_Clear then
+               Result := Min_Clear;
+            end if;
+         end;
+      end if;
+
+      return Result;
+   end Log_Clear_Boundary;
+
    procedure Put_Natural
      (Blob : in out Snapshot_Blob;
       Pos  : in out Natural;
@@ -127,7 +186,17 @@ package body Raft.Snapshot is
          return False;
       end if;
 
-      return Next_Index <= Leader_NS.Snapshot_Last_Included_Index;
+      if Next_Index > Leader_NS.Snapshot_Last_Included_Index then
+         return False;
+      end if;
+
+      if not Is_Empty (Leader_NS.Log)
+        and then Next_Index >= Base_Index (Leader_NS.Log)
+      then
+         return False;
+      end if;
+
+      return True;
    end Follower_Needs_Snapshot;
 
    procedure Clear_Log_Prefix
@@ -212,7 +281,11 @@ package body Raft.Snapshot is
       NS.Snapshot_Last_Included_Index := Commit_Index;
       NS.Snapshot_Last_Included_Term  := Last_Term;
 
-      Clear_Log_Prefix (NS, Commit_Index);
+      if COMPACT_LOG_RETENTION > 0 then
+         Clear_Log_Prefix (NS, Log_Clear_Boundary (NS, Commit_Index));
+      else
+         Clear_Log_Prefix (NS, Commit_Index);
+      end if;
    end Compact_If_Needed;
 
    procedure Apply_Install_Snapshot
@@ -242,7 +315,12 @@ package body Raft.Snapshot is
       NS.Snapshot_Data                := Data;
       NS.Snapshot_Data_Length         := Data_Length;
 
-      Clear_Log_Prefix (NS, Last_Included_Index);
+      if COMPACT_LOG_RETENTION > 0 then
+         Clear_Log_Prefix
+           (NS, Log_Clear_Boundary (NS, Last_Included_Index));
+      else
+         Clear_Log_Prefix (NS, Last_Included_Index);
+      end if;
 
       if MState.Application_State /= null
         and then Data_Length > Snapshot_Header_Bytes

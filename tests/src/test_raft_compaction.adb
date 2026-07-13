@@ -5,6 +5,7 @@ with Test_Banners;
 with Test_Raft;
 with Raft;              use Raft;
 with Raft.Snapshot;     use Raft.Snapshot;
+with Raft.Log_Storage; use Raft.Log_Storage;
 with Raft.Node;           use Raft.Node;
 
 package body Test_Raft_Compaction is
@@ -33,6 +34,10 @@ package body Test_Raft_Compaction is
         (T,
          Test_Lagging_Follower_Install_Snapshot'Access,
          "Lagging follower install snapshot");
+      Register_Routine
+        (T,
+         Test_Log_Retention_After_Compact'Access,
+         "Log retention after compact");
    end Register_Tests;
 
    function Name (T : Raft_Compaction_Tests) return Message_String is
@@ -246,5 +251,61 @@ package body Test_Raft_Compaction is
             "follower state should be close to cluster after snapshot install");
       end;
    end Test_Lagging_Follower_Install_Snapshot;
+
+   procedure Test_Log_Retention_After_Compact
+     (T : in out Test_Cases.Test_Case'Class)
+   is
+      Leader   : ServerID_Type;
+      Snapshot : TransactionLogIndex_Type;
+      First_Ix : TransactionLogIndex_Type;
+   begin
+      Set_Compact_Threshold (5);
+      Set_Compact_Log_Retention (5);
+      Banner ("Log retention after compact");
+      RS.Initialize_System;
+      Attach_Application_States;
+
+      Leader := RS.Elect_Leader (1, 50);
+      Assert (Leader /= NULL_SERVER, "leader should be elected");
+
+      for I in 1 .. 25 loop
+         RS.Send_Client_Command (Leader, Make_Command (Integer (I)));
+         RS.Run_Steps (40);
+      end loop;
+
+      Run_Until_Commit (26, 400);
+
+      for Round in 1 .. 300 loop
+         RS.Process_Pending_Messages;
+         exit when Cluster_Commit_In_Sync (26);
+      end loop;
+
+      Apply_Committed_Entries (RS.Get_Node (Leader).State'Access);
+      Compact_If_Needed (RS.Get_Node (Leader).State'Access);
+
+      Snapshot := RS.Node_Snapshot_Last_Index (Leader);
+      First_Ix   := RS.Node_First_Retained_Log_Index (Leader);
+
+      Assert
+        (RS.Node_Has_Snapshot (Leader),
+         "leader should compact after retention threshold");
+      Assert
+        (Retained_Entry_Count
+           (RS.Get_Node (Leader).State.Node_State.Log) >=
+           Get_Compact_Log_Retention,
+         "physical log should retain a suffix for incremental catch-up");
+      Assert
+        (Base_Index (RS.Get_Node (Leader).State.Node_State.Log) <= Snapshot,
+         "physical log should overlap the snapshot for catch-up");
+      Assert
+        (Has_Log_Entry_At (RS.Get_Node (Leader).State.Node_State, Snapshot),
+         "snapshot index should remain readable for replication");
+      Assert
+        (First_Ix > Snapshot,
+         "logical first retained index still follows snapshot metadata");
+
+      Set_Compact_Threshold (100);
+      Set_Compact_Log_Retention (0);
+   end Test_Log_Retention_After_Compact;
 
 end Test_Raft_Compaction;

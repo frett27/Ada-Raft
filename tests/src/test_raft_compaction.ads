@@ -16,4 +16,7 @@ package Test_Raft_Compaction is
    procedure Test_Lagging_Follower_Install_Snapshot
      (T : in out Test_Cases.Test_Case'Class);
 
+   procedure Test_Log_Retention_After_Compact
+     (T : in out Test_Cases.Test_Case'Class);
+
 end Test_Raft_Compaction;
