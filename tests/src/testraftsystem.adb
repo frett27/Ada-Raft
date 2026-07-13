@@ -8,6 +8,7 @@ with Ada.Numerics;          use Ada.Numerics;
 with Ada.Numerics.Float_Random;
 with Ada.Exceptions;        use Ada.Exceptions;
 with Ada.IO_Exceptions;     use Ada.IO_Exceptions;
+with Ada.Unchecked_Deallocation;
 
 package body TestRaftSystem is
 
@@ -305,6 +306,58 @@ package body TestRaftSystem is
        Start_New_Epoch_And_Handle_Timers (Epoch);
     end Advance_One_Epoch;
 
+    function Node_Application_State_Image (SID : ServerID_Type) return String is
+    begin
+       return Image (Nodes (SID).State.Application_State);
+    end Node_Application_State_Image;
+
+    procedure Dump_Transaction_Log_And_Application_State
+      (SID : ServerID_Type)
+    is
+       NS       : Raft_Node_State renames Nodes (SID).State.Node_State;
+       Log_Text : Unbounded_String := To_Unbounded_String ("");
+       First_Ix : constant TransactionLogIndex_Type :=
+         First_Retained_Log_Index (NS);
+       Last_Ix  : constant TransactionLogIndex_Type := Last_Log_Index (NS);
+    begin
+       if NS.Has_Snapshot then
+          Append
+            (Log_Text,
+             "[snapshot@"
+             & TransactionLogIndex_Type'Image
+               (NS.Snapshot_Last_Included_Index)
+             & " term="
+             & NS.Snapshot_Last_Included_Term'Image
+             & "] ");
+       end if;
+
+       if Last_Ix >= First_Ix then
+          for I in First_Ix .. Last_Ix loop
+             Append
+               (Log_Text,
+                "(" & Image (NS.Log (I).C) & "," & NS.Log (I).T'Image & ") ");
+          end loop;
+       elsif not NS.Has_Snapshot then
+         Append (Log_Text, "<empty>");
+       end if;
+
+       Debug_Test_Message
+         ("     Node " & ServerID_Type'Image (SID) & " log: " &
+          To_String (Log_Text));
+       Debug_Test_Message
+         ("     Node " & ServerID_Type'Image (SID) & " app: " &
+          Node_Application_State_Image (SID) & " commit=" &
+          Nodes (SID).State.Commit_Index_Strict'Image & " lastApplied=" &
+          Nodes (SID).State.Last_Applied_Strict'Image);
+    end Dump_Transaction_Log_And_Application_State;
+
+    procedure Dump_All_Nodes_Logs_And_Application_State is
+    begin
+       for SID in 1 .. SERVER_NUMBER loop
+          Dump_Transaction_Log_And_Application_State (SID);
+       end loop;
+    end Dump_All_Nodes_Logs_And_Application_State;
+
     procedure Disconnect_Node (SID : ServerID_Type) is
     begin
        Node_Connected (SID) := False;
@@ -406,6 +459,31 @@ package body TestRaftSystem is
         end;
 
     end Sending;
+
+    procedure Free_Raft_Node is new Ada.Unchecked_Deallocation
+      (Raft_Node, Raft_Node_Access);
+
+    procedure Reset_Server
+      (SID : ServerID_Type; App_State : Application_State_Access := null)
+    is
+    begin
+       if Nodes (SID) /= null then
+          Free_Raft_Node (Nodes (SID));
+       end if;
+
+       Timers (SID, Election_Timer)  := 0;
+       Timers (SID, Heartbeat_Timer) := 0;
+
+       Create_Machine
+         (Nodes (SID), SID, SERVER_NUMBER,
+          Ask_For_Timer_Start'Unrestricted_Access,
+          Ask_For_Cancel_Timer'Unrestricted_Access,
+          Sending'Unrestricted_Access,
+          App_State);
+
+       Debug_Test_Message
+         ("Reset_Server: " & ServerID_Type'Image (SID));
+    end Reset_Server;
 
     procedure NHB_Message_Received
        (NH      : in NetHub_Binding_Access; SID : ServerID_Type;
@@ -524,6 +602,22 @@ package body TestRaftSystem is
                ("     Node " & i'Image & ": " &
                 RaftStateEnum'Image (Nodes (i).State.Current_Raft_State));
         end loop;
+
+        declare
+           Leader_Node : constant Raft_Node_Access := Get_Leader;
+        begin
+           if Leader_Node /= null then
+              Debug_Test_Message
+                 ("     Leader "
+                  & ServerID_Type'Image (Leader_Node.State.Current_Id)
+                  & " cluster commit="
+                  & Leader_Node.State.Commit_Index_Strict'Image);
+           else
+              Debug_Test_Message ("     No leader (cluster commit n/a)");
+           end if;
+        end;
+
+        Dump_All_Nodes_Logs_And_Application_State;
 
         Debug_Test_Message ("Start_New_Epoch: " & Epoch_Type'Image (Epoch));
 

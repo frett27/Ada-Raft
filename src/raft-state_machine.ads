@@ -23,6 +23,10 @@ package Raft.State_Machine is
       Offset : Natural;
       Length : Snapshot_Length) is abstract;
 
+   function Image (State : Application_State) return String is abstract;
+
    type Application_State_Access is access all Application_State'Class;
+
+   function Image (State : Application_State_Access) return String;
 
 end Raft.State_Machine;

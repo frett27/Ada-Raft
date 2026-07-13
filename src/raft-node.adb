@@ -722,9 +722,21 @@ package body Raft.Node is
 
             --  adding elements
             declare
+               NS : constant Raft_Node_State :=
+                 Machine_State.MState.Node_State;
                To_Update_Index_on_Local_Log : TransactionLogIndex_Type :=
                  M.Prev_Log_Index_Strict;
             begin
+               --  After compaction the leader sends the snapshot index as
+               --  PrevLogIndex; the first new entry belongs at Succ (that index).
+               if NS.Has_Snapshot
+                 and then
+                   M.Prev_Log_Index_Strict = NS.Snapshot_Last_Included_Index
+               then
+                  To_Update_Index_on_Local_Log :=
+                    TransactionLogIndex_Type'Succ
+                      (M.Prev_Log_Index_Strict);
+               end if;
 
                Debug_Put_Line
                  (Machine_State,
@@ -784,11 +796,24 @@ package body Raft.Node is
          Dump_Logs (Machine_State);
          if M.Leader_Commit_Strict > Machine_State.MState.Commit_Index_Strict
          then
+            declare
+               NS             : constant Raft_Node_State :=
+                 Machine_State.MState.Node_State;
+               Last_New_Entry : TransactionLogIndex_Type := Match_Index;
+            begin
+               if M.Entries_Last_Strict /= TransactionLogIndex_Type'First then
+                  Last_New_Entry :=
+                    TransactionLogIndex_Type'Pred (Match_Index);
+               else
+                  Last_New_Entry :=
+                    TransactionLogIndex_Type'Max
+                      (Match_Index, Last_Log_Index (NS));
+               end if;
 
-            Machine_State.MState.Commit_Index_Strict :=
-              TransactionLogIndex_Type'Min
-                (M.Leader_Commit_Strict,
-                 Machine_State.MState.Node_State.Log_Upper_Bound_Strict);
+               Machine_State.MState.Commit_Index_Strict :=
+                 TransactionLogIndex_Type'Min
+                   (M.Leader_Commit_Strict, Last_New_Entry);
+            end;
 
             After_Commit_Advanced (Machine_State.MState);
 
@@ -1274,8 +1299,9 @@ package body Raft.Node is
                else
                   if NS.Has_Snapshot
                     and then
-                      Prev_Node_Log_Index_Strict >=
-                        First_Retained_Log_Index (NS)
+                      Prev_Node_Log_Index_Strict =
+                        TransactionLogIndex_Type'Succ
+                          (NS.Snapshot_Last_Included_Index)
                   then
                      Prev_For_Rpc := NS.Snapshot_Last_Included_Index;
                   end if;

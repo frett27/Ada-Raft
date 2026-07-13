@@ -7,6 +7,7 @@ with Raft;                use Raft;
 with Raft.Node;           use Raft.Node;
 with Raft.Comm;           use Raft.Comm;
 with Raft.Messages;       use Raft.Messages;
+with Raft.Snapshot;        use Raft.Snapshot;
 
 -- ada
 with Ada.Streams; use Ada.Streams;
@@ -55,6 +56,8 @@ package body Test_Raft is
       --Register_Routine (T, Test_All_States'Access, "Raft State Tests");
       Register_Routine (T, Test_Leader_Election'Access, "Raft Leader Election");
       Register_Routine (T, Test_RaftSystem'Access, "Raft System Tests");
+      Register_Routine
+        (T, Test_Long_Run_Log_Compaction'Access, "Long run log compaction");
    end Register_Tests;
 
    -- Register routines to be run
@@ -136,6 +139,12 @@ package body Test_Raft is
 
       State.Sum := Result;
    end Restore_Snapshot;
+
+   overriding
+   function Image (State : Test_Application_State) return String is
+   begin
+      return "TestAppState(Sum=" & State.Sum'Image & ")";
+   end Image;
 
    function Application_Sum (State : Application_State_Access) return Integer is
    begin
@@ -427,5 +436,201 @@ package body Test_Raft is
       end loop;
 
    end Test_RaftSystem;
+
+   procedure Test_Long_Run_Log_Compaction (T : in out Test_Cases.Test_Case'Class) is
+
+      package RS is new TestRaftSystem
+        (SERVER_NUMBER      => 3,
+         Debug_Test_Message => Debug_Test_Message'Access);
+
+      Compact_Threshold_Val : constant Natural := 10;
+      Command_Count         : constant Natural := 50;
+      Steps_Per_Command     : constant Natural := 15;
+
+      function Cluster_Commit_In_Sync
+        (Min_Leader_Commit : TransactionLogIndex_Type) return Boolean
+      is
+         Current_Leader : constant ServerID_Type := RS.Leader_Id;
+         Ref_Commit     : TransactionLogIndex_Type;
+      begin
+         if Current_Leader = NULL_SERVER then
+            return False;
+         end if;
+
+         Ref_Commit := RS.Node_Commit_Index (Current_Leader);
+
+         if Ref_Commit < Min_Leader_Commit then
+            return False;
+         end if;
+
+         for SID in 1 .. RS.SYSTEM_SERVER_NUMBER loop
+            if RS.Node_Commit_Index (SID) /= Ref_Commit then
+               return False;
+            end if;
+         end loop;
+
+         return True;
+      end Cluster_Commit_In_Sync;
+
+      procedure Run_Until_Commit
+        (Target : TransactionLogIndex_Type; Max_Epochs : Natural)
+      is
+      begin
+         for Round in 1 .. 8_000 loop
+            RS.Process_Pending_Messages;
+
+            if Cluster_Commit_In_Sync (Target) then
+               return;
+            end if;
+         end loop;
+
+         for E in 1 .. Max_Epochs loop
+            RS.Advance_One_Epoch (RS.Epoch_Type (E));
+            RS.Process_Pending_Messages;
+
+            if Cluster_Commit_In_Sync (Target) then
+               return;
+            end if;
+         end loop;
+      end Run_Until_Commit;
+
+      procedure Check_Cluster_Consistency (Checkpoint : String) is
+         Check_Result : Boolean;
+         Checked      : Natural;
+      begin
+         RS.Validate_All_Nodes_Committed_TLogs_Entre_Current_Term_And_Current_Index
+           (Check_Result, Checked);
+         Assert
+           (Check_Result,
+            "cluster logs must stay consistent at " & Checkpoint);
+      end Check_Cluster_Consistency;
+
+      Leader : ServerID_Type;
+   begin
+      Banner ("Long run log compaction");
+      Set_Compact_Threshold (Compact_Threshold_Val);
+      RS.Initialize_System;
+
+      for SID in 1 .. RS.SYSTEM_SERVER_NUMBER loop
+         declare
+            App : constant Application_State_Access :=
+              new Test_Application_State;
+         begin
+            RS.Get_Node (SID).State.Application_State := App;
+         end;
+      end loop;
+
+      Leader := RS.Elect_Leader (1, 100);
+      Assert (Leader /= NULL_SERVER, "leader should be elected");
+
+      Debug_Test_Message
+        ("Sending "
+         & Natural'Image (Command_Count)
+         & " commands on 3-node cluster");
+
+      for I in 1 .. Command_Count loop
+         Assert
+           (RS.Count_Nodes_In_State (Raft.Node.Leader) <= 1,
+            "must not have multiple leaders at command " & Integer'Image (I));
+
+         Leader := RS.Leader_Id;
+         if Leader = NULL_SERVER then
+            Leader := RS.Elect_Leader (1, 50);
+         end if;
+         Assert
+           (Leader /= NULL_SERVER,
+            "leader required at command " & Integer'Image (I));
+
+         RS.Send_Client_Command
+           (Leader, new Test_Command'(Value => Integer (I)));
+         RS.Run_Steps (Steps_Per_Command);
+
+         if I mod 10 = 0 and then I <= Compact_Threshold_Val then
+            Debug_Test_Message
+              ("Checkpoint command "
+               & Integer'Image (I)
+               & " commit leader="
+               & RS.Node_Commit_Index (RS.Leader_Id)'Image);
+            Check_Cluster_Consistency ("command " & Integer'Image (I));
+         end if;
+      end loop;
+
+      Run_Until_Commit (TransactionLogIndex_Type (Compact_Threshold_Val), 800);
+
+      Leader := RS.Leader_Id;
+      Assert (Leader /= NULL_SERVER, "leader should exist after long run");
+
+      for SID in 1 .. RS.SYSTEM_SERVER_NUMBER loop
+         Apply_Committed_Entries (RS.Get_Node (SID).State'Access);
+      end loop;
+
+      declare
+         Leader_Commit : constant TransactionLogIndex_Type :=
+           RS.Node_Commit_Index (Leader);
+      begin
+         Assert
+           (Leader_Commit >= TransactionLogIndex_Type (Compact_Threshold_Val),
+            "leader commit should pass compaction threshold");
+
+         for SID in 1 .. RS.SYSTEM_SERVER_NUMBER loop
+            Assert
+              (RS.Node_Commit_Index (SID) = Leader_Commit,
+               "node " & ServerID_Type'Image (SID) &
+                 " commit must match leader after long run");
+         end loop;
+      end;
+
+      Assert
+        (RS.Node_Last_Log_Index (Leader) >=
+           TransactionLogIndex_Type (Command_Count / 2),
+         "leader log should retain a long command suffix");
+      Assert
+        (RS.Node_Has_Snapshot (Leader),
+         "leader should compact log during long command run");
+      Assert
+        (RS.Node_Snapshot_Last_Index (Leader) >=
+           TransactionLogIndex_Type (Compact_Threshold_Val),
+         "leader snapshot should cover compacted prefix");
+      Assert
+        (RS.Node_First_Retained_Log_Index (Leader) >
+           RS.Node_Snapshot_Last_Index (Leader),
+         "leader retained log should follow snapshot");
+
+      for SID in 1 .. RS.SYSTEM_SERVER_NUMBER loop
+         Assert
+           (RS.Node_Commit_Index (SID) >=
+              TransactionLogIndex_Type (Compact_Threshold_Val),
+            "node " & ServerID_Type'Image (SID) & " should advance commit");
+         if RS.Node_Has_Snapshot (SID) then
+            Assert
+              (RS.Node_First_Retained_Log_Index (SID) >
+                 RS.Node_Snapshot_Last_Index (SID),
+               "node " & ServerID_Type'Image (SID) &
+                 " retained log should follow snapshot");
+         end if;
+      end loop;
+
+      declare
+         Ref_Sum : constant Integer :=
+           Application_Sum (RS.Get_Node (Leader).State.Application_State);
+      begin
+         Assert (Ref_Sum > 0, "leader application state should reflect commands");
+
+         for SID in 1 .. RS.SYSTEM_SERVER_NUMBER loop
+            declare
+               Node_Sum : constant Integer :=
+                 Application_Sum
+                   (RS.Get_Node (SID).State.Application_State);
+            begin
+               Assert
+                 (Node_Sum = Ref_Sum,
+                  "node " & ServerID_Type'Image (SID) &
+                    " application state must match leader after long run");
+            end;
+         end loop;
+      end;
+
+      Set_Compact_Threshold (100);
+   end Test_Long_Run_Log_Compaction;
 
 end Test_Raft;

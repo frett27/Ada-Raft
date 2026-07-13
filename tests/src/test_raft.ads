@@ -33,6 +33,8 @@ package Test_Raft is
   -- Test Raft System - using variable number of nodes
   procedure Test_RaftSystem (T : in out Test_Cases.Test_Case'Class);
 
+  procedure Test_Long_Run_Log_Compaction (T : in out Test_Cases.Test_Case'Class);
+
 
 
   -- -------------------------------------------------------
@@ -76,12 +78,15 @@ package Test_Raft is
       Offset : Natural;
       Length : out Snapshot_Length);
 
-   overriding
-   procedure Restore_Snapshot
-     (State  : in out Test_Application_State;
-      Data   : Snapshot_Blob;
-      Offset : Natural;
-      Length : Snapshot_Length);
+  overriding
+  procedure Restore_Snapshot
+    (State  : in out Test_Application_State;
+     Data   : Snapshot_Blob;
+     Offset : Natural;
+     Length : Snapshot_Length);
+
+  overriding
+  function Image (State : Test_Application_State) return String;
 
   function Application_Sum (State : Application_State_Access) return Integer;
 

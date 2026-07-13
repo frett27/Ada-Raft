@@ -58,28 +58,50 @@ package body Test_Raft_Compaction is
       end loop;
    end Attach_Application_States;
 
+   function Cluster_Commit_In_Sync
+     (Min_Leader_Commit : TransactionLogIndex_Type) return Boolean
+   is
+      Current_Leader : constant ServerID_Type := RS.Leader_Id;
+      Ref_Commit     : TransactionLogIndex_Type;
+   begin
+      if Current_Leader = NULL_SERVER then
+         return False;
+      end if;
+
+      Ref_Commit := RS.Node_Commit_Index (Current_Leader);
+
+      if Ref_Commit < Min_Leader_Commit then
+         return False;
+      end if;
+
+      for SID in 1 .. RS.SYSTEM_SERVER_NUMBER loop
+         if RS.Node_Commit_Index (SID) /= Ref_Commit then
+            return False;
+         end if;
+      end loop;
+
+      return True;
+   end Cluster_Commit_In_Sync;
+
    procedure Run_Until_Commit
      (Target : TransactionLogIndex_Type; Max_Epochs : Natural)
    is
    begin
+      for Round in 1 .. 8_000 loop
+         RS.Process_Pending_Messages;
+
+         if Cluster_Commit_In_Sync (Target) then
+            return;
+         end if;
+      end loop;
+
       for E in 1 .. Max_Epochs loop
          RS.Advance_One_Epoch (RS.Epoch_Type (E));
          RS.Process_Pending_Messages;
 
-         declare
-            All_Reached : Boolean := True;
-         begin
-            for SID in 1 .. RS.SYSTEM_SERVER_NUMBER loop
-               if RS.Node_Commit_Index (SID) < Target then
-                  All_Reached := False;
-                  exit;
-               end if;
-            end loop;
-
-            if All_Reached then
-               return;
-            end if;
-         end;
+         if Cluster_Commit_In_Sync (Target) then
+            return;
+         end if;
       end loop;
    end Run_Until_Commit;
 
@@ -150,7 +172,10 @@ package body Test_Raft_Compaction is
          RS.Run_Steps (15);
       end loop;
 
-      Run_Until_Commit (18, 400);
+      Run_Until_Commit (18, 800);
+
+      Leader := RS.Leader_Id;
+      Assert (Leader /= NULL_SERVER, "leader required before partition");
 
       for SID in 1 .. RS.SYSTEM_SERVER_NUMBER loop
          Assert

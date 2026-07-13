@@ -5,6 +5,7 @@ with Raft.Snapshot;     use Raft.Snapshot;
 with Communication;     use Communication;
 with Communication.Local; use Communication.Local;
 with Raft;              use Raft;
+with Raft.State_Machine; use Raft.State_Machine;
 
 with Ada.Streams; use Ada.Streams;
 
@@ -107,12 +108,26 @@ package TestRaftSystem is
 
     procedure Advance_One_Epoch (Epoch : Epoch_Type);
 
+    function Node_Application_State_Image (SID : ServerID_Type) return String;
+
+    procedure Dump_Transaction_Log_And_Application_State
+      (SID : ServerID_Type);
+
+    procedure Dump_All_Nodes_Logs_And_Application_State;
+
     --  Network partition simulation (inter-node RPC only; local timers still run).
     procedure Disconnect_Node (SID : ServerID_Type);
 
     procedure Connect_Node (SID : ServerID_Type);
 
     procedure Connect_All_Nodes;
+
+    --  Reset one server to its initial follower state (simulates reboot / total
+    --  state loss). Network connectivity is unchanged; attach App_State when
+    --  the rebooted node should start with a fresh application state.
+    procedure Reset_Server
+      (SID       : ServerID_Type;
+       App_State : Application_State_Access := null);
 
     function Is_Node_Connected (SID : ServerID_Type) return Boolean;
 
