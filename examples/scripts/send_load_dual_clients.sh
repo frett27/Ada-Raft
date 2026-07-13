@@ -26,7 +26,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-COMMANDS_PER_CLIENT="${COMMANDS_PER_CLIENT:-500}"
+COMMANDS_PER_CLIENT="${COMMANDS_PER_CLIENT:-10000}"
 CONFIG_A="${CONFIG_A:-cluster.client-a.toml}"
 CONFIG_B="${CONFIG_B:-cluster.client-b.toml}"
 CLIENT_A_BASE="${CLIENT_A_BASE:-1}"

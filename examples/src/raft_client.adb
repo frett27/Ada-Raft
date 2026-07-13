@@ -110,7 +110,15 @@ procedure Raft_Client is
                     ("send failed: cluster unreachable"
                      & " (start the cluster with ./launch.sh start)");
                when Client_Timeout =>
-                  Put_Line ("send failed: timed out waiting for leader");
+                  if Is_Registered and then Known_Leader_Id /= NULL_SERVER then
+                     Put_Line
+                       ("send failed: timed out waiting for commit"
+                        & " (leader="
+                        & ServerID_Type'Image (Known_Leader_Id)
+                        & "; check logs/node-*.log for replication errors)");
+                  else
+                     Put_Line ("send failed: timed out waiting for leader");
+                  end if;
                when Client_No_Leader =>
                   Put_Line ("send failed: no leader known");
             end;

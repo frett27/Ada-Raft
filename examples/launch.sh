@@ -154,6 +154,12 @@ stop_cluster() {
       stop_node "$id"
    done
    kill $(jobs -p) 2>/dev/null || true
+   # Orphan raft_server children can survive if the supervisor was killed
+   # externally; ensure ports and instance locks are released.
+   for id in "${NODE_IDS[@]}"; do
+      pkill -f "raft_server -c ${CONFIG} -s ${id}" 2>/dev/null || true
+      rm -f "$PID_DIR/raft-server-${id}.lock"
+   done
 }
 
 run_cluster() {
