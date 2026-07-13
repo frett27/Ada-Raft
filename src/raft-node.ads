@@ -1,10 +1,11 @@
 with Communication;         use Communication;
 with Raft.Messages;         use Raft.Messages;
+with Raft.Log_Storage;      use Raft.Log_Storage;
 with Raft.State_Machine;
 
 package Raft.Node is
 
-   MAX_LOG : constant TransactionLogIndex_Type := 100;
+   MAX_LOG : constant TransactionLogIndex_Type := MAX_PHYSICAL_INDEX;
 
    --  raft states
    type RaftWishedStateEnum is (FOLLOWER, CANDIDATE, LEADER, NO_CHANGES);
@@ -17,10 +18,7 @@ package Raft.Node is
       --  persisted
       Current_Term           : Term_Type;
       Voted_For              : ServerID_Type := NULL_SERVER;
-      Log                    :
-        TLog_Type (TransactionLogIndex_Type'First .. MAX_LOG);
-      Log_Upper_Bound_Strict : TransactionLogIndex_Type :=
-        TransactionLogIndex_Type'First;
+      Log                    : Shifted_Log;
       Has_Snapshot                   : Boolean := False;
       Snapshot_Last_Included_Index   : TransactionLogIndex_Type :=
         TransactionLogIndex_Type'First;
@@ -225,6 +223,9 @@ package Raft.Node is
    procedure Apply_Committed_Entries (MState : RaftNodeStruct_Access)
    with
      Pre => MState /= null;
+
+   function Log_Upper_Bound_Strict (NS : Raft_Node_State)
+     return TransactionLogIndex_Type;
 
    --  Add these procedure declarations at the package body level
    procedure Handle_Leader_Send_Append_Entries

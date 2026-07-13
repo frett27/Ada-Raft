@@ -6,6 +6,7 @@ with Test_Message_Buffer;
 with Test_Raft_States;
 with Test_Raft_Protocol;
 with Test_Raft_Compaction;
+with Test_Raft_Log_Storage;
 
 package body Raft_Test_Suite is
 
@@ -22,6 +23,7 @@ package body Raft_Test_Suite is
    Raft_States_Tests : aliased Test_Raft_States.Raft_States_Tests;
    Raft_Protocol_Tests : aliased Test_Raft_Protocol.Raft_Protocol_Tests;
    Raft_Compaction_Tests : aliased Test_Raft_Compaction.Raft_Compaction_Tests;
+   Log_Storage_Tests : aliased Test_Raft_Log_Storage.Log_Storage_Tests;
 
 
    function Suite return Access_Test_Suite is
@@ -29,6 +31,7 @@ package body Raft_Test_Suite is
       --Add_Test (Result'Access, Test_Send_Message'Access);
       Add_Test (Result'Access, Raft_States_Tests'Access);
       Add_Test (Result'Access, Raft_Protocol_Tests'Access);
+      Add_Test (Result'Access, Log_Storage_Tests'Access);
       Add_Test (Result'Access, Raft_Compaction_Tests'Access);
       Add_Test (Result'Access, Message_Buffer_Tests'Access);
       Add_Test (Result'Access, Raft_Test'Access);

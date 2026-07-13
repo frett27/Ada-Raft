@@ -119,14 +119,14 @@ package body TestRaftSystem is
       return TransactionLogIndex_Type
     is
     begin
-       return Nodes (SID).State.Node_State.Log_Upper_Bound_Strict;
+       return Upper_Bound (Nodes (SID).State.Node_State.Log);
     end Node_Log_Upper_Bound;
 
     function Node_Log_Term
       (SID : ServerID_Type; Index : TransactionLogIndex_Type) return Term_Type
     is
     begin
-       return Nodes (SID).State.Node_State.Log (Index).T;
+       return Log_Term_At (Nodes (SID).State.Node_State, Index);
     end Node_Log_Term;
 
     function Leader_Id return ServerID_Type is
@@ -169,16 +169,17 @@ package body TestRaftSystem is
        Term  : Term_Type;
        Log_Entry : Command_And_Term_Entry_Type)
     is
+       Log_Entry_Value : Command_And_Term_Entry_Type := Log_Entry;
     begin
-       Nodes (SID).State.Node_State.Log (Index) := Log_Entry;
-       Nodes (SID).State.Node_State.Log (Index).T := Term;
+       Log_Entry_Value.T := Term;
+       Put (Nodes (SID).State.Node_State.Log, Index, Log_Entry_Value);
     end Set_Node_Log_Entry;
 
     procedure Set_Node_Log_Upper_Bound
       (SID : ServerID_Type; Bound : TransactionLogIndex_Type)
     is
     begin
-       Nodes (SID).State.Node_State.Log_Upper_Bound_Strict := Bound;
+       Set_Upper_Bound (Nodes (SID).State.Node_State.Log, Bound);
     end Set_Node_Log_Upper_Bound;
 
     procedure Inject_Message (SID : ServerID_Type; M : Message_Type'Class) is
@@ -333,9 +334,15 @@ package body TestRaftSystem is
 
        if Last_Ix >= First_Ix then
           for I in First_Ix .. Last_Ix loop
-             Append
-               (Log_Text,
-                "(" & Image (NS.Log (I).C) & "," & NS.Log (I).T'Image & ") ");
+             declare
+                Log_Entry_Value : constant Command_And_Term_Entry_Type :=
+                  Log_Entry_At (NS, I);
+             begin
+                Append
+                  (Log_Text,
+                   "(" & Image (Log_Entry_Value.C) & "," &
+                    Log_Entry_Value.T'Image & ") ");
+             end;
           end loop;
        elsif not NS.Has_Snapshot then
          Append (Log_Text, "<empty>");
@@ -695,15 +702,24 @@ package body TestRaftSystem is
                         if Node_Commit_Index > 0 then
                         for j in TransactionLogIndex_Type'First .. Node_Commit_Index-1 loop
                             -- if node committed logs are not in the leader logs, return false
-                            if Node_State.Node_State.Log (j) /= Leader_Node_State.Node_State.Log (j) then
+                            if Log_Entry_At (Node_State.Node_State, j) /=
+                              Log_Entry_At (Leader_Node_State.Node_State, j)
+                            then
                                 Debug_Test_Message ("CONSISTENCY ERROR: Node " & i'Image & " has a different log at index " & j'Image);
                                 -- Dump both logs for comparison
+                                declare
+                                   Node_Entry : constant Command_And_Term_Entry_Type :=
+                                     Log_Entry_At (Node_State.Node_State, j);
+                                   Leader_Entry : constant Command_And_Term_Entry_Type :=
+                                     Log_Entry_At (Leader_Node_State.Node_State, j);
+                                begin
                                 Debug_Test_Message ("CONSISTENCY CHECK ERROR: Node " & i'Image & " log entry " & j'Image & ": " & 
-                                    "(Term: " & Node_State.Node_State.Log(j).T'Image & 
-                                    ", Command: " & Image(Node_State.Node_State.Log(j).C) & ")");
+                                    "(Term: " & Node_Entry.T'Image & 
+                                    ", Command: " & Image(Node_Entry.C) & ")");
                                 Debug_Test_Message ("CONSISTENCY CHECK ERROR: Leader log entry " & j'Image & ": " & 
-                                    "(Term: " & Leader_Node_State.Node_State.Log(j).T'Image & 
-                                    ", Command: " & Image(Leader_Node_State.Node_State.Log(j).C) & ")");
+                                    "(Term: " & Leader_Entry.T'Image & 
+                                    ", Command: " & Image(Leader_Entry.C) & ")");
+                                end;
                                 Check_Result := False;
                                 return;
                             end if;

@@ -8,6 +8,7 @@ with Raft.Node;           use Raft.Node;
 with Raft.Comm;           use Raft.Comm;
 with Raft.Messages;       use Raft.Messages;
 with Raft.Snapshot;        use Raft.Snapshot;
+with Raft.Log_Storage;     use Raft.Log_Storage;
 
 -- ada
 with Ada.Streams; use Ada.Streams;
@@ -161,16 +162,10 @@ package body Test_Raft is
 
       SERVER_NUMBER : constant ServerID_Type := 3;
 
-      Transaction : TLog_Type (TransactionLogIndex_Type'First .. MAX_LOG) :=
-        (others => (T => 0, C => null));
-
       SState : Raft_Node_State :=
-        Raft_Node_State'
-          (Current_Term           => Term_Type (1),
-           Voted_For              => ServerID_Type (2),
-           Log                    => Transaction,
-           Log_Upper_Bound_Strict => TransactionLogIndex_Type'First,
-           others                 => <>);
+        (Current_Term => Term_Type (1),
+         Voted_For    => ServerID_Type (2),
+         others       => <>);
 
       LState : Raft_Leader_Additional_State :=
         (Server_Number      => SERVER_NUMBER,
@@ -444,7 +439,7 @@ package body Test_Raft is
          Debug_Test_Message => Debug_Test_Message'Access);
 
       Compact_Threshold_Val : constant Natural := 10;
-      Command_Count         : constant Natural := 50;
+      Command_Count         : constant Natural := 1000;
       Steps_Per_Command     : constant Natural := 15;
 
       function Cluster_Commit_In_Sync
@@ -555,7 +550,8 @@ package body Test_Raft is
          end if;
       end loop;
 
-      Run_Until_Commit (TransactionLogIndex_Type (Compact_Threshold_Val), 800);
+      Run_Until_Commit
+        (TransactionLogIndex_Type (Command_Count - 1), 5_000);
 
       Leader := RS.Leader_Id;
       Assert (Leader /= NULL_SERVER, "leader should exist after long run");

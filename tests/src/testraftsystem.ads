@@ -2,6 +2,7 @@ with Raft.Node;         use Raft.Node;
 with Raft.Comm;         use Raft.Comm;
 with Raft.Messages;     use Raft.Messages;
 with Raft.Snapshot;     use Raft.Snapshot;
+with Raft.Log_Storage; use Raft.Log_Storage;
 with Communication;     use Communication;
 with Communication.Local; use Communication.Local;
 with Raft;              use Raft;

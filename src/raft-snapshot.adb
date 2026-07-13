@@ -1,6 +1,7 @@
 with Raft; use Raft;
 
 with Raft.Node; use Raft.Node;
+with Raft.Log_Storage; use Raft.Log_Storage;
 with Raft.State_Machine; use Raft.State_Machine;
 
 package body Raft.Snapshot is
@@ -64,8 +65,8 @@ package body Raft.Snapshot is
       First_Retained : constant TransactionLogIndex_Type :=
         First_Retained_Log_Index (NS);
    begin
-      if NS.Log_Upper_Bound_Strict > First_Retained then
-         return TransactionLogIndex_Type'Pred (NS.Log_Upper_Bound_Strict);
+      if Upper_Bound (NS.Log) > First_Retained then
+         return TransactionLogIndex_Type'Pred (Upper_Bound (NS.Log));
       elsif NS.Has_Snapshot then
          return NS.Snapshot_Last_Included_Index;
       else
@@ -85,7 +86,7 @@ package body Raft.Snapshot is
       end if;
 
       if Index >= First_Retained
-        and then Index < NS.Log_Upper_Bound_Strict
+        and then Index < Upper_Bound (NS.Log)
       then
          return True;
       end if;
@@ -102,7 +103,7 @@ package body Raft.Snapshot is
          return NS.Snapshot_Last_Included_Term;
       end if;
 
-      return NS.Log (Index).T;
+      return Get (NS.Log, Index).T;
    end Log_Term_At;
 
    function Log_Entry_At
@@ -114,7 +115,7 @@ package body Raft.Snapshot is
          return (C => null, T => NS.Snapshot_Last_Included_Term);
       end if;
 
-      return NS.Log (Index);
+      return Get (NS.Log, Index);
    end Log_Entry_At;
 
    function Follower_Needs_Snapshot
@@ -134,18 +135,7 @@ package body Raft.Snapshot is
       Last_Included_Index : TransactionLogIndex_Type)
    is
    begin
-      for I in
-        TransactionLogIndex_Type'First .. Last_Included_Index
-      loop
-         NS.Log (I) := (C => null, T => 0);
-      end loop;
-
-      if NS.Log_Upper_Bound_Strict <=
-        TransactionLogIndex_Type'Succ (Last_Included_Index)
-      then
-         NS.Log_Upper_Bound_Strict :=
-           TransactionLogIndex_Type'Succ (Last_Included_Index);
-      end if;
+      Compact_Prefix (NS.Log, Last_Included_Index);
    end Clear_Log_Prefix;
 
    procedure Build_Snapshot_Blob
@@ -243,10 +233,7 @@ package body Raft.Snapshot is
       end if;
 
       if not Keep_Suffix then
-         NS.Log_Upper_Bound_Strict := TransactionLogIndex_Type'First;
-         NS.Log                    :=
-           (TransactionLogIndex_Type'First .. Raft.Node.MAX_LOG =>
-              (C => null, T => 0));
+         Reset_After_Snapshot (NS.Log, Last_Included_Index);
       end if;
 
       NS.Has_Snapshot                 := True;

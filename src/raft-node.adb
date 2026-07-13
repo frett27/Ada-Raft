@@ -7,9 +7,17 @@ with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
 with Ada.Tags; use Ada.Tags;
 
 with Raft.Snapshot; use Raft.Snapshot;
+with Raft.Log_Storage; use Raft.Log_Storage;
 with Raft.State_Machine; use Raft.State_Machine;
 
 package body Raft.Node is
+
+   function Log_Upper_Bound_Strict (NS : Raft_Node_State)
+     return TransactionLogIndex_Type
+   is
+   begin
+      return Upper_Bound (NS.Log);
+   end Log_Upper_Bound_Strict;
 
    procedure After_Commit_Advanced (MState : RaftNodeStruct_Access) is
    begin
@@ -145,16 +153,23 @@ package body Raft.Node is
 
    procedure Dump_Logs (Machine_State : Raft_State_Machine'Class) is
       U : Unbounded_String := To_Unbounded_String ("");
+      NS : constant Raft_Node_State := Machine_State.MState.Node_State;
+      First_Ix : constant TransactionLogIndex_Type :=
+        First_Retained_Log_Index (NS);
+      Last_Ix  : constant TransactionLogIndex_Type := Last_Log_Index (NS);
    begin
-      for i in Machine_State.MState.Node_State.Log'Range loop
-         declare
-            S : constant String :=
-              "(" & Image (Machine_State.MState.Node_State.Log (i).C) & "," &
-              Machine_State.MState.Node_State.Log (i).T'Image & ") ";
-         begin
-            Append (U, S);
-         end;
-      end loop;
+      if Last_Ix >= First_Ix then
+         for I in First_Ix .. Last_Ix loop
+            declare
+               Log_Entry : constant Command_And_Term_Entry_Type :=
+                 Get (NS.Log, I);
+               S : constant String :=
+                 "(" & Image (Log_Entry.C) & "," & Log_Entry.T'Image & ") ";
+            begin
+               Append (U, S);
+            end;
+         end loop;
+      end if;
       Debug_Put_Line (Machine_State, To_String (U));
    end Dump_Logs;
 
@@ -210,10 +225,7 @@ package body Raft.Node is
          --  read state from file, or create it
          RStruct.Node_State.Current_Term           := 0;
          RStruct.Node_State.Voted_For              := NULL_SERVER;
-         RStruct.Node_State.Log                    :=
-           (TransactionLogIndex_Type'First .. MAX_LOG => (C => null, T => 0));
-         RStruct.Node_State.Log_Upper_Bound_Strict :=
-           TransactionLogIndex_Type'First;
+         Clear (RStruct.Node_State.Log);
 
          Machine.Current_Machine_State := Machine.MState_Follower'Access;
 
@@ -424,7 +436,7 @@ package body Raft.Node is
             Machine.State.Leader_State :=
               (Server_Number      => Machine.Server_Number,
                Next_Index_Strict  =>
-                 (others => Machine.State.Node_State.Log_Upper_Bound_Strict),
+                 (others => Log_Upper_Bound_Strict (Machine.State.Node_State)),
                Match_Index_Strict =>
                  (others => Last_Log_Index (Machine.State.Node_State)));
 
@@ -666,7 +678,7 @@ package body Raft.Node is
       Debug_Put_Line
         (Machine_State,
          "[ LogUpperBound: " &
-         Machine_State.MState.Node_State.Log_Upper_Bound_Strict'Image & "]");
+         Log_Upper_Bound_Strict (Machine_State.MState.Node_State)'Image & "]");
 
       --  dump logs
       Debug_Put_Line
@@ -684,7 +696,7 @@ package body Raft.Node is
          then
             null;
          elsif M.Prev_Log_Index_Strict >
-           NS.Log_Upper_Bound_Strict
+           Log_Upper_Bound_Strict (NS)
            or else
              (M.Prev_Log_Index_Strict > TransactionLogIndex_Type'First
               and then
@@ -722,8 +734,7 @@ package body Raft.Node is
 
             --  adding elements
             declare
-               NS : constant Raft_Node_State :=
-                 Machine_State.MState.Node_State;
+               NS : Raft_Node_State renames Machine_State.MState.Node_State;
                To_Update_Index_on_Local_Log : TransactionLogIndex_Type :=
                  M.Prev_Log_Index_Strict;
             begin
@@ -752,30 +763,20 @@ package body Raft.Node is
                    TransactionLogIndex_Type'Pred (M.Entries_Last_Strict)
                loop
 
-                  if To_Update_Index_on_Local_Log <
-                    Machine_State.MState.Node_State.Log_Upper_Bound_Strict
+                  if Contains (NS.Log, To_Update_Index_on_Local_Log)
                     and then
-                      Machine_State.MState.Node_State.Log
-                        (To_Update_Index_on_Local_Log)
-                        .T /=
+                      Get (NS.Log, To_Update_Index_on_Local_Log).T /=
                       M.Entries (I).T
                   then
                      Response_Value := Response_Value and False;
                   end if;
 
-                  --  update
-                  Machine_State.MState.Node_State.Log
-                    (To_Update_Index_on_Local_Log) :=
-                    M.Entries (I);
+                  Put (NS.Log, To_Update_Index_on_Local_Log, M.Entries (I));
                   Debug_Put_Line
                     (Machine_State,
                      "[Updated entry " & To_Update_Index_on_Local_Log'Image &
                      " with " & M.Entries (I).T'Image & " on " &
                      Id_Image (Machine_State.MState.Current_Id) & "]");
-
-                  Machine_State.MState.Node_State.Log_Upper_Bound_Strict :=
-                    TransactionLogIndex_Type'Succ
-                      (To_Update_Index_on_Local_Log);
 
                   To_Update_Index_on_Local_Log :=
                     TransactionLogIndex_Type'Succ
@@ -1061,7 +1062,9 @@ package body Raft.Node is
          begin
             --  we have at least the elements in the log corresponding to the
             --  commit index
-            if Machine_State.MState.Node_State.Log_Upper_Bound_Strict > C then
+            if Log_Upper_Bound_Strict
+                 (Machine_State.MState.Node_State) > C
+            then
                Debug_Put_Line
                  (Machine_State,
                   "[ leader " & Id_Image (Machine_State.MState.Current_Id) &
@@ -1074,7 +1077,8 @@ package body Raft.Node is
                          (Server);
                   begin
                      if Log_Index <=
-                       Machine_State.MState.Node_State.Log_Upper_Bound_Strict
+                       Log_Upper_Bound_Strict
+                         (Machine_State.MState.Node_State)
                      then
                         if Server /= Machine_State.MState.Current_Id then
                            if Machine_State.MState.Leader_State
@@ -1401,12 +1405,8 @@ package body Raft.Node is
          "[ leader " & Id_Image (Machine_State.MState.Current_Id) &
          " got a send command from " & Image (RSC.Command) & "]");
 
-      New_Index := Machine_State.MState.Node_State.Log_Upper_Bound_Strict;
-
-      Machine_State.MState.Node_State.Log (New_Index) := New_Log_Entry;
-
-      Machine_State.MState.Node_State.Log_Upper_Bound_Strict :=
-        TransactionLogIndex_Type'Succ (New_Index);
+      New_Index :=
+        Append (Machine_State.MState.Node_State.Log, New_Log_Entry);
 
       --  Update leader's nextIndex and matchIndex for itself
       Machine_State.MState.Leader_State.Next_Index_Strict
