@@ -44,6 +44,40 @@ package Raft.Node is
    type Snapshot_Send_Active_Array is
      array (ServerID_Type range <>) of Boolean;
 
+   MAX_PENDING_CLIENT_REQUESTS : constant Positive := 16;
+
+   type Pending_Client_Entry is record
+      Active    : Boolean := False;
+      Log_Index : TransactionLogIndex_Type;
+      Client_Id : Client_Id_Type;
+      Serial    : Client_Serial_Type;
+   end record;
+
+   type Pending_Client_Table is
+     array (1 .. MAX_PENDING_CLIENT_REQUESTS) of Pending_Client_Entry;
+
+   --  Per-client session state for duplicate suppression (book §6.3).
+   MAX_CLIENT_SESSIONS : constant Positive := 16;
+   MAX_SESSION_COMPLETED : constant Positive := 8;
+
+   type Completed_Client_Command is record
+      Valid    : Boolean := False;
+      Serial   : Client_Serial_Type;
+      Response : Response_Send_Command;
+   end record;
+
+   type Completed_Client_Command_Table is
+     array (1 .. MAX_SESSION_COMPLETED) of Completed_Client_Command;
+
+   type Client_Session_Entry is record
+      Active    : Boolean := False;
+      Client_Id : Client_Id_Type := NO_CLIENT_ID;
+      Completed : Completed_Client_Command_Table := (others => <>);
+   end record;
+
+   type Client_Session_Table is
+     array (1 .. MAX_CLIENT_SESSIONS) of Client_Session_Entry;
+
    type RaftNodeStruct (Server_Number : ServerID_Type) is record
 
       Current_Raft_State : RaftStateEnum;
@@ -70,6 +104,15 @@ package Raft.Node is
       Snapshot_Receive_Length : Snapshot_Length := 0;
       Snapshot_Receive_Buffer : Snapshot_Blob;
       Receiving_Snapshot      : Boolean := False;
+
+      Pending_Client_Requests : Pending_Client_Table :=
+        (others => <>);
+      Client_Sessions         : Client_Session_Table := (others => <>);
+      Next_Client_Id : Client_Id_Type := Client_Id_Type (1);
+
+      --  Volatile client interaction state (book §6.2).
+      Known_Leader_Id : ServerID_Type := NULL_SERVER;
+      Client_Inbox    : Message_Buffer_Access := null;
 
       Application_State :
         Raft.State_Machine.Application_State_Access := null;
@@ -220,6 +263,11 @@ package Raft.Node is
       Sending_Message   : Message_Sending;
       App_State         : Raft.State_Machine.Application_State_Access);
 
+   procedure Set_Client_Inbox
+     (Machine : Raft_Node_Access; Inbox : Message_Buffer_Access)
+   with
+     Pre => Machine /= null;
+
    procedure Apply_Committed_Entries (MState : RaftNodeStruct_Access)
    with
      Pre => MState /= null;
@@ -238,6 +286,17 @@ package Raft.Node is
    procedure Handle_Leader_Send_Command
      (Machine_State : in out Raft_State_Machine_Leader;
       RSC           : Request_Send_Command)
+   with
+     Pre => Machine_State.MState.Current_Raft_State = LEADER;
+
+   procedure Handle_Register_Client
+     (Machine_State : in out Raft_State_Machine_Leader)
+   with
+     Pre => Machine_State.MState.Current_Raft_State = LEADER;
+
+   procedure Handle_Client_Query
+     (Machine_State : in out Raft_State_Machine_Leader;
+      Query         : Request_Client_Query)
    with
      Pre => Machine_State.MState.Current_Raft_State = LEADER;
 

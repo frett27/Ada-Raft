@@ -8,11 +8,12 @@ with Raft.Node;           use Raft.Node;
 with Raft.Comm;           use Raft.Comm;
 with Raft.Messages;       use Raft.Messages;
 with Raft.Snapshot;        use Raft.Snapshot;
-with Raft.Log_Storage;     use Raft.Log_Storage;
+with Raft.Client;         use Raft.Client;
+with Message_Buffer;      use Message_Buffer;
 
 -- ada
 with Ada.Streams; use Ada.Streams;
-with Ada.Tags;
+with Ada.Tags;           use Ada.Tags;
 with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
 with Ada.Text_IO;           use Ada.Text_IO;
 with AUnit;                 use AUnit;
@@ -59,6 +60,16 @@ package body Test_Raft is
       Register_Routine (T, Test_RaftSystem'Access, "Raft System Tests");
       Register_Routine
         (T, Test_Long_Run_Log_Compaction'Access, "Long run log compaction");
+      Register_Routine
+        (T, Test_Client_Connect_And_Send'Access, "Client connect and send");
+      Register_Routine
+        (T,
+         Test_Client_Leader_Change_And_Redirect'Access,
+         "Client leader change and redirect");
+      Register_Routine
+        (T,
+         Test_Client_Duplicate_Command_Suppressed'Access,
+         "Client duplicate command suppressed");
    end Register_Tests;
 
    -- Register routines to be run
@@ -90,6 +101,25 @@ package body Test_Raft is
    begin
       return "TestCmd(" & Item.Value'Image & ")";
    end To_String;
+
+   function Read_Test_Command_Stream
+     (Stream : not null access Root_Stream_Type'Class) return Command_Type is
+      Cmd : Test_Command;
+   begin
+      Read_Command (Stream, Cmd);
+      return new Test_Command'(Cmd);
+   end Read_Test_Command_Stream;
+
+   procedure Write_Test_Command_Stream
+     (Stream : not null access Root_Stream_Type'Class; Item : Command_Type)
+   is
+   begin
+      if Item = null or else Item.all not in Test_Command'Class then
+         raise Constraint_Error with "unsupported command type in tests";
+      end if;
+
+      Write_Command (Stream, Test_Command (Item.all));
+   end Write_Test_Command_Stream;
 
    overriding
    procedure Apply_Command
@@ -156,6 +186,186 @@ package body Test_Raft is
       return Test_Application_State (State.all).Sum;
    end Application_Sum;
 
+   package Client_RS is new TestRaftSystem
+     (SERVER_NUMBER      => 3,
+      Debug_Test_Message => Debug_Test_Message'Access);
+
+   Client_Epoch : Natural := 0;
+   Client_Inbox : aliased Response_Inbox;
+
+   procedure Client_Send_To_Server
+     (To : ServerID_Type; M : Message_Type'Class)
+   is
+   begin
+      Client_RS.Inject_Message (To, M);
+      Client_RS.Process_Pending_Messages;
+   end Client_Send_To_Server;
+
+   procedure Client_Process_Cluster is
+   begin
+      Client_RS.Process_Pending_Messages;
+   end Client_Process_Cluster;
+
+   procedure Client_Step_Cluster is
+   begin
+      Client_Epoch := Client_Epoch + 1;
+      Client_RS.Advance_One_Epoch (Client_RS.Epoch_Type (Client_Epoch));
+      Client_RS.Process_Pending_Messages;
+   end Client_Step_Cluster;
+
+   procedure Client_Attach_Inbox is
+   begin
+      for SID in 1 .. Client_RS.SYSTEM_SERVER_NUMBER loop
+         Attach_Inbox_To_Node (Client_RS.Get_Node (SID), Client_Inbox'Access);
+      end loop;
+   end Client_Attach_Inbox;
+
+   procedure Client_Install_Application_State is
+   begin
+      for SID in 1 .. Client_RS.SYSTEM_SERVER_NUMBER loop
+         Client_RS.Get_Node (SID).State.Application_State :=
+           new Test_Application_State;
+      end loop;
+   end Client_Install_Application_State;
+
+   function Client_Find_Follower return ServerID_Type is
+   begin
+      for SID in 1 .. Client_RS.SYSTEM_SERVER_NUMBER loop
+         if Client_RS.Node_State (SID) = Raft.Node.Follower then
+            return SID;
+         end if;
+      end loop;
+      return NULL_SERVER;
+   end Client_Find_Follower;
+
+   procedure Client_Wait_For_Application_Sum (Expected : Integer) is
+   begin
+      for Round in 1 .. 50 loop
+         declare
+            All_Match : Boolean := True;
+         begin
+            for SID in 1 .. Client_RS.SYSTEM_SERVER_NUMBER loop
+               if Application_Sum
+                    (Client_RS.Get_Node (SID).State.Application_State) /=
+                  Expected
+               then
+                  All_Match := False;
+                  exit;
+               end if;
+            end loop;
+
+            exit when All_Match;
+         end;
+
+         Client_RS.Process_Pending_Messages;
+         Client_Epoch := Client_Epoch + 1;
+         Client_RS.Advance_One_Epoch (Client_RS.Epoch_Type (Client_Epoch));
+      end loop;
+   end Client_Wait_For_Application_Sum;
+
+   procedure Client_Read_Register_Response
+     (Found : out Boolean; Res : out Response_Register_Client)
+   is
+      M : Message_Type'Class := Try_Dequeue (Client_Inbox, Found);
+   begin
+      if Found then
+         Res := Response_Register_Client (M);
+      end if;
+   end Client_Read_Register_Response;
+
+   procedure Drain_Client_Inbox is
+   begin
+      loop
+         declare
+            Discard : Message_Type'Class :=
+              Message_Type'Class'Input (Inbox_Buffer (Client_Inbox));
+         begin
+            pragma Unreferenced (Discard);
+         end;
+      end loop;
+   exception
+      when Ada.IO_Exceptions.End_Error =>
+         null;
+   end Drain_Client_Inbox;
+
+   procedure Client_Await_Register
+     (Client : in out Raft_Client; Max_Steps : Natural := 100)
+   is
+   begin
+      Drain_Client_Inbox;
+      Start_Register (Client);
+
+      for Round in 1 .. Max_Steps loop
+         exit when Register_Complete (Client);
+
+         if Poll (Client) then
+            null;
+         end if;
+         Client_Process_Cluster;
+      end loop;
+
+      Assert
+        (Register_Complete (Client),
+         "client registration must complete within step budget");
+   end Client_Await_Register;
+
+   function Client_Await_Send
+     (Client    : in out Raft_Client;
+      Cmd       : Command_Type;
+      Max_Steps : Natural := 100) return Response_Send_Command
+   is
+   begin
+      if Client_Id (Client) = NO_CLIENT_ID then
+         Client_Await_Register (Client, Max_Steps);
+      end if;
+
+      Start_Send_Command (Client, Cmd);
+
+      for Round in 1 .. Max_Steps loop
+         exit when Send_Complete (Client);
+
+         if Poll (Client) then
+            null;
+         end if;
+         Client_Process_Cluster;
+      end loop;
+
+      Assert
+        (Send_Complete (Client),
+         "client command must commit within step budget");
+      return Last_Command_Response (Client);
+   end Client_Await_Send;
+
+
+   procedure Test_Null_Timer
+     (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type)
+   is
+   begin
+      null;
+   end Test_Null_Timer;
+
+   procedure Test_Null_Send
+     (RSS                : in out RaftNodeStruct;
+      To_ServerID_Or_All : ServerID_Type;
+      M                  : Message_Type'Class)
+   is
+   begin
+      null;
+   end Test_Null_Send;
+
+   procedure Test_Debug_Send
+     (RSS                : in out RaftNodeStruct;
+      To_ServerID_Or_All : ServerID_Type;
+      M                  : Message_Type'Class)
+   is
+   begin
+      Put_Line
+        ("Sending "
+         & Ada.Tags.Expanded_Name (M'Tag)
+         & " to "
+         & ServerID_Type'Image (To_ServerID_Or_All));
+   end Test_Debug_Send;
+
 
    -- Test Routines:
    procedure Test_Storing_State (T : in out Test_Cases.Test_Case'Class) is
@@ -193,24 +403,14 @@ package body Test_Raft is
 
       SERVER_NUMBER : constant ServerID_Type := 3;
 
-      procedure Timer_Stuff
-        (RSS : in out RaftNodeStruct; Timer_Instance : Timer_Type)
-      is null;
-
-      procedure Sending
-        (RSS                : in out RaftNodeStruct;
-         To_ServerID_Or_All : ServerID_Type;
-         M                  : Message_Type'Class)
-      is null;
-
    begin
       Create_Machine
         (M,
          1,
          SERVER_NUMBER,
-         Timer_Stuff'Unrestricted_Access,
-         Timer_Stuff'Unrestricted_Access,
-         Sending'Unrestricted_Access,
+         Test_Null_Timer'Unrestricted_Access,
+         Test_Null_Timer'Unrestricted_Access,
+         Test_Null_Send'Unrestricted_Access,
          null);
       Assert (M /= null, "M is null");
       Assert (M.State.Current_Raft_State = Follower, "M is not follower");
@@ -227,26 +427,14 @@ package body Test_Raft is
          null;
       end Timer_Stuff;
 
-      procedure Sending
-        (RSS                : in out RaftNodeStruct;
-         To_ServerID_Or_All : ServerID_Type;
-         M                  : Message_Type'Class) is
-      begin
-         Put_Line
-           ("Sending "
-            & Ada.Tags.Expanded_Name (M'Tag)
-            & " to "
-            & ServerID_Type'Image (To_ServerID_Or_All));
-      end Sending;
-
    begin
       Create_Machine
         (M,
          1,
          SERVER_NUMBER,
-         Timer_Stuff'Unrestricted_Access,
-         Timer_Stuff'Unrestricted_Access,
-         Sending'Unrestricted_Access,
+         Test_Null_Timer'Unrestricted_Access,
+         Test_Null_Timer'Unrestricted_Access,
+         Test_Debug_Send'Unrestricted_Access,
          null);
 
       declare
@@ -396,7 +584,8 @@ package body Test_Raft is
                   -- send command to leader
                   declare
                      CR : Request_Send_Command :=
-                       (Command => new Test_Command'(Value => i));
+                       (Command => new Test_Command'(Value => i),
+                        others  => <>);
                   begin
                      Debug_Test_Message
                        ("Sending the command "
@@ -630,4 +819,299 @@ package body Test_Raft is
       Set_Compact_Threshold (100);
    end Test_Long_Run_Log_Compaction;
 
+   procedure Test_Client_Connect_And_Send (T : in out Test_Cases.Test_Case'Class) is
+      Client : Raft_Client;
+      Leader : ServerID_Type;
+      Res    : Response_Send_Command;
+   begin
+      Banner ("Client connect and send");
+      Client_Epoch := 0;
+      Client_RS.Initialize_System;
+      Client_Install_Application_State;
+      Create_Inbox (Client_Inbox);
+
+      Create
+        (Client,
+         Client_RS.SYSTEM_SERVER_NUMBER,
+         Client_Send_To_Server'Access,
+         Client_Inbox'Access,
+         Client_Process_Cluster'Access);
+
+      Leader := Client_RS.Elect_Leader (Starter => 1, Max_Epochs => 60);
+      Assert (Leader /= NULL_SERVER, "cluster must elect a leader");
+      Client_Epoch := 60;
+      Client_RS.Run_Steps (5);
+      Client_Attach_Inbox;
+      Leader := Client_RS.Leader_Id;
+
+      Assert
+        (Inbox_Buffer (Client_Inbox) /= null,
+         "client inbox buffer must be allocated");
+      Assert
+        (Client_RS.Get_Node (Leader).State.Client_Inbox /=
+           null,
+         "leader must have the shared client inbox attached");
+      Assert
+        (Client_RS.Get_Node (Leader).State.Client_Inbox =
+           Inbox_Buffer (Client_Inbox),
+         "leader inbox must reference the test client buffer");
+
+      declare
+         MB : aliased Message_Buffer_Type;
+      begin
+         Create (MB);
+         Message_Type'Class'Output
+           (MB'Access,
+            Message_Type'Class
+              (Response_Register_Client'
+                 (Client_Id  => 7,
+                  Not_Leader => False,
+                  Error      => False,
+                  Leader_Id  => Leader)));
+         declare
+            Local : Message_Type'Class :=
+              Message_Type'Class'Input (MB'Access);
+         begin
+            Assert
+              (Local'Tag = Response_Register_Client'Tag,
+               "stack buffer must roundtrip register responses");
+         end;
+      end;
+
+      Deliver
+        (Client_Inbox,
+         Response_Register_Client'
+           (Client_Id  => 42,
+            Not_Leader => False,
+            Error      => False,
+            Leader_Id  => Leader));
+      declare
+         Roundtrip : Boolean;
+         Probe     : Response_Register_Client;
+      begin
+         Client_Read_Register_Response (Roundtrip, Probe);
+         Assert (Roundtrip, "client inbox deliver/dequeue roundtrip must work");
+         Assert (Probe.Client_Id = 42, "roundtrip must preserve client id");
+      end;
+      Drain_Client_Inbox;
+
+      --  Sanity: leader must answer a register RPC into the shared inbox.
+      Client_RS.Inject_Message (Leader, Request_Register_Client'(null record));
+      Client_RS.Process_Pending_Messages;
+      declare
+         Got : Boolean;
+         Reg : Response_Register_Client;
+      begin
+         Client_Read_Register_Response (Got, Reg);
+         Assert (Got, "leader must deliver a register response to the inbox");
+         Assert (not Reg.Not_Leader, "leader must accept registration");
+         Assert (not Reg.Error, "leader register response must not be an error");
+      end;
+      Drain_Client_Inbox;
+
+      Client_Await_Register (Client);
+
+      Assert
+        (Known_Leader (Client) = Leader,
+         "client should discover the elected leader");
+      Assert
+        (Client_Id (Client) /= NO_CLIENT_ID,
+         "client should receive a registered client id");
+
+      Res := Client_Await_Send (Client, new Test_Command'(Value => 10), 30);
+      Assert (Res.Command_Committed, "command must be committed by the leader");
+      Assert
+        (Res.Leader_Id = Leader,
+         "commit response should name the serving leader");
+
+      Client_Wait_For_Application_Sum (10);
+
+      for SID in 1 .. Client_RS.SYSTEM_SERVER_NUMBER loop
+         Assert
+           (Application_Sum
+              (Client_RS.Get_Node (SID).State.Application_State) = 10,
+            "node " & ServerID_Type'Image (SID) &
+              " must apply the committed client command");
+      end loop;
+   end Test_Client_Connect_And_Send;
+
+   procedure Test_Client_Leader_Change_And_Redirect
+     (T : in out Test_Cases.Test_Case'Class)
+   is
+      Client         : Raft_Client;
+      Leader         : ServerID_Type;
+      Follower_Node  : ServerID_Type;
+      Res            : Response_Send_Command;
+      First_Leader   : ServerID_Type;
+   begin
+      Banner ("Client leader change and redirect");
+      Client_Epoch := 0;
+      Client_RS.Initialize_System;
+      Client_Install_Application_State;
+      Create_Inbox (Client_Inbox);
+
+      Create
+        (Client,
+         Client_RS.SYSTEM_SERVER_NUMBER,
+         Client_Send_To_Server'Access,
+         Client_Inbox'Access,
+         Client_Process_Cluster'Access);
+
+      First_Leader := Client_RS.Elect_Leader (Starter => 1, Max_Epochs => 60);
+      Assert (First_Leader /= NULL_SERVER, "initial leader must be elected");
+      Client_Epoch := 60;
+      Client_RS.Run_Steps (5);
+      Client_Attach_Inbox;
+
+      Client_Await_Register (Client);
+      Assert
+        (Known_Leader (Client) = First_Leader,
+         "client should attach to the initial leader");
+
+      Drain_Client_Inbox;
+
+      --  Book §6.2: a follower rejects and returns the known leader address.
+      Follower_Node := Client_Find_Follower;
+      Assert (Follower_Node /= NULL_SERVER, "cluster must have a follower");
+      Assert
+        (Follower_Node /= First_Leader, "follower must differ from leader");
+
+      Client_RS.Inject_Message
+        (Follower_Node, Request_Register_Client'(null record));
+      Client_RS.Process_Pending_Messages;
+
+      declare
+         Got_Message : Boolean;
+         Redirect    : Response_Register_Client;
+      begin
+         Client_Read_Register_Response (Got_Message, Redirect);
+         Assert (Got_Message, "follower must answer the register request");
+         Assert (Redirect.Not_Leader, "follower must redirect the client");
+         Assert (not Redirect.Error, "follower redirect must not be an error");
+         Assert
+           (Redirect.Leader_Id = First_Leader,
+            "redirect must point to the current leader");
+      end;
+
+      Res := Client_Await_Send (Client, new Test_Command'(Value => 5), 30);
+      Assert (Res.Command_Committed, "first client command must commit");
+
+      --  Force a new election on another node (leader may change).
+      Client_RS.TimeOut_SID_Election_Timer (2);
+      Client_RS.Process_Pending_Messages;
+
+      for Round in 1 .. 80 loop
+         Client_RS.Process_Pending_Messages;
+         Client_Epoch := Client_Epoch + 1;
+         Client_RS.Advance_One_Epoch (Client_RS.Epoch_Type (Client_Epoch));
+         exit when Client_RS.Leader_Id /= NULL_SERVER;
+      end loop;
+
+      Leader := Client_RS.Leader_Id;
+      Assert (Leader /= NULL_SERVER, "cluster must elect a leader after churn");
+      Client_Attach_Inbox;
+      Drain_Client_Inbox;
+
+      --  Reconnect: drop stale leader hint and rediscover via async polling.
+      Forget_Leader (Client);
+      Client_Await_Register (Client, 100);
+      Assert
+        (Known_Leader (Client) = Leader,
+         "client must rediscover the current leader after election churn");
+
+      Res := Client_Await_Send (Client, new Test_Command'(Value => 7), 30);
+      Assert
+        (Res.Command_Committed,
+         "client command must commit after leader change");
+      Assert
+        (Res.Leader_Id = Leader,
+         "response must come from the new leader");
+
+      Client_Wait_For_Application_Sum (12);
+
+      for SID in 1 .. Client_RS.SYSTEM_SERVER_NUMBER loop
+         Assert
+           (Application_Sum
+              (Client_RS.Get_Node (SID).State.Application_State) = 12,
+            "node " & ServerID_Type'Image (SID) &
+              " must apply commands from both leaders");
+      end loop;
+   end Test_Client_Leader_Change_And_Redirect;
+
+   procedure Test_Client_Duplicate_Command_Suppressed
+     (T : in out Test_Cases.Test_Case'Class)
+   is
+      Client : Raft_Client;
+      Leader : ServerID_Type;
+      Res    : Response_Send_Command;
+   begin
+      Banner ("Client duplicate command suppressed");
+      Client_Epoch := 0;
+      Client_RS.Initialize_System;
+      Client_Install_Application_State;
+      Create_Inbox (Client_Inbox);
+
+      Create
+        (Client,
+         Client_RS.SYSTEM_SERVER_NUMBER,
+         Client_Send_To_Server'Access,
+         Client_Inbox'Access,
+         Client_Process_Cluster'Access);
+
+      Leader := Client_RS.Elect_Leader (Starter => 1, Max_Epochs => 60);
+      Assert (Leader /= NULL_SERVER, "cluster must elect a leader");
+      Client_Epoch := 60;
+      Client_RS.Run_Steps (5);
+      Client_Attach_Inbox;
+
+      Client_Await_Register (Client);
+
+      --  Send once, advance the cluster, but do not poll the client inbox yet
+      --  (simulates a lost acknowledgment).
+      Start_Send_Command (Client, new Test_Command'(Value => 10));
+
+      for Round in 1 .. 40 loop
+         Client_Process_Cluster;
+         Client_Epoch := Client_Epoch + 1;
+         Client_RS.Advance_One_Epoch (Client_RS.Epoch_Type (Client_Epoch));
+         exit when
+           Application_Sum
+             (Client_RS.Get_Node (Leader).State.Application_State) >= 10;
+      end loop;
+
+      Assert
+        (Application_Sum
+           (Client_RS.Get_Node (Leader).State.Application_State) = 10,
+         "leader should apply the command exactly once");
+
+      --  Client retries the same (Client_Id, Serial); leader must not re-execute.
+      Retry_Pending_Command (Client);
+
+      for Round in 1 .. 20 loop
+         exit when Poll (Client);
+         Client_Process_Cluster;
+      end loop;
+
+      Assert (Send_Complete (Client), "client must receive the cached response");
+      Res := Last_Command_Response (Client);
+      Assert (Res.Command_Committed, "duplicate retry must still report committed");
+      Assert
+        (Application_Sum
+           (Client_RS.Get_Node (Leader).State.Application_State) = 10,
+         "duplicate retry must not apply the command again");
+
+      Client_Wait_For_Application_Sum (10);
+
+      for SID in 1 .. Client_RS.SYSTEM_SERVER_NUMBER loop
+         Assert
+           (Application_Sum
+              (Client_RS.Get_Node (SID).State.Application_State) = 10,
+            "node " & ServerID_Type'Image (SID) &
+              " must not observe a duplicated command");
+      end loop;
+   end Test_Client_Duplicate_Command_Suppressed;
+
+begin
+   Register_Command_Stream_IO
+     (Read_Test_Command_Stream'Access, Write_Test_Command_Stream'Access);
 end Test_Raft;

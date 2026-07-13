@@ -1,0 +1,20 @@
+name = "raft_examples"
+description = "TCP network examples for the AdaRaft library"
+version = "0.1.0-dev"
+
+authors = ["Patrice Freydiere"]
+maintainers = ["Patrice Freydiere <frett27@gmail.com>"]
+maintainers-logins = ["frett27"]
+licenses = "MIT OR Apache-2.0 WITH LLVM-exception"
+website = ""
+
+executables = ["raft_server", "raft_client"]
+
+[[depends-on]]
+raft = "*"
+
+[[pins]]
+raft = { path='..' }
+
+[[depends-on]]
+ada_toml = "~0.5.0"

@@ -1,38 +1,9 @@
-with AUnit;            use AUnit;
-with AUnit.Test_Cases; use AUnit.Test_Cases;
-with raft;
-with raft.comm;
-with raft.node;
 with Ada.Streams; use Ada.Streams;
-with Raft; use Raft;
+with Raft;         use Raft;
+with Raft.Snapshot; use Raft.Snapshot;
 with Raft.State_Machine; use Raft.State_Machine;
-with Raft.Client;         use Raft.Client;
 
-package Test_Raft is
-
-   type Raft_Tests is new Test_Cases.Test_Case with null record;
-
-   procedure Register_Tests (T : in out Raft_Tests);
-
-   function Name (T : Raft_Tests) return Message_String;
-
-   procedure Test_Storing_State (T : in out Test_Cases.Test_Case'Class);
-   procedure Test_Init_Raft_Node (T : in out Test_Cases.Test_Case'Class);
-   procedure Test_All_States (T : in out Test_Cases.Test_Case'Class);
-
-   procedure Test_Leader_Election (T : in out Test_Cases.Test_Case'Class);
-
-   procedure Test_RaftSystem (T : in out Test_Cases.Test_Case'Class);
-
-   procedure Test_Long_Run_Log_Compaction (T : in out Test_Cases.Test_Case'Class);
-
-   procedure Test_Client_Connect_And_Send (T : in out Test_Cases.Test_Case'Class);
-
-   procedure Test_Client_Leader_Change_And_Redirect
-     (T : in out Test_Cases.Test_Case'Class);
-
-   procedure Test_Client_Duplicate_Command_Suppressed
-     (T : in out Test_Cases.Test_Case'Class);
+package Example_Commands is
 
    type Test_Command is new Command_Type_Implementation with record
       Value : Integer := 0;
@@ -77,4 +48,8 @@ package Test_Raft is
 
    function Application_Sum (State : Application_State_Access) return Integer;
 
-end Test_Raft;
+   function Make_Command (Value : Integer) return Command_Type;
+
+   procedure Register_Command_Streaming;
+
+end Example_Commands;

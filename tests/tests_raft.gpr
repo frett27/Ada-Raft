@@ -19,4 +19,9 @@ project Tests_Raft is
       for Artifacts (".") use ("share");
    end Install;
 
+   package Pretty_Printer is
+      for Default_Switches ("Ada") use
+        ("-i3", "-M79", "-w", "-nU", "-kL");
+   end Pretty_Printer;
+
 end Tests_Raft;

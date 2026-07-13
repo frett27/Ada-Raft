@@ -180,6 +180,10 @@ AdaRaft only covers the **Raft core**. Field use usually adds:
 
 Those layers are where **real-world hardening** happens; the deterministic test suite here is meant to hold the protocol steady while you add them.
 
+## Code style
+
+Test sources are built with GNAT style checks (`-gnaty…`). To reformat with **`gnatpp`** via Alire (not part of `gnat_native`), see [doc/style.md](doc/style.md).
+
 ## Roadmap
 
 Things we might look at eventually (no promises):

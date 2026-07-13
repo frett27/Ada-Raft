@@ -36,10 +36,15 @@ package body Raft.Node is
       return Trim (Id'Image, Ada.Strings.Left);
    end Id_Image;
 
+   procedure Notify_Client_Commits (MState : RaftNodeStruct_Access);
+
    procedure After_Commit_Advanced (MState : RaftNodeStruct_Access) is
    begin
       Apply_Committed_Entries (MState);
       Compact_If_Needed (MState);
+      if MState.Current_Raft_State = LEADER then
+         Notify_Client_Commits (MState);
+      end if;
    end After_Commit_Advanced;
 
    procedure Apply_Committed_Entries (MState : RaftNodeStruct_Access) is
@@ -66,6 +71,242 @@ package body Raft.Node is
          end;
       end loop;
    end Apply_Committed_Entries;
+
+   procedure Deliver_Client_Response
+     (MState : RaftNodeStruct_Access; M : Message_Type'Class)
+   is
+   begin
+      if MState.Client_Inbox /= null then
+         Message_Type'Class'Output (MState.Client_Inbox, M);
+      end if;
+   end Deliver_Client_Response;
+
+   procedure Clear_Known_Leader (MState : RaftNodeStruct_Access) is
+   begin
+      MState.Known_Leader_Id := NULL_SERVER;
+   end Clear_Known_Leader;
+
+   procedure Remember_Leader
+     (MState : RaftNodeStruct_Access; Leader_Id : ServerID_Type)
+   is
+   begin
+      if Leader_Id /= NULL_SERVER then
+         MState.Known_Leader_Id := Leader_Id;
+      end if;
+   end Remember_Leader;
+
+   procedure Send_Not_Leader_Response
+     (Machine_State : in out Raft_State_Machine'Class;
+      Client_Id     : Client_Id_Type;
+      Serial        : Client_Serial_Type)
+   is
+      Leader : constant ServerID_Type :=
+        Machine_State.MState.Known_Leader_Id;
+   begin
+      if Machine_State.MState.Current_Raft_State = Raft.Node.LEADER then
+         return;
+      end if;
+
+      if Machine_State.MState.Client_Inbox = null then
+         return;
+      end if;
+
+      Deliver_Client_Response
+        (Machine_State.MState,
+         Response_Send_Command'
+           (Command_Committed => False,
+            Not_Leader        => True,
+            Error             => Leader = NULL_SERVER,
+            Leader_Id         => Leader,
+            Client_Id         => Client_Id,
+            Serial            => Serial,
+            Log_Index         => TransactionLogIndex_Type'First));
+   end Send_Not_Leader_Response;
+
+   procedure Track_Pending_Client_Command
+     (MState    : RaftNodeStruct_Access;
+      Log_Index : TransactionLogIndex_Type;
+      Client_Id : Client_Id_Type;
+      Serial    : Client_Serial_Type)
+   is
+   begin
+      for I in MState.Pending_Client_Requests'Range loop
+         if not MState.Pending_Client_Requests (I).Active then
+            MState.Pending_Client_Requests (I) :=
+              (Active    => True,
+               Log_Index => Log_Index,
+               Client_Id => Client_Id,
+               Serial    => Serial);
+            return;
+         end if;
+      end loop;
+   end Track_Pending_Client_Command;
+
+   function Find_Client_Session_Index
+     (MState : RaftNodeStruct_Access; Client_Id : Client_Id_Type)
+      return Natural
+   is
+   begin
+      for I in MState.Client_Sessions'Range loop
+         if MState.Client_Sessions (I).Active
+           and then MState.Client_Sessions (I).Client_Id = Client_Id
+         then
+            return I;
+         end if;
+      end loop;
+
+      return 0;
+   end Find_Client_Session_Index;
+
+   procedure Create_Client_Session
+     (MState : RaftNodeStruct_Access; Client_Id : Client_Id_Type)
+   is
+   begin
+      if Find_Client_Session_Index (MState, Client_Id) /= 0 then
+         return;
+      end if;
+
+      for I in MState.Client_Sessions'Range loop
+         if not MState.Client_Sessions (I).Active then
+            MState.Client_Sessions (I) :=
+              (Active    => True,
+               Client_Id => Client_Id,
+               Completed => (others => <>));
+            return;
+         end if;
+      end loop;
+   end Create_Client_Session;
+
+   function Lookup_Completed_Response
+     (Session : Client_Session_Entry;
+      Serial  : Client_Serial_Type;
+      Res     : out Response_Send_Command) return Boolean
+   is
+   begin
+      for I in Session.Completed'Range loop
+         if Session.Completed (I).Valid
+           and then Session.Completed (I).Serial = Serial
+         then
+            Res := Session.Completed (I).Response;
+            return True;
+         end if;
+      end loop;
+
+      return False;
+   end Lookup_Completed_Response;
+
+   procedure Remember_Completed_Response
+     (Session : in out Client_Session_Entry;
+      Serial  : Client_Serial_Type;
+      Res     : Response_Send_Command)
+   is
+   begin
+      for I in Session.Completed'Range loop
+         if not Session.Completed (I).Valid then
+            Session.Completed (I) :=
+              (Valid => True, Serial => Serial, Response => Res);
+            return;
+         end if;
+      end loop;
+
+      --  Fixed-size cache: drop the oldest slot when full.
+      for I in 2 .. Session.Completed'Last loop
+         Session.Completed (I - 1) := Session.Completed (I);
+      end loop;
+
+      Session.Completed (Session.Completed'Last) :=
+        (Valid => True, Serial => Serial, Response => Res);
+   end Remember_Completed_Response;
+
+   function Is_Pending_Client_Command
+     (MState    : RaftNodeStruct_Access;
+      Client_Id : Client_Id_Type;
+      Serial    : Client_Serial_Type) return Boolean
+   is
+   begin
+      for I in MState.Pending_Client_Requests'Range loop
+         if MState.Pending_Client_Requests (I).Active
+           and then MState.Pending_Client_Requests (I).Client_Id = Client_Id
+           and then MState.Pending_Client_Requests (I).Serial = Serial
+         then
+            return True;
+         end if;
+      end loop;
+
+      return False;
+   end Is_Pending_Client_Command;
+
+   procedure Deliver_Unknown_Client_Error
+     (MState    : RaftNodeStruct_Access;
+      Client_Id : Client_Id_Type;
+      Serial    : Client_Serial_Type)
+   is
+   begin
+      if MState.Client_Inbox = null then
+         return;
+      end if;
+
+      Deliver_Client_Response
+        (MState,
+         Response_Send_Command'
+           (Command_Committed => False,
+            Not_Leader        => False,
+            Error             => True,
+            Leader_Id         => MState.Current_Id,
+            Client_Id         => Client_Id,
+            Serial            => Serial,
+            Log_Index         => TransactionLogIndex_Type'First));
+   end Deliver_Unknown_Client_Error;
+
+   procedure Notify_Client_Commits (MState : RaftNodeStruct_Access) is
+   begin
+      if MState.Client_Inbox = null then
+         return;
+      end if;
+
+      for I in MState.Pending_Client_Requests'Range loop
+         if MState.Pending_Client_Requests (I).Active
+           and then
+             MState.Pending_Client_Requests (I).Log_Index <
+               MState.Last_Applied_Strict
+         then
+            declare
+               Pending : Pending_Client_Entry renames
+                 MState.Pending_Client_Requests (I);
+               Res   : constant Response_Send_Command :=
+                 Response_Send_Command'
+                   (Command_Committed => True,
+                    Not_Leader        => False,
+                    Error             => False,
+                    Leader_Id         => MState.Current_Id,
+                    Client_Id         => Pending.Client_Id,
+                    Serial            => Pending.Serial,
+                    Log_Index         => Pending.Log_Index);
+               Session_Idx : constant Natural :=
+                 Find_Client_Session_Index (MState, Pending.Client_Id);
+            begin
+               if Session_Idx /= 0 then
+                  Remember_Completed_Response
+                    (MState.Client_Sessions (Session_Idx),
+                     Pending.Serial,
+                     Res);
+               end if;
+
+               Deliver_Client_Response (MState, Res);
+               Pending.Active := False;
+            end;
+         end if;
+      end loop;
+   end Notify_Client_Commits;
+
+   procedure Handle_Client_Request_As_Non_Leader
+     (Machine_State : in out Raft_State_Machine'Class;
+      Client_Id     : Client_Id_Type;
+      Serial        : Client_Serial_Type)
+   is
+   begin
+      Send_Not_Leader_Response (Machine_State, Client_Id, Serial);
+   end Handle_Client_Request_As_Non_Leader;
 
    procedure Adjust_Leader_Indices_After_Compact
      (Machine_State : in out Raft_State_Machine_Leader)
@@ -320,6 +561,13 @@ package body Raft.Node is
       end;
    end Create_Machine;
 
+   procedure Set_Client_Inbox
+     (Machine : Raft_Node_Access; Inbox : Message_Buffer_Access)
+   is
+   begin
+      Machine.State.Client_Inbox := Inbox;
+   end Set_Client_Inbox;
+
    procedure Start_Election_Entering_Candidate_State
      (Machine_State : in out Raft_State_Machine_Candidate)
    is
@@ -327,6 +575,8 @@ package body Raft.Node is
       Last_Idx : constant TransactionLogIndex_Type := Last_Log_Index (NS);
       Last_term      : Term_Type;
    begin
+      Clear_Known_Leader (Machine_State.MState);
+
       --  §5.2
       Machine_State.MState.Node_State.Current_Term :=
         Machine_State.MState.Node_State.Current_Term + 1;
@@ -374,6 +624,7 @@ package body Raft.Node is
             begin
                if RVR.Candidate_Term > A.MState.Node_State.Current_Term then
                   A.MState.Node_State.Current_Term := RVR.Candidate_Term;
+                  Clear_Known_Leader (A.MState);
                   --  move to follower
                   New_State                        := FOLLOWER;
                end if;
@@ -385,6 +636,7 @@ package body Raft.Node is
             begin
                if AER.Leader_Term > A.MState.Node_State.Current_Term then
                   A.MState.Node_State.Current_Term := AER.Leader_Term;
+                  Clear_Known_Leader (A.MState);
                   --  move to follower
                   New_State                        := FOLLOWER;
                end if;
@@ -396,6 +648,7 @@ package body Raft.Node is
             begin
                if ISR.Leader_Term > A.MState.Node_State.Current_Term then
                   A.MState.Node_State.Current_Term := ISR.Leader_Term;
+                  Clear_Known_Leader (A.MState);
                   New_State                        := FOLLOWER;
                end if;
             end;
@@ -730,6 +983,8 @@ package body Raft.Node is
          end;
       end if;
 
+      Remember_Leader (Machine_State.MState, M.Leader_ID);
+
       --  check if log contains an entry at PrevLogTerm whose index matches
       --  PrevLogIndex
       Debug_Put_Line
@@ -1037,6 +1292,42 @@ package body Raft.Node is
             end if;
             Handle_InstallSnapshot_Request (Machine_State, Req);
          end;
+      elsif M'Tag = Request_Send_Command'Tag then
+         declare
+            RSC : constant Request_Send_Command := Request_Send_Command (M);
+         begin
+            Handle_Client_Request_As_Non_Leader
+              (Machine_State, RSC.Client_Id, RSC.Serial);
+         end;
+         return;
+      elsif M'Tag = Request_Register_Client'Tag then
+         declare
+            Known : constant ServerID_Type :=
+              Machine_State.MState.Known_Leader_Id;
+         begin
+            Deliver_Client_Response
+              (Machine_State.MState,
+               Response_Register_Client'
+                 (Client_Id  => NO_CLIENT_ID,
+                  Not_Leader => True,
+                  Error      => Known = NULL_SERVER,
+                  Leader_Id  => Known));
+         end;
+         return;
+      elsif M'Tag = Request_Client_Query'Tag then
+         declare
+            Query : constant Request_Client_Query := Request_Client_Query (M);
+         begin
+            Deliver_Client_Response
+              (Machine_State.MState,
+               Response_Client_Query'
+                 (Success    => False,
+                  Not_Leader => True,
+                  Leader_Id  => Machine_State.MState.Known_Leader_Id,
+                  Client_Id  => Query.Client_Id,
+                  Serial     => Query.Serial));
+         end;
+         return;
       elsif M'Tag = Request_Vote_Response'Tag then
          Debug_Put_Line (Machine_State, "[Candidate got a vote response]");
          declare
@@ -1290,6 +1581,14 @@ package body Raft.Node is
          begin
             Handle_Leader_Send_Command (Machine_State, RSC);
          end;
+      elsif M'Tag = Request_Register_Client'Tag then
+         Handle_Register_Client (Machine_State);
+      elsif M'Tag = Request_Client_Query'Tag then
+         declare
+            Query : constant Request_Client_Query := Request_Client_Query (M);
+         begin
+            Handle_Client_Query (Machine_State, Query);
+         end;
       else
          --  unsupported message type for leader
          Put_Line
@@ -1333,6 +1632,42 @@ package body Raft.Node is
               Install_Snapshot_Request (M);
          begin
             Handle_InstallSnapshot_Request (Machine_State, Req);
+         end;
+         return;
+      elsif M'Tag = Request_Send_Command'Tag then
+         declare
+            RSC : constant Request_Send_Command := Request_Send_Command (M);
+         begin
+            Handle_Client_Request_As_Non_Leader
+              (Machine_State, RSC.Client_Id, RSC.Serial);
+         end;
+         return;
+      elsif M'Tag = Request_Register_Client'Tag then
+         declare
+            Known : constant ServerID_Type :=
+              Machine_State.MState.Known_Leader_Id;
+         begin
+            Deliver_Client_Response
+              (Machine_State.MState,
+               Response_Register_Client'
+                 (Client_Id  => NO_CLIENT_ID,
+                  Not_Leader => True,
+                  Error      => Known = NULL_SERVER,
+                  Leader_Id  => Known));
+         end;
+         return;
+      elsif M'Tag = Request_Client_Query'Tag then
+         declare
+            Query : constant Request_Client_Query := Request_Client_Query (M);
+         begin
+            Deliver_Client_Response
+              (Machine_State.MState,
+               Response_Client_Query'
+                 (Success    => False,
+                  Not_Leader => True,
+                  Leader_Id  => Machine_State.MState.Known_Leader_Id,
+                  Client_Id  => Query.Client_Id,
+                  Serial     => Query.Serial));
          end;
          return;
       end if;
@@ -1524,7 +1859,35 @@ package body Raft.Node is
    is
       New_Log_Entry : Command_And_Term_Entry_Type;
       New_Index     : TransactionLogIndex_Type;
+      Cached        : Response_Send_Command;
+      Session_Idx   : Natural;
    begin
+      if RSC.Client_Id /= NO_CLIENT_ID then
+         Session_Idx :=
+           Find_Client_Session_Index (Machine_State.MState, RSC.Client_Id);
+
+         if Session_Idx = 0 then
+            Deliver_Unknown_Client_Error
+              (Machine_State.MState, RSC.Client_Id, RSC.Serial);
+            return;
+         end if;
+
+         if Lookup_Completed_Response
+              (Machine_State.MState.Client_Sessions (Session_Idx),
+               RSC.Serial,
+               Cached)
+         then
+            Deliver_Client_Response (Machine_State.MState, Cached);
+            return;
+         end if;
+
+         if Is_Pending_Client_Command
+              (Machine_State.MState, RSC.Client_Id, RSC.Serial)
+         then
+            return;
+         end if;
+      end if;
+
       --  Add new entry to leader's log
       New_Log_Entry :=
         (C => RSC.Command, T => Machine_State.MState.Node_State.Current_Term);
@@ -1535,6 +1898,14 @@ package body Raft.Node is
 
       New_Index :=
         Append (Machine_State.MState.Node_State.Log, New_Log_Entry);
+
+      if RSC.Client_Id /= NO_CLIENT_ID then
+         Track_Pending_Client_Command
+           (Machine_State.MState,
+            New_Index,
+            RSC.Client_Id,
+            RSC.Serial);
+      end if;
 
       --  Update leader's nextIndex and matchIndex for itself
       Machine_State.MState.Leader_State.Next_Index_Strict
@@ -1552,5 +1923,42 @@ package body Raft.Node is
          " handled command " & Image (RSC.Command) & "]");
 
    end Handle_Leader_Send_Command;
+
+   procedure Handle_Register_Client
+     (Machine_State : in out Raft_State_Machine_Leader)
+   is
+      Assigned_Id : Client_Id_Type;
+   begin
+      Assigned_Id := Machine_State.MState.Next_Client_Id;
+      Machine_State.MState.Next_Client_Id :=
+        Client_Id_Type'Succ (Assigned_Id);
+
+      Create_Client_Session (Machine_State.MState, Assigned_Id);
+
+      Deliver_Client_Response
+        (Machine_State.MState,
+         Response_Register_Client'
+           (Client_Id  => Assigned_Id,
+            Not_Leader => False,
+            Error      => False,
+            Leader_Id  => Machine_State.MState.Current_Id));
+   end Handle_Register_Client;
+
+   procedure Handle_Client_Query
+     (Machine_State : in out Raft_State_Machine_Leader;
+      Query         : Request_Client_Query)
+   is
+      pragma Unreferenced (Machine_State);
+   begin
+      --  Linearizable read-only queries (book §6.4) are not implemented yet.
+      Deliver_Client_Response
+        (Machine_State.MState,
+         Response_Client_Query'
+           (Success    => False,
+            Not_Leader => False,
+            Leader_Id  => Machine_State.MState.Current_Id,
+            Client_Id  => Query.Client_Id,
+            Serial     => Query.Serial));
+   end Handle_Client_Query;
 
 end Raft.Node;

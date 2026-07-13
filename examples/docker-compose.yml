@@ -1,0 +1,78 @@
+# AdaRaft 3-node cluster on a private Docker network.
+#
+# Start the cluster:
+#   docker compose up --build -d
+#
+# Run the client on the host (build once with: cd examples && alr build):
+#   ./bin/raft_client -c cluster.host.toml register
+#   ./bin/raft_client -c cluster.host.toml send 42
+#   ./bin/raft_client -c cluster.host.toml audit
+#
+# Published ports (host -> container):
+#   9101 -> raft-node-1
+#   9102 -> raft-node-2
+#   9103 -> raft-node-3
+#
+# The client listens on host port 9200; containers reach it via host.docker.internal.
+
+name: adaraft
+
+services:
+  raft-node-1:
+    image: adaraft-raft-server:local
+    build:
+      context: ..
+      dockerfile: examples/Dockerfile
+    hostname: raft-node-1
+    command:
+      - --config
+      - /etc/raft/cluster.toml
+      - --server-id
+      - "1"
+    ports:
+      - "9101:9101"
+    networks:
+      - raft
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  raft-node-2:
+    image: adaraft-raft-server:local
+    depends_on:
+      - raft-node-1
+    hostname: raft-node-2
+    command:
+      - --config
+      - /etc/raft/cluster.toml
+      - --server-id
+      - "2"
+    ports:
+      - "9102:9102"
+    networks:
+      - raft
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  raft-node-3:
+    image: adaraft-raft-server:local
+    depends_on:
+      - raft-node-1
+    hostname: raft-node-3
+    command:
+      - --config
+      - /etc/raft/cluster.toml
+      - --server-id
+      - "3"
+    ports:
+      - "9103:9103"
+    networks:
+      - raft
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+networks:
+  raft:
+    driver: bridge

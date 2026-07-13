@@ -8,6 +8,11 @@ package Raft is
 
    NULL_SERVER : constant ServerID_Type := 0;
 
+   type Client_Id_Type is new Natural;
+   NO_CLIENT_ID : constant Client_Id_Type := 0;
+
+   type Client_Serial_Type is new Natural;
+
    type Term_Type is new Natural;
 
    type No_Or_Term_Type is new Integer range -1 .. Integer (Term_Type'Last);
@@ -56,5 +61,28 @@ package Raft is
    is abstract;
 
    function Image (Item : Command_Type) return String;
+
+   type Command_Stream_Reader is access function
+     (Stream : not null access Root_Stream_Type'Class) return Command_Type;
+
+   type Command_Stream_Writer is access procedure
+     (Stream : not null access Root_Stream_Type'Class; Item : Command_Type);
+
+   procedure Register_Command_Stream_IO
+     (Reader : Command_Stream_Reader; Writer : Command_Stream_Writer);
+
+   procedure Write_Command_Access
+     (Stream : not null access Root_Stream_Type'Class; Item : Command_Type);
+
+   procedure Read_Command_Access
+     (Stream : not null access Root_Stream_Type'Class; Item : out Command_Type);
+
+   procedure Write_Log_Entry
+     (Stream : not null access Root_Stream_Type'Class;
+      Item   : Command_And_Term_Entry_Type);
+
+   procedure Read_Log_Entry
+     (Stream : not null access Root_Stream_Type'Class;
+      Item   : out Command_And_Term_Entry_Type);
 
 end Raft;

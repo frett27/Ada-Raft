@@ -1,0 +1,39 @@
+with GNAT.Sockets; use GNAT.Sockets;
+with Raft;       use Raft;
+
+package Cluster_Config is
+
+   Max_Nodes : constant := 16;
+   Max_Host_Length : constant := 64;
+
+   subtype Host_String is String (1 .. Max_Host_Length);
+
+   type Node_Config is record
+      Id   : ServerID_Type;
+      Host : Host_String;
+      Host_Length : Natural := 0;
+      Port : Port_Type;
+   end record;
+
+   type Node_Config_Table is array (1 .. Max_Nodes) of Node_Config;
+
+   type Cluster_Configuration is record
+      Server_Count : ServerID_Type := 0;
+      Nodes        : Node_Config_Table;
+      Client_Host  : Host_String;
+      Client_Host_Length : Natural := 0;
+      Client_Port  : Port_Type := 9200;
+   end record;
+
+   Config_Error : exception;
+
+   procedure Load
+     (Path : String; Config : out Cluster_Configuration);
+
+   function Node_Host (Node : Node_Config) return String;
+
+   function Client_Host_Image (Config : Cluster_Configuration) return String;
+
+   function Server_Hostname (SID : ServerID_Type) return String;
+
+end Cluster_Config;

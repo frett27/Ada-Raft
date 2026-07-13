@@ -33,12 +33,47 @@ package Raft.Messages is
       Vote_Granted   : Boolean;
    end record;
 
+   --  ClientRequest RPC (book §6.2, Figure 6.1).
    type Request_Send_Command is new Request_Message_Type with record
-      Command : Command_Type;
+      Command   : Command_Type;
+      Client_Id : Client_Id_Type := NO_CLIENT_ID;
+      Serial    : Client_Serial_Type := Client_Serial_Type'First;
    end record;
 
    type Response_Send_Command is new Response_Message_Type with record
-      Command_Committed : Boolean;
+      Command_Committed : Boolean := False;
+      Not_Leader        : Boolean := False;
+      Error             : Boolean := False;
+      Leader_Id         : ServerID_Type := NULL_SERVER;
+      Client_Id         : Client_Id_Type := NO_CLIENT_ID;
+      Serial            : Client_Serial_Type := Client_Serial_Type'First;
+      Log_Index         : TransactionLogIndex_Type :=
+        TransactionLogIndex_Type'First;
+   end record;
+
+   --  RegisterClient RPC (book §6.3).
+   type Request_Register_Client is new Request_Message_Type with null record;
+
+   type Response_Register_Client is new Response_Message_Type with record
+      Client_Id  : Client_Id_Type := NO_CLIENT_ID;
+      Not_Leader : Boolean := False;
+      Error      : Boolean := False;
+      Leader_Id  : ServerID_Type := NULL_SERVER;
+   end record;
+
+   --  ClientQuery RPC (book §6.4). Linearizable read path is not implemented
+   --  on the leader yet; followers still redirect to the known leader.
+   type Request_Client_Query is new Request_Message_Type with record
+      Client_Id : Client_Id_Type := NO_CLIENT_ID;
+      Serial    : Client_Serial_Type := Client_Serial_Type'First;
+   end record;
+
+   type Response_Client_Query is new Response_Message_Type with record
+      Success    : Boolean := False;
+      Not_Leader : Boolean := False;
+      Leader_Id  : ServerID_Type := NULL_SERVER;
+      Client_Id  : Client_Id_Type := NO_CLIENT_ID;
+      Serial     : Client_Serial_Type := Client_Serial_Type'First;
    end record;
 
    type Install_Snapshot_Request is new Request_Message_Type with record
@@ -56,5 +91,26 @@ package Raft.Messages is
       T   : Term_Type;
       SID : ServerID_Type;
    end record;
+
+   procedure Write
+     (Stream : not null access Ada.Streams.Root_Stream_Type'Class;
+      Item   : Request_Send_Command);
+
+   procedure Read
+     (Stream : not null access Ada.Streams.Root_Stream_Type'Class;
+      Item   : out Request_Send_Command);
+
+   procedure Write
+     (Stream : not null access Ada.Streams.Root_Stream_Type'Class;
+      Item   : Append_Entries_Request);
+
+   procedure Read
+     (Stream : not null access Ada.Streams.Root_Stream_Type'Class;
+      Item   : out Append_Entries_Request);
+
+   for Request_Send_Command'Write use Write;
+   for Request_Send_Command'Read use Read;
+   for Append_Entries_Request'Write use Write;
+   for Append_Entries_Request'Read use Read;
 
 end Raft.Messages;

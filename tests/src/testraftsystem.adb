@@ -9,8 +9,28 @@ with Ada.Numerics.Float_Random;
 with Ada.Exceptions;        use Ada.Exceptions;
 with Ada.IO_Exceptions;     use Ada.IO_Exceptions;
 with Ada.Unchecked_Deallocation;
+with Raft;                   use Raft;
 
 package body TestRaftSystem is
+
+   function Log_Entry_Equal
+     (Left, Right : Command_And_Term_Entry_Type) return Boolean
+   is
+   begin
+      if Left.T /= Right.T then
+         return False;
+      end if;
+
+      if (Left.C = null) /= (Right.C = null) then
+         return False;
+      end if;
+
+      if Left.C = null then
+         return True;
+      end if;
+
+      return Image (Left.C) = Image (Right.C);
+   end Log_Entry_Equal;
 
 
 
@@ -190,7 +210,8 @@ package body TestRaftSystem is
     procedure Send_Client_Command
       (Leader_SID : ServerID_Type; Command : Command_Type)
     is
-       Req : Request_Send_Command := (Command => Command);
+       Req : Request_Send_Command :=
+         (Command => Command, others => <>);
     begin
        Inject_Message (Leader_SID, Req);
     end Send_Client_Command;
@@ -702,8 +723,9 @@ package body TestRaftSystem is
                         if Node_Commit_Index > 0 then
                         for j in TransactionLogIndex_Type'First .. Node_Commit_Index-1 loop
                             -- if node committed logs are not in the leader logs, return false
-                            if Log_Entry_At (Node_State.Node_State, j) /=
-                              Log_Entry_At (Leader_Node_State.Node_State, j)
+                            if not Log_Entry_Equal
+                                 (Log_Entry_At (Node_State.Node_State, j),
+                                  Log_Entry_At (Leader_Node_State.Node_State, j))
                             then
                                 Debug_Test_Message ("CONSISTENCY ERROR: Node " & i'Image & " has a different log at index " & j'Image);
                                 -- Dump both logs for comparison
