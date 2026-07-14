@@ -146,12 +146,6 @@ package body Network_Node is
          Request_Last  : out Stream_Element_Offset);
    end Client_Pipeline;
 
-   task Server_Comms_Task is
-      entry Start;
-      entry Send_To_Peer
-        (Remote : Unbounded_String; Payload : Stream_Element_Array);
-   end Server_Comms_Task;
-
    task Raft_Node_Task is
       entry Start;
    end Raft_Node_Task;
@@ -718,6 +712,11 @@ package body Network_Node is
    end Purge_Stale_Client_Routes;
 
    Server_Message_Box_Size : constant := 8192;
+   Max_Inbound_Frame       : constant Stream_Element_Offset := 16_384;
+   Priority_Message_Box_Size : constant := 512;
+   Normal_Message_Box_Size   : constant :=
+     Server_Message_Box_Size - Priority_Message_Box_Size;
+   Severe_Backlog_Threshold  : constant Natural := 256;
    Max_Drain_Rounds      : constant Positive := 32;
    Max_Drain_Safety      : constant Natural := 4096;
    Drain_Yield           : constant Duration := 0.001;
@@ -742,128 +741,204 @@ package body Network_Node is
 
    Last_Drop_Report : Natural := 0;
 
+   type Inbound_Entry is record
+      Sender       : Unbounded_String;
+      Payload_Last : Stream_Element_Offset := 0;
+      Data         : Stream_Element_Array (1 .. Max_Inbound_Frame);
+   end record;
+
    type Timer_Table is array (Timer_Type) of Natural;
 
    Timers : Timer_Table := (others => 0);
    Gen    : Ada.Numerics.Float_Random.Generator;
 
-   type Payload_Access is access Stream_Element_Array;
-   procedure Free_Payload is new Ada.Unchecked_Deallocation
-     (Stream_Element_Array, Payload_Access);
+   type Priority_Queue_Type is
+     array (1 .. Priority_Message_Box_Size) of Inbound_Entry;
+   type Normal_Queue_Type is
+     array (1 .. Normal_Message_Box_Size) of Inbound_Entry;
 
-   function Copy_To_Heap (Data : Stream_Element_Array) return Payload_Access is
-   begin
-      return new Stream_Element_Array'(Data);
-   end Copy_To_Heap;
-
-   type Queue_Entry is record
-      Sender  : Unbounded_String;
-      Payload : Payload_Access;
-   end record;
-
-   type Queue_Type is array (1 .. Server_Message_Box_Size) of Queue_Entry;
+   function Is_Priority_Control_Payload
+     (Sender : Unbounded_String; Payload : Stream_Element_Array) return Boolean;
 
    protected Server_Message_Box is
-      procedure Enqueue (Sender : Unbounded_String; Payload : Payload_Access);
+      procedure Enqueue
+        (Sender : Unbounded_String; Payload : Stream_Element_Array);
       procedure Dequeue
-        (Sender : out Unbounded_String;
-         Payload : out Payload_Access;
-         Found : out Boolean);
+        (Sender       : out Unbounded_String;
+         Data         : out Stream_Element_Array;
+         Payload_Last : out Stream_Element_Offset;
+         Priority_Only : in     Boolean := False;
+         Found        :    out Boolean);
       function Is_Empty return Boolean;
       function Queue_Depth return Natural;
       function Dropped_Count return Natural;
    private
-      Items   : Queue_Type;
-      First   : Positive := 1;
-      Count   : Natural := 0;
+      Priority_Items : Priority_Queue_Type;
+      Priority_First : Positive := 1;
+      Priority_Count : Natural := 0;
+
+      Normal_Items   : Normal_Queue_Type;
+      Normal_First   : Positive := 1;
+      Normal_Count   : Natural := 0;
+
       Dropped : Natural := 0;
 
-      procedure Drop_Oldest;
+      procedure Drop_Oldest_Normal;
+      procedure Drop_Oldest_Priority;
    end Server_Message_Box;
 
    protected body Server_Message_Box is
 
-      function Tail_Index return Positive is
+      function Priority_Tail_Index return Positive is
       begin
-         if Count = 0 then
-            return First;
+         if Priority_Count = 0 then
+            return Priority_First;
          end if;
          declare
-            Pos : Natural := First + Count - 1;
+            Pos : Natural := Priority_First + Priority_Count - 1;
          begin
-            if Pos > Items'Length then
-               Pos := Pos - Items'Length;
+            if Pos > Priority_Items'Length then
+               Pos := Pos - Priority_Items'Length;
             end if;
             return Positive (Pos);
          end;
-      end Tail_Index;
+      end Priority_Tail_Index;
 
-      procedure Drop_Oldest is
-         Old : Payload_Access;
+      function Normal_Tail_Index return Positive is
       begin
-         if Count = 0 then
+         if Normal_Count = 0 then
+            return Normal_First;
+         end if;
+         declare
+            Pos : Natural := Normal_First + Normal_Count - 1;
+         begin
+            if Pos > Normal_Items'Length then
+               Pos := Pos - Normal_Items'Length;
+            end if;
+            return Positive (Pos);
+         end;
+      end Normal_Tail_Index;
+
+      procedure Drop_Oldest_Normal is
+      begin
+         if Normal_Count = 0 then
             return;
          end if;
-         Old := Items (First).Payload;
-         if Old /= null then
-            Free_Payload (Old);
+         Normal_First := Normal_First + 1;
+         if Normal_First > Normal_Items'Last then
+            Normal_First := Normal_Items'First;
          end if;
-         First := First + 1;
-         if First > Items'Last then
-            First := Items'First;
-         end if;
-         Count   := Count - 1;
-         Dropped := Dropped + 1;
+         Normal_Count := Normal_Count - 1;
+         Dropped      := Dropped + 1;
          Inbound_Processed := Inbound_Processed + 1;
-      end Drop_Oldest;
+      end Drop_Oldest_Normal;
 
-      procedure Enqueue (Sender : Unbounded_String; Payload : Payload_Access) is
-         Pos : constant Positive := Tail_Index;
+      procedure Drop_Oldest_Priority is
       begin
-         if Payload = null then
+         if Priority_Count = 0 then
             return;
          end if;
-         while Count >= Items'Length loop
-            Drop_Oldest;
-         end loop;
-         Items (Pos) := (Sender => Sender, Payload => Payload);
-         Count := Count + 1;
+         Priority_First := Priority_First + 1;
+         if Priority_First > Priority_Items'Last then
+            Priority_First := Priority_Items'First;
+         end if;
+         Priority_Count := Priority_Count - 1;
+         Dropped        := Dropped + 1;
+         Inbound_Processed := Inbound_Processed + 1;
+      end Drop_Oldest_Priority;
+
+      procedure Enqueue
+        (Sender : Unbounded_String; Payload : Stream_Element_Array)
+      is
+         Priority : constant Boolean :=
+           Is_Priority_Control_Payload (Sender, Payload);
+         Pos      : Positive;
+      begin
+         if Payload'Length = 0 then
+            return;
+         end if;
+         if Stream_Element_Offset (Payload'Length) > Max_Inbound_Frame then
+            raise Constraint_Error with "inbound frame too large";
+         end if;
+
+         if Priority then
+            while Priority_Count >= Priority_Items'Length loop
+               Drop_Oldest_Priority;
+            end loop;
+            Pos := Priority_Tail_Index;
+            Priority_Items (Pos).Sender := Sender;
+            Priority_Items (Pos).Payload_Last :=
+              Stream_Element_Offset (Payload'Length);
+            Priority_Items (Pos).Data (1 .. Payload'Length) := Payload;
+            Priority_Count := Priority_Count + 1;
+         else
+            while Normal_Count >= Normal_Items'Length loop
+               Drop_Oldest_Normal;
+            end loop;
+            Pos := Normal_Tail_Index;
+            Normal_Items (Pos).Sender := Sender;
+            Normal_Items (Pos).Payload_Last :=
+              Stream_Element_Offset (Payload'Length);
+            Normal_Items (Pos).Data (1 .. Payload'Length) := Payload;
+            Normal_Count := Normal_Count + 1;
+         end if;
       end Enqueue;
 
       procedure Dequeue
-        (Sender : out Unbounded_String;
-         Payload : out Payload_Access;
-         Found : out Boolean)
+        (Sender       : out Unbounded_String;
+         Data         : out Stream_Element_Array;
+         Payload_Last : out Stream_Element_Offset;
+         Priority_Only : in     Boolean := False;
+         Found        :    out Boolean)
       is
+         Item : Inbound_Entry;
       begin
-         if Count = 0 then
+         if Priority_Count > 0 then
+            Item := Priority_Items (Priority_First);
+            Priority_First := Priority_First + 1;
+            if Priority_First > Priority_Items'Last then
+               Priority_First := Priority_Items'First;
+            end if;
+            Priority_Count := Priority_Count - 1;
+         elsif Priority_Only or else Normal_Count = 0 then
             Found := False;
             return;
+         else
+            Item := Normal_Items (Normal_First);
+            Normal_First := Normal_First + 1;
+            if Normal_First > Normal_Items'Last then
+               Normal_First := Normal_Items'First;
+            end if;
+            Normal_Count := Normal_Count - 1;
          end if;
-         Sender  := Items (First).Sender;
-         Payload := Items (First).Payload;
-         First   := First + 1;
-         if First > Items'Last then
-            First := Items'First;
+
+         Sender       := Item.Sender;
+         Payload_Last := Item.Payload_Last;
+         if Payload_Last > Data'Last then
+            raise Constraint_Error with "inbound dequeue buffer too small";
          end if;
-         Count := Count - 1;
+         if Payload_Last > 0 then
+            Data (Data'First .. Data'First + Payload_Last - 1) :=
+              Item.Data (1 .. Payload_Last);
+         end if;
          Found := True;
       end Dequeue;
 
       function Is_Empty return Boolean is
       begin
-         return Count = 0;
+         return Priority_Count = 0 and then Normal_Count = 0;
       end Is_Empty;
 
       function Queue_Depth return Natural is
       begin
-         return Count;
+         return Priority_Count + Normal_Count;
       end Queue_Depth;
 
       function Dropped_Count return Natural is
       begin
          return Dropped;
       end Dropped_Count;
+
    end Server_Message_Box;
 
    function Pending_Inbound_Count return Natural is
@@ -1142,7 +1217,29 @@ package body Network_Node is
       if Length (Remote) = 0 or else Payload'Length = 0 then
          return;
       end if;
-      Server_Comms_Task.Send_To_Peer (Remote, Payload);
+      begin
+         Communication.Send
+           (Net_Links (Local_Id),
+            Communication.UDP.Make_Remote_Link (Hub_Access, Remote),
+            Payload);
+      exception
+         when E : Communication.UDP.Network_IO_Error =>
+            Put_Line
+              ("network error node "
+               & ServerID_Type'Image (Local_Id)
+               & " -> "
+               & To_String (Remote)
+               & ": "
+               & Exception_Message (E));
+         when E : others =>
+            Put_Line
+              ("network error node "
+               & ServerID_Type'Image (Local_Id)
+               & " -> "
+               & To_String (Remote)
+               & ": "
+               & Exception_Information (E));
+      end;
    end Send_Outbound_Payload;
 
    procedure Send_Outbound_Message
@@ -1163,6 +1260,49 @@ package body Network_Node is
       end loop;
       return True;
    end Is_Configured_Client;
+
+   function Is_Priority_Control_Payload
+     (Sender : Unbounded_String; Payload : Stream_Element_Array) return Boolean
+   is
+      function Tag_In_Payload (Suffix : String) return Boolean is
+         Pattern : constant String := "RAFT.MESSAGES." & Suffix;
+      begin
+         if Payload'Length < Pattern'Length then
+            return False;
+         end if;
+         for Start in
+           Integer (Payload'First)
+             .. Integer (Payload'Last) - Pattern'Length + 1
+         loop
+            declare
+               Match : Boolean := True;
+            begin
+               for J in Pattern'Range loop
+                  if Character'Val
+                       (Payload
+                          (Stream_Element_Offset
+                             (Start + (J - Pattern'First))))
+                     /= Pattern (J)
+                  then
+                     Match := False;
+                     exit;
+                  end if;
+               end loop;
+               if Match then
+                  return True;
+               end if;
+            end;
+         end loop;
+         return False;
+      end Tag_In_Payload;
+   begin
+      if Is_Configured_Client (To_String (Sender)) then
+         return False;
+      end if;
+      return Tag_In_Payload ("APPEND_ENTRIES_REQUEST")
+        or else Tag_In_Payload ("REQUEST_VOTE_REQUEST")
+        or else Tag_In_Payload ("INSTALL_SNAPSHOT_REQUEST");
+   end Is_Priority_Control_Payload;
 
    function Response_Client_Id (M : Message_Type'Class) return Client_Id_Type is
    begin
@@ -1316,10 +1456,9 @@ package body Network_Node is
      (From, To : in Net_Link; Message : in Stream_Element_Array)
    is
       pragma Unreferenced (To);
-      Payload : constant Payload_Access := Copy_To_Heap (Message);
    begin
-      if Payload /= null then
-         Server_Message_Box.Enqueue (Get_Host_Name (From), Payload);
+      if Message'Length > 0 then
+         Server_Message_Box.Enqueue (Get_Host_Name (From), Message);
          Inbound_Enqueued := Inbound_Enqueued + 1;
       end if;
    end Link_Callback;
@@ -1361,27 +1500,38 @@ package body Network_Node is
       return Pending_Inbound_Count > Raft_Inbound_Backlog_Max;
    end Inbound_Backlogged;
 
+   function Severely_Backlogged return Boolean is
+   begin
+      return Pending_Inbound_Count > Severe_Backlog_Threshold;
+   end Severely_Backlogged;
+
    procedure Process_Server_Inbound_Batch (Max_Messages : Positive) is
-      Sender    : Unbounded_String;
-      Payload   : Payload_Access;
-      Found     : Boolean;
-      Processed : Natural := 0;
+      Sender        : Unbounded_String;
+      Frame         : Stream_Element_Array (1 .. Max_Inbound_Frame);
+      Payload_Last  : Stream_Element_Offset;
+      Found         : Boolean;
+      Processed     : Natural := 0;
+      Priority_Only : constant Boolean := Severely_Backlogged;
    begin
       while Processed < Max_Messages loop
-         Server_Message_Box.Dequeue (Sender, Payload, Found);
+         Server_Message_Box.Dequeue
+           (Sender,
+            Frame,
+            Payload_Last,
+            Priority_Only => Priority_Only,
+            Found         => Found);
          exit when not Found;
 
-         if Payload = null then
+         if Payload_Last = 0 then
             goto Next_Message;
          end if;
 
          declare
-            Data : constant Stream_Element_Array := Payload.all;
+            Data : constant Stream_Element_Array := Frame (1 .. Payload_Last);
          begin
             Inbound_Processed := Inbound_Processed + 1;
             Handle_Raft_Message (Sender, Data);
          end;
-         Free_Payload (Payload);
          Processed := Processed + 1;
 
          <<Next_Message>>
@@ -1426,6 +1576,18 @@ package body Network_Node is
       end if;
       return Max_Inbound_Per_Loop;
    end Inbound_Drain_Budget;
+
+   procedure Drain_Priority_Control_Inbound is
+      Safety : Natural := 0;
+   begin
+      loop
+         exit when Server_Message_Box.Is_Empty;
+         Process_Server_Inbound_Batch (Max_Inbound_When_Backlogged);
+         Safety := Safety + 1;
+         exit when Safety >= Max_Drain_Safety;
+         exit when not Severely_Backlogged;
+      end loop;
+   end Drain_Priority_Control_Inbound;
 
    procedure Drain_Priority_Server_Inbound is
    begin
@@ -2068,7 +2230,6 @@ package body Network_Node is
          end if;
       end loop;
 
-      Server_Comms_Task.Start;
       Raft_Node_Task.Start;
    end Initialize;
 
@@ -2458,46 +2619,6 @@ package body Network_Node is
       end;
    end Log_Work_Response;
 
-   task body Server_Comms_Task is
-   begin
-      accept Start;
-      loop
-         accept Send_To_Peer
-           (Remote : Unbounded_String; Payload : Stream_Element_Array)
-         do
-            if Local_Id >= 1
-              and then Local_Id <= Server_Num
-              and then Length (Remote) > 0
-              and then Payload'Length > 0
-            then
-               begin
-                  Communication.Send
-                    (Net_Links (Local_Id),
-                     Communication.UDP.Make_Remote_Link (Hub_Access, Remote),
-                     Payload);
-               exception
-                  when E : Communication.UDP.Network_IO_Error =>
-                     Put_Line
-                       ("network error node "
-                        & ServerID_Type'Image (Local_Id)
-                        & " -> "
-                        & To_String (Remote)
-                        & ": "
-                        & Exception_Message (E));
-                  when E : others =>
-                     Put_Line
-                       ("network error node "
-                        & ServerID_Type'Image (Local_Id)
-                        & " -> "
-                        & To_String (Remote)
-                        & ": "
-                        & Exception_Information (E));
-               end;
-            end if;
-         end Send_To_Peer;
-      end loop;
-   end Server_Comms_Task;
-
    task body Raft_Node_Task is
       Next_Epoch : Time;
       Work_Slots : array (1 .. Client_Pipeline_Depth) of Client_Work_State :=
@@ -2620,6 +2741,10 @@ package body Network_Node is
             Epoch_Steps : Natural := 0;
             Drain_Round : Positive;
          begin
+            if Severely_Backlogged then
+               Drain_Priority_Control_Inbound;
+            end if;
+
             if Inbound_Backlogged then
                for Drain_Round in 1 .. Backlog_Drain_Rounds loop
                   exit when Server_Message_Box.Is_Empty;

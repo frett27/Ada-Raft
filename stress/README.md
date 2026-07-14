@@ -101,6 +101,27 @@ Full report: [`results/2026-07-14T15-28-09+02-00/synthesis.md`](results/2026-07-
 | `run_8_clients.sh` | Load only (8 clients) |
 | `synthesize_run.sh` | Regenerate `synthesis.md` / `metrics.json` for a `results/` folder |
 | `analyze_run.sh` | Quick monitor log summary |
+| `detect_split_brain.sh` | Parse `monitor.log` for dual leaders / zombie epoch |
+| `reproduce_split_brain.sh` | **Regression repro:** aggressive 8-client load + detection report |
+| `verify_detector.sh` | Sanity-check detector on archived failing + clean logs |
+
+### Split-brain reproduction
+
+See **[split_brain_reproduction.md](split_brain_reproduction.md)** for the full
+guide (failure mode, detection criteria, debug checklist, archived reference runs).
+
+```bash
+cd stress
+./reproduce_split_brain.sh              # build + run + detect
+BUILD=0 ./reproduce_split_brain.sh        # reuse current binaries
+./verify_detector.sh                    # sanity-check the detector
+```
+
+| Exit code | Meaning |
+|-----------|---------|
+| 0 | **REPRODUCED** — split-brain indicators in `monitor.log` |
+| 1 | Run completed, bug **not** reproduced |
+| 2 | Infrastructure failure |
 
 ### Environment knobs
 
@@ -136,3 +157,6 @@ Use **throughput_tps** and **success_rate_pct** in `metrics.json` to compare ser
 
 For a plain-English guide to every field, tag (`OVERLOADED`, `WEDGED`), verdict, and
 threshold constant, see **[monitoring.md](monitoring.md)**.
+
+For split-brain / zombie-leader regression testing, see
+**[split_brain_reproduction.md](split_brain_reproduction.md)**.
