@@ -77,6 +77,7 @@ Probably **not** for you if you need production etcd-like service, real networki
 - [X] Leader replication debug lines (`[ leader N replication ]` in traces)
 - [X] Client handling / commit broadcast (leader; examples)
 - [X] TCP client API (examples: register, send, reconnect, watchdog)
+- [ ] Generatize an audit end point to be able to have a full view of clluster nodes (maybe exporter, of a binary synthesis to save bandwidth)
 - [ ] High-volume client / replication tuning (examples overload under load)
 - [ ] Formal verification (SPARK proof coverage still in progress)
 
