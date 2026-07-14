@@ -82,7 +82,7 @@ Details: [doc/tests.md](doc/tests.md), [doc/conception.md](doc/conception.md).
 - [X] Deterministic test harness (epochs, buffer, partitions, node reset)
 - [X] Client path in **examples** (register, send, reconnect, watchdog; session expiry)
 - [X] Examples transport (UDP Raft, TCP client API)
-- [ ] Cluster audit / metrics export (unified view of nodes)
+- [X] Cluster audit / metrics export (unified view of nodes)
 - [ ] High-volume client and replication tuning
 - [ ] Broader SPARK proof coverage
 
