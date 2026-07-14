@@ -148,6 +148,8 @@ package body Network_Node is
 
    task Server_Comms_Task is
       entry Start;
+      entry Send_To_Peer
+        (Remote : Unbounded_String; Payload : Stream_Element_Array);
    end Server_Comms_Task;
 
    task Raft_Node_Task is
@@ -729,12 +731,12 @@ package body Network_Node is
    Max_Inbound_When_Backlogged : constant Positive := 128;
    --  Matches cluster_health.Overload_Pending_Inbound_Min.
    Raft_Inbound_Backlog_Max    : constant Natural := 32;
-   --  Epoch steps per main-loop iteration (avoids timer bursts before drain).
-   Max_Epochs_Per_Loop         : constant Positive := 4;
+   --  Epoch steps per main-loop iteration (1 = strict epoch/inbound interleave).
+   Max_Epochs_Per_Loop         : constant Positive := 1;
+   --  Inbound messages processed after each epoch step.
+   Max_Inbound_Per_Epoch       : constant Positive := 8;
    --  Extra inbound drain rounds when backlogged.
    Backlog_Drain_Rounds        : constant Positive := 4;
-   Outbound_Message_Box_Size   : constant := 2048;
-   Max_Outbound_Frame          : constant Stream_Element_Offset := 16_384;
    --  Extra election delay while the cluster binds listeners (startup race).
    Startup_Grace_Epochs : constant Natural := 20;
 
@@ -863,133 +865,6 @@ package body Network_Node is
          return Dropped;
       end Dropped_Count;
    end Server_Message_Box;
-
-   type Outbound_Entry is record
-      Remote       : Unbounded_String;
-      Payload_Last : Stream_Element_Offset := 0;
-      Data         : Stream_Element_Array (1 .. Max_Outbound_Frame);
-   end record;
-
-   type Outbound_Queue_Type is
-     array (1 .. Outbound_Message_Box_Size) of Outbound_Entry;
-
-   protected Outbound_Message_Box is
-      procedure Enqueue
-        (Remote : Unbounded_String; Payload : Stream_Element_Array);
-      procedure Dequeue
-        (Remote       : out Unbounded_String;
-         Data         : out Stream_Element_Array;
-         Payload_Last : out Stream_Element_Offset;
-         Found        : out Boolean);
-      function Is_Empty return Boolean;
-      function Queue_Depth return Natural;
-      function Dropped_Count return Natural;
-   private
-      Items   : Outbound_Queue_Type;
-      First   : Positive := 1;
-      Count   : Natural := 0;
-      Dropped : Natural := 0;
-
-      procedure Drop_Oldest;
-   end Outbound_Message_Box;
-
-   protected body Outbound_Message_Box is
-
-      function Tail_Index return Positive is
-      begin
-         if Count = 0 then
-            return First;
-         end if;
-         declare
-            Pos : Natural := First + Count - 1;
-         begin
-            if Pos > Items'Length then
-               Pos := Pos - Items'Length;
-            end if;
-            return Positive (Pos);
-         end;
-      end Tail_Index;
-
-      procedure Drop_Oldest is
-      begin
-         if Count = 0 then
-            return;
-         end if;
-         First := First + 1;
-         if First > Items'Last then
-            First := Items'First;
-         end if;
-         Count   := Count - 1;
-         Dropped := Dropped + 1;
-      end Drop_Oldest;
-
-      procedure Enqueue
-        (Remote : Unbounded_String; Payload : Stream_Element_Array)
-      is
-         Pos : constant Positive := Tail_Index;
-      begin
-         if Length (Remote) = 0 or else Payload'Length = 0 then
-            return;
-         end if;
-         if Stream_Element_Offset (Payload'Length) > Max_Outbound_Frame then
-            raise Constraint_Error with "outbound frame too large";
-         end if;
-         while Count >= Items'Length loop
-            Drop_Oldest;
-         end loop;
-         Items (Pos).Remote := Remote;
-         Items (Pos).Payload_Last :=
-           Stream_Element_Offset (Payload'Length);
-         Items (Pos).Data (1 .. Payload'Length) := Payload;
-         Count := Count + 1;
-      end Enqueue;
-
-      procedure Dequeue
-        (Remote       : out Unbounded_String;
-         Data         : out Stream_Element_Array;
-         Payload_Last : out Stream_Element_Offset;
-         Found        : out Boolean)
-      is
-         Item : Outbound_Entry;
-      begin
-         if Count = 0 then
-            Found := False;
-            return;
-         end if;
-         Item := Items (First);
-         Remote       := Item.Remote;
-         Payload_Last := Item.Payload_Last;
-         if Payload_Last > Data'Last then
-            raise Constraint_Error with "outbound dequeue buffer too small";
-         end if;
-         if Payload_Last > 0 then
-            Data (Data'First .. Data'First + Payload_Last - 1) :=
-              Item.Data (1 .. Payload_Last);
-         end if;
-         First := First + 1;
-         if First > Items'Last then
-            First := Items'First;
-         end if;
-         Count := Count - 1;
-         Found := True;
-      end Dequeue;
-
-      function Is_Empty return Boolean is
-      begin
-         return Count = 0;
-      end Is_Empty;
-
-      function Queue_Depth return Natural is
-      begin
-         return Count;
-      end Queue_Depth;
-
-      function Dropped_Count return Natural is
-      begin
-         return Dropped;
-      end Dropped_Count;
-
-   end Outbound_Message_Box;
 
    function Pending_Inbound_Count return Natural is
    begin
@@ -1264,7 +1139,10 @@ package body Network_Node is
       if Local_Id < 1 or else Local_Id > Server_Num then
          return;
       end if;
-      Outbound_Message_Box.Enqueue (Remote, Payload);
+      if Length (Remote) = 0 or else Payload'Length = 0 then
+         return;
+      end if;
+      Server_Comms_Task.Send_To_Peer (Remote, Payload);
    end Send_Outbound_Payload;
 
    procedure Send_Outbound_Message
@@ -2581,26 +2459,22 @@ package body Network_Node is
    end Log_Work_Response;
 
    task body Server_Comms_Task is
-      Remote       : Unbounded_String;
-      Frame        : Stream_Element_Array (1 .. Max_Outbound_Frame);
-      Payload_Last : Stream_Element_Offset;
-      Found        : Boolean;
    begin
       accept Start;
       loop
-         Outbound_Message_Box.Dequeue
-           (Remote, Frame, Payload_Last, Found);
-         if Found then
+         accept Send_To_Peer
+           (Remote : Unbounded_String; Payload : Stream_Element_Array)
+         do
             if Local_Id >= 1
               and then Local_Id <= Server_Num
               and then Length (Remote) > 0
-              and then Payload_Last > 0
+              and then Payload'Length > 0
             then
                begin
                   Communication.Send
                     (Net_Links (Local_Id),
                      Communication.UDP.Make_Remote_Link (Hub_Access, Remote),
-                     Frame (1 .. Payload_Last));
+                     Payload);
                exception
                   when E : Communication.UDP.Network_IO_Error =>
                      Put_Line
@@ -2620,9 +2494,7 @@ package body Network_Node is
                         & Exception_Information (E));
                end;
             end if;
-         else
-            delay Drain_Yield;
-         end if;
+         end Send_To_Peer;
       end loop;
    end Server_Comms_Task;
 
@@ -2766,6 +2638,9 @@ package body Network_Node is
                Epoch_Tick := True;
                Epoch_Steps := Epoch_Steps + 1;
                Next_Epoch := Next_Epoch + Raft_Cfg.Epoch_Interval;
+               if not Server_Message_Box.Is_Empty then
+                  Process_Server_Inbound_Batch (Max_Inbound_Per_Epoch);
+               end if;
             end loop;
 
             if Epoch_Tick then
