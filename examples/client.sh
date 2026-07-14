@@ -2,19 +2,15 @@
 # Run raft_client commands against a running cluster.
 #
 # Usage:
-#   ./client.sh                interactive shell
+#   ./client.sh                         interactive shell
 #   ./client.sh register
 #   ./client.sh send <integer>
+#   ./client.sh --name client-a send 42
 #   ./client.sh audit
-#   ./client.sh help
 #
 # Environment:
-#   CONFIG   cluster TOML file (default: cluster.toml)
-#
-# Examples:
-#   ./client.sh register
-#   ./client.sh send 42
-#   CONFIG=cluster.host.toml ./client.sh audit
+#   CONFIG        cluster TOML file (default: cluster.toml)
+#   CLIENT_NAME   wire sender name (default: client)
 
 set -euo pipefail
 
@@ -22,6 +18,7 @@ ROOT="$(cd "$(dirname "$0")" && pwd)"
 cd "$ROOT"
 
 CONFIG="${CONFIG:-cluster.toml}"
+CLIENT_NAME="${CLIENT_NAME:-}"
 CLIENT="$ROOT/bin/raft_client"
 
 usage() {
@@ -30,23 +27,26 @@ usage: ./client.sh [options] [command] [args]
 
 options:
   -c, --config PATH   cluster TOML configuration file
+  --name NAME         client sender name on the wire (default: client)
   -h, --help          show this help
 
 commands:
   register            register with the cluster
-  send <integer>      send a test command value
+  send <integer>      send a test command value (auto-registers if needed)
   audit               print network audit counters
 
 Without a command, starts the interactive raft_client shell.
 
 environment:
   CONFIG              default config file (cluster.toml)
+  CLIENT_NAME         same as --name
 
 examples:
   ./client.sh register
   ./client.sh send 42
-  ./client.sh -c cluster.host.toml audit
-  CONFIG=cluster.host.toml ./client.sh register
+  ./client.sh --name client-a send 42
+  CLIENT_NAME=client-b ./client.sh send 100
+  CONFIG=cluster.host.toml ./client.sh audit
 EOF
 }
 
@@ -57,13 +57,25 @@ ensure_built() {
    fi
 }
 
+client_args() {
+   local -a args=(-c "$CONFIG")
+   if [[ -n "$CLIENT_NAME" ]]; then
+      args+=(--name "$CLIENT_NAME")
+   fi
+   printf '%s\0' "${args[@]}"
+}
+
 run_client() {
    ensure_built
    if [[ ! -f "$CONFIG" ]]; then
       echo "config not found: $CONFIG" >&2
       exit 1
    fi
-   "$CLIENT" -c "$CONFIG" "$@"
+   local -a args=(-c "$CONFIG")
+   if [[ -n "$CLIENT_NAME" ]]; then
+      args+=(--name "$CLIENT_NAME")
+   fi
+   "$CLIENT" "${args[@]}" "$@"
 }
 
 COMMAND=""
@@ -82,6 +94,15 @@ while [[ $# -gt 0 ]]; do
             exit 1
          fi
          CONFIG="$2"
+         shift 2
+         ;;
+      --name )
+         if [[ $# -lt 2 ]]; then
+            echo "missing value for --name" >&2
+            usage >&2
+            exit 1
+         fi
+         CLIENT_NAME="$2"
          shift 2
          ;;
       register | send | audit )

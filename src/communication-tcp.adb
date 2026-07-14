@@ -506,13 +506,25 @@ package body Communication.TCP is
    task body Listener_Task is
       Hub_Ptr : TcpHub_Access;
       Port_No : Port_Type;
+      Started : Boolean := False;
    begin
-      accept Start (Hub : TcpHub_Access; Port : Port_Type) do
-         Hub_Ptr := Hub;
-         Port_No := Port;
-         Stop_Requested := False;
-      end Start;
+      loop
+         select
+            accept Start (Hub : TcpHub_Access; Port : Port_Type) do
+               Hub_Ptr := Hub;
+               Port_No := Port;
+               Stop_Requested := False;
+               Started := True;
+            end Start;
+         else
+            exit when Stop_Requested;
+            delay 0.05;
+         end select;
 
+         exit when Started;
+      end loop;
+
+      if Started then
       declare
          Server : Socket_Type;
          Addr   : Sock_Addr_Type :=
@@ -555,6 +567,7 @@ package body Communication.TCP is
 
          Close_Socket (Server);
       end;
+      end if;
    end Listener_Task;
 
    task body Connection_Worker_Task_Type is
@@ -562,11 +575,23 @@ package body Communication.TCP is
       Client  : Socket_Type;
       Peer    : Sock_Addr_Type;
       Found   : Boolean;
+      Started : Boolean := False;
    begin
-      accept Start (Hub : TcpHub_Access) do
-         Hub_Ptr := Hub;
-      end Start;
+      loop
+         select
+            accept Start (Hub : TcpHub_Access) do
+               Hub_Ptr := Hub;
+               Started := True;
+            end Start;
+         else
+            exit when Stop_Requested;
+            delay 0.05;
+         end select;
 
+         exit when Started;
+      end loop;
+
+      if Started then
       while not Stop_Requested loop
          declare
             Processed : Natural := 0;
@@ -591,6 +616,7 @@ package body Communication.TCP is
             end if;
          end;
       end loop;
+      end if;
    end Connection_Worker_Task_Type;
 
    procedure Create_Hub (H : out TcpHub) is
@@ -661,6 +687,9 @@ package body Communication.TCP is
    begin
       Stop_Requested := True;
       H.Active       := False;
+      --  Give idle listener/worker tasks time to exit when Start was never
+      --  called (client-only hubs that only use Send_Sync).
+      delay 0.15;
    end Shutdown;
 
    procedure Set_Inter_Server_Timeout (H : in out TcpHub; Timeout : Duration) is

@@ -510,7 +510,14 @@ package body Raft.Client is
 
    function Is_Registered (C : Raft_Client) return Boolean is
    begin
-      return Register_Complete (C);
+      return C.Client_Id /= NO_CLIENT_ID and then C.Leader_Id /= NULL_SERVER;
    end Is_Registered;
+
+   procedure Abort_In_Flight_Operation (C : in out Raft_Client) is
+   begin
+      C.Op_Phase              := Idle;
+      C.Resume_After_Register := False;
+      C.Pending_Command       := null;
+   end Abort_In_Flight_Operation;
 
 end Raft.Client;

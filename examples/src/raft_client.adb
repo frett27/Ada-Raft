@@ -3,6 +3,7 @@ with Ada.Command_Line; use Ada.Command_Line;
 with Ada.Exceptions;    use Ada.Exceptions;
 with Ada.Strings;       use Ada.Strings;
 with Ada.Strings.Fixed; use Ada.Strings.Fixed;
+with Interfaces.C;      use Interfaces.C;
 
 with Raft;              use Raft;
 with Raft.Messages;     use Raft.Messages;
@@ -18,6 +19,26 @@ procedure Raft_Client is
    Config      : Cluster_Configuration;
    Line        : String (1 .. 256);
    Last        : Natural;
+
+   function Stdin_Is_TTY return Boolean is
+      function C_Isatty (Fd : int) return int;
+      pragma Import (C, C_Isatty, "isatty");
+   begin
+      return C_Isatty (0) /= 0;
+   exception
+      when others =>
+         return False;
+   end Stdin_Is_TTY;
+
+   Interactive : constant Boolean := Stdin_Is_TTY;
+
+   procedure Print_Prompt is
+   begin
+      if Interactive then
+         Put ("> ");
+         Flush;
+      end if;
+   end Print_Prompt;
 
    procedure Print_Session_Status is
    begin
@@ -46,6 +67,52 @@ procedure Raft_Client is
          & " index="
          & TransactionLogIndex_Type'Image (Res.Log_Index));
    end Print_Send_Result;
+
+   procedure Print_Registration is
+   begin
+      Put_Line
+        ("registered client id="
+         & Client_Id_Type'Image (Registered_Client_Id)
+         & " leader="
+         & ServerID_Type'Image (Known_Leader_Id)
+         & " next_serial="
+         & Client_Serial_Type'Image (Next_Command_Serial));
+   end Print_Registration;
+
+   procedure Execute_One_Shot_Send (Cmd : Client_Args) is
+      Res : Response_Send_Command;
+   begin
+      if not Register_With_Cluster then
+         Put_Line
+           ("registration failed (cluster unreachable or no leader)");
+         return;
+      end if;
+
+      Print_Registration;
+
+      Res := Send_Command (Cmd.Send_Value);
+      Print_Send_Result (Res);
+      Disconnect_Session;
+   exception
+      when Cluster_Unreachable =>
+         Put_Line
+           ("send failed: cluster unreachable"
+            & " (start the cluster with ./launch.sh start)");
+      when Client_Timeout =>
+         if Is_Registered and then Known_Leader_Id /= NULL_SERVER then
+            Put_Line
+              ("send failed: timed out waiting for commit"
+               & " (leader="
+               & ServerID_Type'Image (Known_Leader_Id)
+               & "; check logs/node-*.log for replication errors)");
+         else
+            Put_Line ("send failed: timed out waiting for leader");
+         end if;
+         Disconnect_Session;
+      when Client_No_Leader =>
+         Put_Line ("send failed: no leader known");
+         Disconnect_Session;
+   end Execute_One_Shot_Send;
 
    procedure Execute_Command (Cmd : Client_Args) is
       Res : Response_Send_Command;
@@ -94,34 +161,39 @@ procedure Raft_Client is
             end;
 
          when Send =>
-            begin
-               if not Ensure_Registered then
-                  Put_Line
-                    ("send failed: not registered"
-                     & " (cluster unreachable or no leader)");
-                  return;
-               end if;
-
-               Res := Send_Command (Cmd.Send_Value);
-               Print_Send_Result (Res);
-            exception
-               when Cluster_Unreachable =>
-                  Put_Line
-                    ("send failed: cluster unreachable"
-                     & " (start the cluster with ./launch.sh start)");
-               when Client_Timeout =>
-                  if Is_Registered and then Known_Leader_Id /= NULL_SERVER then
+            if Interactive then
+               begin
+                  if not Ensure_Registered then
                      Put_Line
-                       ("send failed: timed out waiting for commit"
-                        & " (leader="
-                        & ServerID_Type'Image (Known_Leader_Id)
-                        & "; check logs/node-*.log for replication errors)");
-                  else
-                     Put_Line ("send failed: timed out waiting for leader");
+                       ("send failed: not registered"
+                        & " (cluster unreachable or no leader)");
+                     return;
                   end if;
-               when Client_No_Leader =>
-                  Put_Line ("send failed: no leader known");
-            end;
+
+                  Res := Send_Command (Cmd.Send_Value);
+                  Print_Send_Result (Res);
+               exception
+                  when Cluster_Unreachable =>
+                     Put_Line
+                       ("send failed: cluster unreachable"
+                        & " (start the cluster with ./launch.sh start)");
+                  when Client_Timeout =>
+                     if Is_Registered and then Known_Leader_Id /= NULL_SERVER
+                     then
+                        Put_Line
+                          ("send failed: timed out waiting for commit"
+                           & " (leader="
+                           & ServerID_Type'Image (Known_Leader_Id)
+                           & "; check logs/node-*.log for replication errors)");
+                     else
+                        Put_Line ("send failed: timed out waiting for leader");
+                     end if;
+                  when Client_No_Leader =>
+                     Put_Line ("send failed: no leader known");
+               end;
+            else
+               Execute_One_Shot_Send (Cmd);
+            end if;
 
          when Status =>
             Print_Session_Status;
@@ -160,11 +232,12 @@ procedure Raft_Client is
    procedure Run_Shell is
       Line_Script : Client_Script;
    begin
-      Put_Line
-        ("AdaRaft client shell (type help for commands, quit to exit)");
+      if Interactive then
+         Put_Line
+           ("AdaRaft client shell (type help for commands, quit to exit)");
+      end if;
       loop
-         Put ("> ");
-         Flush;
+         Print_Prompt;
 
          Get_Line (Line, Last);
          begin

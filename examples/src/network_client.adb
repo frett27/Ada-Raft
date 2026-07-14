@@ -14,7 +14,6 @@ with Communication.TCP;     use Communication.TCP;
 with Communication.Network_Audit; use Communication.Network_Audit;
 with Example_Commands;      use Example_Commands;
 with Example_Config;       use Example_Config;
-with Network_Node;          use Network_Node;
 
 package body Network_Client is
 
@@ -59,8 +58,11 @@ package body Network_Client is
       Deliver
         (Inbox, Message_Type'Class'Input (Response_MB'Access));
    exception
-      when Network_IO_Error =>
-         null;
+      when E : Network_IO_Error =>
+         raise Cluster_Unreachable
+           with "sync TCP to server " & ServerID_Type'Image (To)
+                & " failed: "
+                & Exception_Message (E);
    end Client_Send_To_Server;
 
    procedure Configure_Hub (Config : Cluster_Configuration) is
@@ -141,6 +143,13 @@ package body Network_Client is
       Ready := False;
    end Shutdown;
 
+   procedure Disconnect_Session is
+   begin
+      if Ready then
+         End_Session (Client);
+      end if;
+   end Disconnect_Session;
+
    function Register_With_Cluster return Boolean is
       Deadline : constant Time := Clock + Client_Timeout_S;
    begin
@@ -167,6 +176,14 @@ package body Network_Client is
 
    function Ensure_Registered return Boolean is
    begin
+      if Is_Registered then
+         return True;
+      end if;
+
+      if Phase (Client) /= Idle then
+         Abort_In_Flight_Operation (Client);
+      end if;
+
       return Register_With_Cluster;
    end Ensure_Registered;
 
@@ -219,6 +236,10 @@ package body Network_Client is
       end loop;
 
       raise Client_Timeout;
+   exception
+      when Client_Timeout =>
+         Abort_In_Flight_Operation (Client);
+         raise;
    end Send_Command;
 
    function Known_Leader_Id return ServerID_Type is

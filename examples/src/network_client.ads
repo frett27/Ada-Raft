@@ -12,6 +12,10 @@ package Network_Client is
       Settings : Client_Settings := Default_Client_Settings);
    procedure Shutdown;
 
+   --  End the Raft client session (local state only; TCP hub stays up until
+   --  Shutdown). Used after a one-shot CLI send.
+   procedure Disconnect_Session;
+
    procedure Process_Inbound_Messages;
    procedure Run_Step;
 

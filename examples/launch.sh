@@ -11,7 +11,7 @@
 #   ./client.sh register
 #   ./client.sh send 42
 #   ./client.sh audit
-#   ./scripts/send_load_dual_clients.sh   # 1000 commands, 2 client entities
+#   ./scripts/send_load_dual_clients.sh   # batch ./client.sh send, 2 identities
 #
 # Kill/restart experiment (start mode only):
 #   pkill -f 'raft_server -c .* -s 2'   # kill node 2; supervisor restarts it

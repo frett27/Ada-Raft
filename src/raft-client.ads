@@ -123,6 +123,9 @@ package Raft.Client is
 
    function Is_Registered (C : Raft_Client) return Boolean;
 
+   --  Drop an in-flight register/send without clearing Client_Id / Leader_Id.
+   procedure Abort_In_Flight_Operation (C : in out Raft_Client);
+
 private
 
    type Response_Inbox is limited record
