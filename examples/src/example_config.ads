@@ -10,6 +10,10 @@ package Example_Config is
 
    Client_Timeout_S : constant Duration := 10.0;
 
+   --  Max concurrent client sync TCP handlers on the leader before refusing
+   --  new connections (protects Raft replication from client overload).
+   Max_Client_In_Flight : constant Natural := 8;
+
    Default_Client_Port : constant Port_Type := 9200;
    Default_Client_Host : constant String := "127.0.0.1";
    Default_Client_Name : constant String := "client";

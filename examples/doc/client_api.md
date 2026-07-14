@@ -257,11 +257,11 @@ mailbox (`Client_Message_Box` → `Raft_Client_Mailbox`). Concurrent TCP
 connections are accepted (up to 32 workers) but **serialized** at the Raft
 integration layer.
 
-While a client command waits for commit, the leader still:
-
-- drains inter-node UDP (`Drain_Server_Messages`),
-- ticks Raft timers (`Run_Epoch_Step`),
-- advances replication and notifies the client when `Command_Committed` is true.
+While a client command waits for commit, the leader loop still *attempts* to
+drain inter-node UDP, tick Raft timers, and notify the client when
+`Command_Committed` is true. Under heavy retry load, outbound UDP and
+single-task scheduling can delay heartbeats and replication — see
+[scheduling_and_priorities.md](scheduling_and_priorities.md).
 
 Limits:
 
@@ -357,3 +357,4 @@ flowchart LR
 | `src/communication-tcp.adb` | Frame codec, `Send_Sync`, listener |
 | `src/raft-messages.ads` | `Request_*` / `Response_*` client RPC types |
 | `src/raft-client.adb` | Register / send state machine, leader redirect |
+| `examples/doc/scheduling_and_priorities.md` | Task priorities, heartbeats vs client load |

@@ -114,6 +114,60 @@ procedure Raft_Client is
          Disconnect_Session;
    end Execute_One_Shot_Send;
 
+   function Script_Is_Send_Only (Items : Client_Script) return Boolean is
+   begin
+      if Items.Count = 0 then
+         return False;
+      end if;
+
+      for I in 1 .. Items.Count loop
+         if Items.Commands (I).Command /= Send then
+            return False;
+         end if;
+      end loop;
+
+      return True;
+   end Script_Is_Send_Only;
+
+   procedure Execute_Batch_Sends (Items : Client_Script) is
+      Res : Response_Send_Command;
+   begin
+      if not Register_With_Cluster then
+         Put_Line
+           ("registration failed (cluster unreachable or no leader)");
+         return;
+      end if;
+
+      Print_Registration;
+
+      for I in 1 .. Items.Count loop
+         Res := Send_Command (Items.Commands (I).Send_Value);
+         Print_Send_Result (Res);
+      end loop;
+
+      Disconnect_Session;
+   exception
+      when Cluster_Unreachable =>
+         Put_Line
+           ("send failed: cluster unreachable"
+            & " (start the cluster with ./launch.sh start)");
+         Disconnect_Session;
+      when Client_Timeout =>
+         if Is_Registered and then Known_Leader_Id /= NULL_SERVER then
+            Put_Line
+              ("send failed: timed out waiting for commit"
+               & " (leader="
+               & ServerID_Type'Image (Known_Leader_Id)
+               & "; check logs/node-*.log for replication errors)");
+         else
+            Put_Line ("send failed: timed out waiting for leader");
+         end if;
+         Disconnect_Session;
+      when Client_No_Leader =>
+         Put_Line ("send failed: no leader known");
+         Disconnect_Session;
+   end Execute_Batch_Sends;
+
    procedure Execute_Command (Cmd : Client_Args) is
       Res : Response_Send_Command;
    begin
@@ -213,9 +267,13 @@ procedure Raft_Client is
 
    procedure Execute_Script (Items : Client_Script) is
    begin
-      for I in 1 .. Items.Count loop
-         Execute_Command (Items.Commands (I));
-      end loop;
+      if not Interactive and then Script_Is_Send_Only (Items) then
+         Execute_Batch_Sends (Items);
+      else
+         for I in 1 .. Items.Count loop
+            Execute_Command (Items.Commands (I));
+         end loop;
+      end if;
    end Execute_Script;
 
    function Execute_Script_Until_Quit (Items : Client_Script) return Boolean is

@@ -72,6 +72,17 @@ package body Network_Node is
    Max_Sync_Response       : constant Stream_Element_Offset := 16_384;
    Max_Client_Frame        : constant Stream_Element_Offset := 16_384;
 
+   --  Limit concurrent client sync handlers on the leader (fast TCP reject).
+   protected Client_Load_Guard is
+      procedure Try_Accept (Accepted : out Boolean);
+      procedure Release;
+      function In_Flight return Natural;
+      function Rejected_Total return Natural;
+   private
+      Count    : Natural := 0;
+      Rejected : Natural := 0;
+   end Client_Load_Guard;
+
    --  TCP sync path: worker <-> client comms task (rendezvous per connection).
    protected Client_Message_Box is
       entry Submit_Request
@@ -535,6 +546,10 @@ package body Network_Node is
          & Natural'Image (Client_Sends_Received)
          & " client_responses="
          & Natural'Image (Client_Responses_Sent)
+         & " client_in_flight="
+         & Natural'Image (Client_Load_Guard.In_Flight)
+         & " client_rejected="
+         & Natural'Image (Client_Load_Guard.Rejected_Total)
          & " app_sum="
          & Integer'Image (Application_Sum));
       Last_Progress_Sends := Client_Sends_Received;
@@ -704,6 +719,38 @@ package body Network_Node is
          return Dropped;
       end Dropped_Count;
    end Server_Message_Box;
+
+   protected body Client_Load_Guard is
+
+      procedure Try_Accept (Accepted : out Boolean) is
+      begin
+         if Count >= Max_Client_In_Flight then
+            Rejected := Rejected + 1;
+            Accepted := False;
+         else
+            Count := Count + 1;
+            Accepted := True;
+         end if;
+      end Try_Accept;
+
+      procedure Release is
+      begin
+         if Count > 0 then
+            Count := Count - 1;
+         end if;
+      end Release;
+
+      function In_Flight return Natural is
+      begin
+         return Count;
+      end In_Flight;
+
+      function Rejected_Total return Natural is
+      begin
+         return Rejected;
+      end Rejected_Total;
+
+   end Client_Load_Guard;
 
    protected body Client_Message_Box is
 
@@ -1283,6 +1330,12 @@ package body Network_Node is
       end if;
    end Step_Client_Work;
 
+   function Client_Load_Limited return Boolean is
+   begin
+      return Node /= null
+        and then Node.State.Current_Raft_State = LEADER;
+   end Client_Load_Limited;
+
    procedure Client_Sync_Handler
      (Sender        : Unbounded_String;
       Request       : Stream_Element_Array;
@@ -1291,16 +1344,53 @@ package body Network_Node is
       Found         : out Boolean)
    is
       Full_Response : Stream_Element_Array (1 .. Max_Sync_Response);
+      Track_Load    : constant Boolean := Client_Load_Limited;
+      Accepted      : Boolean;
    begin
-      Client_Message_Box.Submit_Request (Sender, Request);
-      Client_Message_Box.Accept_Response
-        (Full_Response, Response_Last, Found);
-      if Response_Last > Response'Length then
-         raise Constraint_Error with "sync response too large";
+      if Track_Load then
+         Client_Load_Guard.Try_Accept (Accepted);
+         if not Accepted then
+            Found := False;
+            if Verbose_Logging
+              or else
+                Client_Load_Guard.Rejected_Total mod Client_Send_Log_Sample = 1
+            then
+               Node_Log
+                 ("client TCP rejected from "
+                  & To_String (Sender)
+                  & " (in-flight="
+                  & Natural'Image (Client_Load_Guard.In_Flight)
+                  & "/"
+                  & Natural'Image (Max_Client_In_Flight)
+                  & " total_rejected="
+                  & Natural'Image (Client_Load_Guard.Rejected_Total)
+                  & ")");
+            end if;
+            return;
+         end if;
       end if;
-      if Response_Last > 0 then
-         Response (Response'First .. Response'First + Response_Last - 1) :=
-           Full_Response (1 .. Response_Last);
+
+      begin
+         Client_Message_Box.Submit_Request (Sender, Request);
+         Client_Message_Box.Accept_Response
+           (Full_Response, Response_Last, Found);
+         if Response_Last > Response'Length then
+            raise Constraint_Error with "sync response too large";
+         end if;
+         if Response_Last > 0 then
+            Response (Response'First .. Response'First + Response_Last - 1) :=
+              Full_Response (1 .. Response_Last);
+         end if;
+      exception
+         when others =>
+            if Track_Load then
+               Client_Load_Guard.Release;
+            end if;
+            raise;
+      end;
+
+      if Track_Load then
+         Client_Load_Guard.Release;
       end if;
    end Client_Sync_Handler;
 
