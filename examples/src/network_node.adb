@@ -183,11 +183,25 @@ package body Network_Node is
       return Message_Type'Class
    is
       Request_MB : aliased Message_Buffer_Type;
+      Use_Length : Stream_Element_Offset;
    begin
-      if Request_Last = 0 then
+      if Request'Length = 0 then
          return Request_Register_Client'(null record);
       end if;
-      From_Stream_Element_Array (Request (1 .. Request_Last), Request_MB);
+
+      Use_Length :=
+        Stream_Element_Offset'Min
+          (Request_Last, Stream_Element_Offset (Request'Length));
+
+      if Use_Length <= 0 then
+         return Request_Register_Client'(null record);
+      end if;
+
+      From_Stream_Element_Array
+        (Request
+           (Request'First ..
+            Request'First + Stream_Element_Offset (Natural (Use_Length) - 1)),
+         Request_MB);
       return Message_Type'Class'Input (Request_MB'Access);
    end Parse_Client_Request;
 
@@ -898,7 +912,11 @@ package body Network_Node is
             raise Constraint_Error with "client request too large";
          end if;
          if Request_Last > 0 then
-            Req_Buffer (1 .. Request_Last) := Request (1 .. Request_Last);
+            Req_Buffer (1 .. Request_Last) :=
+              Request
+                (Request'First ..
+                 Request'First
+                   + Stream_Element_Offset (Natural (Request_Last) - 1));
          end if;
          Req_Last := Request_Last;
          Req_Pending := True;

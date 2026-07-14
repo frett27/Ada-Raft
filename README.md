@@ -2,15 +2,27 @@
 
 An Ada implementation of [Raft](https://raft.github.io/) — by building a **deterministic, multi-node model** first, then growing the protocol core inside it.
 
-This began as a holiday project. The main idea behind the design is to allow **extensive tests on edge cases** — split votes, stale leaders, log gaps, partitions, snapshot catch-up — **before** layering on everything real deployments need (network I/O, disk failures, timeouts in the wild, and all the error paths that come with them). Time and messaging stay under explicit control (external timers, epoch stepping, a queued message buffer) so those scenarios can be stepped through reproducibly. The tests have been useful; they are still far from complete, and I/O handling is largely deferred.
+The Raft protocol lets a cluster of servers **agree on a replicated, ordered log** and apply the same commands to application state, provided a **quorum** remains available and can communicate. This is usefull for sharing a common vision for a set of nodes / machines, to be fault tolerant and be able to continue to work if some nodes fails.
+
+Consensus (Raft and similar protocols) is used when several machines must share **one authoritative state** despite failures:
+
+- **Configuration and naming** — cluster membership, service discovery, feature flags (e.g. etcd, Consul).
+- **Metadata and coordination** — locks, leader election for jobs, workflow checkpoints (ZooKeeper-style patterns).
+- **Replicated control planes** — one ordered history of admin commands applied on every replica.
+- **Highly available data services** — metadata layers for distributed databases and storage (CockroachDB, TiKV, Rook, etc.).
+- **Embedded and edge clusters** — modest quorums (3–5 nodes) that must keep running if a unit or link fails.
+
+What you gain: **agreement** on the same ordered updates, **durability** across restarts (with persistence), and **continued operation** while a minority of nodes is down — without every client picking a different “truth”.
+
+This project began as a holiday project. The main idea behind the design is to allow **extensive tests on edge cases** — split votes, stale leaders, log gaps, partitions, snapshot catch-up — **before** layering on everything real deployments need (network I/O, disk failures, timeouts in the wild, and all the error paths that come with them). Time and messaging stay under explicit control (external timers, epoch stepping, a queued message buffer) so those scenarios can be stepped through reproducibly. The tests have been useful; they are still far from complete, and I/O handling is largely deferred.
 
 If that order of concerns sounds interesting, you are welcome to look around.
 
 ## Why Ada?
 
-Raft is usually implemented in Go or Java; we used **Ada** anyway, because large Ada systems have long been built around **readability, strong typing, and correctness under review** — the kind of properties that help when state machines grow awkward.
+Raft is usually implemented in Go or Java; we used here **Ada** anyway, because large Ada systems have long been built around **readability, strong typing, and correctness under review** — the kind of properties that help when state machines grow awkward. Ada is probably leader in static analysis of algorithm and benefit from decades of programming in sensitive area that involve human life or high cost for errors (lift, avionic, financial, trains, space, .. )
 
-AdaRaft is tiny compared to those industrial codebases, but it tries to borrow that mindset:
+AdaRaft seems tiny compared to those industrial codebases, but it tries to borrow that ada mindset:
 
 - **Explicit structure** — protocol states, message types, and log indices are modeled in the type system rather than left implicit.
 - **Review-friendly code** — fewer surprises when tracing follower → candidate → leader transitions or snapshot install paths.
