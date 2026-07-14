@@ -1,7 +1,9 @@
+with Ada.Streams;           use Ada.Streams;
 with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
-with GNAT.Sockets;          use GNAT.Sockets;
 with Ada.Calendar;           use Ada.Calendar;
+with GNAT.Sockets;          use GNAT.Sockets;
 
+with Communication;         use Communication;
 with Communication.Network_Audit; use Communication.Network_Audit;
 
 package Communication.TCP is
@@ -33,6 +35,26 @@ package Communication.TCP is
 
    procedure Set_Client_Endpoint
      (H : in out TcpHub; Endpoint_Name : String);
+
+   type Sync_Request_Handler is access procedure
+     (Sender        : Unbounded_String;
+      Request       : Stream_Element_Array;
+      Response      : out Stream_Element_Array;
+      Response_Last : out Stream_Element_Offset;
+      Found         : out Boolean);
+
+   procedure Set_Sync_Request_Handler
+     (H : in out TcpHub; Handler : Sync_Request_Handler);
+
+   --  Connect, send one request frame, read one response frame (client path).
+   procedure Send_Sync
+     (L             : in out TcpHub;
+      Sender        : Net_Link;
+      To            : Net_Link;
+      Request       : Stream_Element_Array;
+      Response      : out Stream_Element_Array;
+      Response_Last : out Stream_Element_Offset;
+      Timeout       : Duration := 0.0);
 
    overriding
    procedure Send
@@ -86,6 +108,7 @@ private
       Inter_Server_Timeout : Duration := 0.0;
       Client_Endpoint      : Unbounded_String :=
         To_Unbounded_String ("client");
+      Sync_Handler         : Sync_Request_Handler := null;
    end record;
 
 end Communication.TCP;

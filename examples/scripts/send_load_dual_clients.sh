@@ -1,18 +1,16 @@
 #!/usr/bin/env bash
-# Send 1000 commands across two concurrent raft_client sessions (500 each).
+# Send commands across two concurrent raft_client sessions.
 #
 # Each session uses a distinct client entity (client-a / client-b) on its own
-# UDP port. The cluster must be running with cluster.toml, which registers
-# both client endpoints on the servers.
+# UDP port. The cluster must be running with cluster.toml.
 #
 # Usage:
 #   ./launch.sh start
 #   ./scripts/send_load_dual_clients.sh
 #
 # Environment:
-#   COMMANDS_PER_CLIENT   commands per client (default: 500)
-#   CONFIG_A              client-a TOML (default: cluster.client-a.toml)
-#   CONFIG_B              client-b TOML (default: cluster.client-b.toml)
+#   COMMANDS_PER_CLIENT   commands per client (default: 10000)
+#   CONFIG                cluster TOML (default: cluster.toml)
 #   CLIENT_A_BASE         first command value for client-a (default: 1)
 #   CLIENT_B_BASE         first command value for client-b (default: 100001)
 #   LOG_DIR               log output directory (default: logs/load)
@@ -27,8 +25,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 COMMANDS_PER_CLIENT="${COMMANDS_PER_CLIENT:-10000}"
-CONFIG_A="${CONFIG_A:-cluster.client-a.toml}"
-CONFIG_B="${CONFIG_B:-cluster.client-b.toml}"
+CONFIG="${CONFIG:-cluster.toml}"
 CLIENT_A_BASE="${CLIENT_A_BASE:-1}"
 CLIENT_B_BASE="${CLIENT_B_BASE:-100001}"
 LOG_DIR="${LOG_DIR:-$ROOT/logs/load}"
@@ -47,8 +44,7 @@ Prerequisites:
 
 Environment:
   COMMANDS_PER_CLIENT=${COMMANDS_PER_CLIENT}
-  CONFIG_A=${CONFIG_A}
-  CONFIG_B=${CONFIG_B}
+  CONFIG=${CONFIG}
   CLIENT_A_BASE=${CLIENT_A_BASE}
   CLIENT_B_BASE=${CLIENT_B_BASE}
   LOG_DIR=${LOG_DIR}
@@ -63,48 +59,26 @@ ensure_built() {
 }
 
 ensure_cluster() {
-   local pid_dir="$ROOT/run"
-   for id in 1 2 3; do
-      local pid_file="$pid_dir/node-$id.pid"
-      if [[ ! -f "$pid_file" ]]; then
-         echo "cluster node $id is not running (missing $pid_file)" >&2
-         echo "start the cluster first: ./launch.sh start" >&2
-         exit 1
-      fi
-      local pid
-      pid="$(<"$pid_file")"
-      if ! kill -0 "$pid" 2>/dev/null; then
-         echo "cluster node $id is not running (stale pid $pid)" >&2
-         echo "restart the cluster: ./launch.sh stop && ./launch.sh start" >&2
-         exit 1
-      fi
-   done
+   if ! "$ROOT/launch.sh" status >/dev/null 2>&1; then
+      echo "Cluster not running. Start it with: ./launch.sh start" >&2
+      exit 1
+   fi
 }
 
 wait_for_leader() {
-   local probe="$CONFIG_A"
-   local attempt out
-   log "waiting for cluster leader..."
-   for attempt in $(seq 1 60); do
+   local probe="$CONFIG"
+   local tries=0
+   while ((tries < 30)); do
+      local out
       out=$("$CLIENT" -c "$probe" register 2>&1 || true)
       if grep -q 'registered client id=' <<<"$out"; then
-         log "leader ready (attempt ${attempt})"
          return 0
       fi
-      if (( attempt == 1 || attempt % 5 == 0 )); then
-         log "still waiting (${attempt}/60)..."
-         if [[ -n "$out" ]]; then
-            echo "$out" | sed 's/^/[load] probe: /'
-         fi
-      fi
+      tries=$((tries + 1))
       sleep 0.5
    done
-   echo "cluster not ready (no leader after 30s)" >&2
-   if [[ -n "$out" ]]; then
-      echo "last probe output:" >&2
-      echo "$out" >&2
-   fi
-   return 1
+   echo "cluster did not become ready for client registration" >&2
+   exit 1
 }
 
 free_client_ports() {
@@ -119,7 +93,7 @@ free_client_ports() {
 
 count_committed() {
    local file="$1"
-   grep -c 'send serial=.*committed=TRUE' "$file" || true
+   grep -c 'committed=TRUE' "$file" || true
 }
 
 extract_client_id() {
@@ -144,9 +118,11 @@ log() {
 
 run_client_session() {
    local config="$1"
-   local label="$2"
-   local base="$3"
-   local count="$4"
+   local name="$2"
+   local port="$3"
+   local label="$4"
+   local base="$5"
+   local count="$6"
    local log="$LOG_DIR/${label}.log"
 
    if [[ ! -f "$config" ]]; then
@@ -162,7 +138,7 @@ run_client_session() {
          printf 'send %d\n' $((base + i))
       done
       printf 'status\nquit\n'
-   } | "$CLIENT" -c "$config" >"$log" 2>&1
+   } | "$CLIENT" -c "$config" --name "$name" --port "$port" >"$log" 2>&1
 
    local committed
    committed="$(count_committed "$log")"
@@ -194,10 +170,10 @@ echo "Sending $TOTAL commands ($COMMANDS_PER_CLIENT per client) in parallel..."
 echo "Node logs: tail -f $ROOT/logs/node-*.log"
 START_EPOCH=$(date +%s)
 
-run_client_session "$CONFIG_A" "client-a" "$CLIENT_A_BASE" "$COMMANDS_PER_CLIENT" &
+run_client_session "$CONFIG" "client-a" 9200 "client-a" "$CLIENT_A_BASE" "$COMMANDS_PER_CLIENT" &
 PID_A=$!
 sleep 0.3
-run_client_session "$CONFIG_B" "client-b" "$CLIENT_B_BASE" "$COMMANDS_PER_CLIENT" &
+run_client_session "$CONFIG" "client-b" 9201 "client-b" "$CLIENT_B_BASE" "$COMMANDS_PER_CLIENT" &
 PID_B=$!
 
 STATUS=0
@@ -207,9 +183,5 @@ wait "$PID_B" || STATUS=1
 END_EPOCH=$(date +%s)
 ELAPSED=$((END_EPOCH - START_EPOCH))
 
-if [[ "$STATUS" -eq 0 ]]; then
-   echo "Done: $TOTAL commands committed in ${ELAPSED}s (logs under $LOG_DIR)"
-else
-   echo "Load test failed after ${ELAPSED}s (see logs under $LOG_DIR)" >&2
-   exit 1
-fi
+echo "Done in ${ELAPSED}s (${TOTAL} commands, logs under $LOG_DIR/)"
+exit "$STATUS"

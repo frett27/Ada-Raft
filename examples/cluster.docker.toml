@@ -1,12 +1,7 @@
 # Cluster config for Raft nodes running inside Docker Compose.
-# Client responses are sent back to the host via host.docker.internal.
 
 [cluster]
 servers = 3
-
-[client]
-host = "host.docker.internal"
-port = 9200
 
 [[nodes]]
 id = 1

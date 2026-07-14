@@ -53,20 +53,6 @@ package body Cluster_Config is
       Len := Value'Length;
    end Set_Host;
 
-   procedure Set_Name
-     (Into : out String; Len : out Natural; Value : String)
-   is
-   begin
-      if Value'Length > Into'Length then
-         raise Config_Error with "client name too long: " & Value;
-      end if;
-      if Value'Length = 0 then
-         raise Config_Error with "empty client name";
-      end if;
-      Into (Into'First .. Into'First + Value'Length - 1) := Value;
-      Len := Value'Length;
-   end Set_Name;
-
    function Require_Table
      (Value : TOML_Value; Name : String) return TOML_Value
    is
@@ -234,65 +220,6 @@ package body Cluster_Config is
            (Require_Key (Table, "host", "nodes"), "nodes.host"));
    end Load_Node;
 
-   procedure Load_Client_Endpoint
-     (Client_Value : TOML_Value; Client : out Client_Endpoint_Config)
-   is
-      Table : constant TOML_Value :=
-        Require_Table (Client_Value, "clients entry");
-      Name  : constant String :=
-        (if Table.Has ("name")
-         then As_Config_String (Table.Get ("name"), "clients.name")
-         else "client");
-   begin
-      Client := (others => <>);
-      Set_Name (Client.Name, Client.Name_Length, Name);
-      Client.Host_Length := 0;
-      Set_Host
-        (Client.Host,
-         Client.Host_Length,
-         As_Config_String
-           (Require_Key (Table, "host", "clients"), "clients.host"));
-      Client.Port :=
-        Port_Type
-          (As_Config_Integer
-             (Require_Key (Table, "port", "clients"), "clients.port"));
-   end Load_Client_Endpoint;
-
-   procedure Finalize_Client_Table (Config : in out Cluster_Configuration) is
-   begin
-      if Config.Client_Count = 0 then
-         Config.Client_Count := 1;
-         Config.Clients (1).Name_Length := 0;
-         if Config.Client_Name_Length > 0 then
-            Set_Name
-              (Config.Clients (1).Name,
-               Config.Clients (1).Name_Length,
-               Client_Sender_Name (Config));
-         else
-            Set_Name
-              (Config.Clients (1).Name,
-               Config.Clients (1).Name_Length,
-               "client");
-         end if;
-         Config.Clients (1).Host := Config.Client_Host;
-         Config.Clients (1).Host_Length := Config.Client_Host_Length;
-         Config.Clients (1).Port := Config.Client_Port;
-      end if;
-
-      if Config.Client_Name_Length = 0 then
-         Set_Name
-           (Config.Client_Name,
-            Config.Client_Name_Length,
-            Client_Endpoint_Name (Config.Clients (1)));
-      end if;
-
-      if Config.Client_Host_Length = 0 then
-         Config.Client_Host := Config.Clients (1).Host;
-         Config.Client_Host_Length := Config.Clients (1).Host_Length;
-      end if;
-      Config.Client_Port := Config.Clients (1).Port;
-   end Finalize_Client_Table;
-
    procedure Validate_Node_Coverage (Config : Cluster_Configuration) is
    begin
       for SID in ServerID_Type range 1 .. Config.Server_Count loop
@@ -321,7 +248,6 @@ package body Cluster_Config is
       Result  : constant Read_Result := Load_File (Path);
       Root    : TOML_Value;
       Cluster : TOML_Value;
-      Client  : TOML_Value;
       Nodes   : TOML_Value;
    begin
       Config := (others => <>);
@@ -346,49 +272,6 @@ package body Cluster_Config is
          raise Config_Error with "cluster.servers not set in " & Path;
       end if;
 
-      Client := Root.Get_Or_Null ("client");
-      if Client.Is_Present then
-         Client := Require_Table (Client, "client");
-         if Client.Has ("host") then
-            Set_Host
-              (Config.Client_Host,
-               Config.Client_Host_Length,
-               As_Config_String (Client.Get ("host"), "client.host"));
-         end if;
-         if Client.Has ("port") then
-            Config.Client_Port :=
-              Port_Type
-                (As_Config_Integer (Client.Get ("port"), "client.port"));
-         end if;
-         if Client.Has ("name") then
-            Set_Name
-              (Config.Client_Name,
-               Config.Client_Name_Length,
-               As_Config_String (Client.Get ("name"), "client.name"));
-         end if;
-      end if;
-
-      if Config.Client_Host_Length = 0 then
-         Set_Host (Config.Client_Host, Config.Client_Host_Length, "127.0.0.1");
-      end if;
-
-      declare
-         Clients : constant TOML_Value := Root.Get_Or_Null ("clients");
-      begin
-         if Clients.Is_Present then
-            if Clients.Kind /= TOML_Array then
-               raise Config_Error with "clients must be an array";
-            end if;
-            if Clients.Length > Max_Clients then
-               raise Config_Error with "too many clients in configuration";
-            end if;
-            for I in 1 .. Clients.Length loop
-               Load_Client_Endpoint (Clients.Item (I), Config.Clients (I));
-            end loop;
-            Config.Client_Count := Clients.Length;
-         end if;
-      end;
-
       Nodes := Require_Key (Root, "nodes", "config");
       if Nodes.Kind /= TOML_Array then
          raise Config_Error with "nodes must be an array";
@@ -403,7 +286,6 @@ package body Cluster_Config is
       end loop;
 
       Validate_Node_Coverage (Config);
-      Finalize_Client_Table (Config);
       Load_Raft_Settings (Root, Config.Raft);
    end Load;
 
@@ -417,63 +299,6 @@ package body Cluster_Config is
       return Node.Host
         (Node.Host'First .. Node.Host'First + Node.Host_Length - 1);
    end Node_Host;
-
-   function Client_Host_Image (Config : Cluster_Configuration) return String is
-   begin
-      return Config.Client_Host (1 .. Config.Client_Host_Length);
-   end Client_Host_Image;
-
-   function Client_Sender_Name (Config : Cluster_Configuration) return String is
-   begin
-      if Config.Client_Name_Length > 0 then
-         return Config.Client_Name
-           (Config.Client_Name'First
-            .. Config.Client_Name'First + Config.Client_Name_Length - 1);
-      end if;
-      return "client";
-   end Client_Sender_Name;
-
-   function Client_Endpoint_Name
-     (Client : Client_Endpoint_Config) return String
-   is
-   begin
-      if Client.Name_Length = 0 then
-         raise Config_Error with "client endpoint name missing";
-      end if;
-      return Client.Name
-        (Client.Name'First .. Client.Name'First + Client.Name_Length - 1);
-   end Client_Endpoint_Name;
-
-   function Client_Endpoint_Host
-     (Client : Client_Endpoint_Config) return String
-   is
-   begin
-      if Client.Host_Length = 0 then
-         raise Config_Error with "client endpoint host missing";
-      end if;
-      return Client.Host
-        (Client.Host'First .. Client.Host'First + Client.Host_Length - 1);
-   end Client_Endpoint_Host;
-
-   function Configured_Client_Count
-     (Config : Cluster_Configuration) return Natural
-   is
-   begin
-      return Config.Client_Count;
-   end Configured_Client_Count;
-
-   function Client_Endpoint
-     (Config : Cluster_Configuration; Index : Positive)
-      return Client_Endpoint_Config
-   is
-   begin
-      if Index > Config.Client_Count then
-         raise Config_Error
-           with "client endpoint index out of range: "
-                & Positive'Image (Index);
-      end if;
-      return Config.Clients (Index);
-   end Client_Endpoint;
 
    function Server_Hostname (SID : ServerID_Type) return String is
    begin

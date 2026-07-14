@@ -14,7 +14,6 @@ procedure Raft_Server is
    Args             : Server_Args;
    Config           : Cluster_Configuration;
    Server_Id        : ServerID_Type;
-   Current_Epoch    : Natural := 0;
    Next_Audit_Epoch : Natural;
 
 begin
@@ -67,8 +66,8 @@ begin
    delay Duration (Server_Id) * Config.Raft.Epoch_Interval;
 
    loop
-      Process_Network_Round;
-      Current_Epoch := Current_Epoch + 1;
+      delay Config.Raft.Epoch_Interval
+        * Duration (Config.Raft.Audit_Interval_Epochs);
 
       if Current_Epoch >= Next_Audit_Epoch then
          Put_Line ("audit: " & Audit_Report);
@@ -89,8 +88,6 @@ begin
          Next_Audit_Epoch :=
            Current_Epoch + Natural (Config.Raft.Audit_Interval_Epochs);
       end if;
-
-      delay Config.Raft.Epoch_Interval;
    end loop;
 
 exception

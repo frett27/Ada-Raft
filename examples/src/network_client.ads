@@ -2,11 +2,14 @@ with Raft;             use Raft;
 with Raft.Messages;     use Raft.Messages;
 with Raft.Client;       use Raft.Client;
 with Cluster_Config;    use Cluster_Config;
+with Example_Config;   use Example_Config;
 
 package Network_Client is
 
    Cluster_Unreachable : exception;
-   procedure Initialize (Config : Cluster_Configuration);
+   procedure Initialize
+     (Config : Cluster_Configuration;
+      Settings : Client_Settings := Default_Client_Settings);
    procedure Shutdown;
 
    procedure Process_Inbound_Messages;

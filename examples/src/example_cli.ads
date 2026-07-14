@@ -1,3 +1,6 @@
+with GNAT.Sockets; use GNAT.Sockets;
+with Example_Config; use Example_Config;
+
 package Example_Cli is
 
    Max_Path_Length : constant := 256;
@@ -16,6 +19,7 @@ package Example_Cli is
    type Client_Args is record
       Config_Path : String (1 .. Max_Path_Length);
       Config_Len  : Natural := 0;
+      Client      : Client_Settings := Default_Client_Settings;
       Command     : Client_Command := None;
       Send_Value  : Integer := 0;
       Help        : Boolean := False;

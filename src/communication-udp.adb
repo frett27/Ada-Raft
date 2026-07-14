@@ -262,11 +262,26 @@ package body Communication.UDP is
       return null;
    end Find_Callback;
 
+   function Looks_Like_Server_Id (Name : Unbounded_String) return Boolean is
+      S : constant String := To_String (Name);
+   begin
+      if S'Length = 0 then
+         return False;
+      end if;
+      for C of S loop
+         if C not in '0' .. '9' then
+            return False;
+         end if;
+      end loop;
+      return True;
+   end Looks_Like_Server_Id;
+
    function Is_Client_Endpoint
      (H : UdpHub; Name : Unbounded_String) return Boolean
    is
+      pragma Unreferenced (H);
    begin
-      return Name = H.Client_Endpoint;
+      return not Looks_Like_Server_Id (Name);
    end Is_Client_Endpoint;
 
    function Is_Inter_Server_Send

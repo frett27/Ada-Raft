@@ -22,12 +22,7 @@ package Network_Node is
 
    procedure Shutdown;
 
-   procedure Run_Epoch_Step;
-
-   procedure Process_Inbound_Messages;
-
-   --  One epoch: drain RPCs, tick timers, drain responses (test order).
-   procedure Process_Network_Round;
+   function Current_Epoch return Natural;
 
    function Local_Node return Raft_Node_Access;
 

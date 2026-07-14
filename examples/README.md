@@ -28,7 +28,7 @@ Logs are written to `logs/node-{1,2,3}.log`.
 
 ## Client shell
 
-The client listens on port **9200** (see `[client]` in the cluster TOML). Start the cluster first, then open a client in another terminal.
+The client talks to nodes over **synchronous TCP** on ports **9301–9303** (raft port + 200). No client listener is required. Start the cluster first, then run `raft_client`.
 
 ### Start the shell
 
@@ -96,9 +96,11 @@ Run a single command and exit (useful for scripts):
 
 | File | Use |
 |------|-----|
-| `cluster.toml` | Local cluster and client (all on `127.0.0.1`) |
-| `cluster.host.toml` | Client on host talking to Docker-published ports |
+| `cluster.toml` | Local 3-node cluster (`127.0.0.1`) |
+| `cluster.host.toml` | Host client talking to Docker-published node ports |
 | `cluster.docker.toml` | Cluster inside Docker Compose |
+
+Client traffic uses synchronous TCP (`Send_Sync`) to node ports **raft_port + 200** (default 9301–9303). `--name` sets the sender hostname in the wire frame; `--port` and `--host` are legacy UDP options and are ignored by the TCP client.
 
 ### Raft parameters (`[raft]`)
 
@@ -171,8 +173,8 @@ raft_server -c <config.toml> -s <server-id>
 
 ```text
 raft_client -c <config.toml>                   interactive shell
-raft_client -c <config.toml> register
-raft_client -c <config.toml> send <integer>
+raft_client -c <config.toml> --port 9200 register
+raft_client -c <config.toml> --name client-a --port 9201 send <integer>
 raft_client -c <config.toml> audit
 ```
 

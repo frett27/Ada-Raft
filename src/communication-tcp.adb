@@ -305,11 +305,26 @@ package body Communication.TCP is
       return null;
    end Find_Callback;
 
+   function Looks_Like_Server_Id (Name : Unbounded_String) return Boolean is
+      S : constant String := To_String (Name);
+   begin
+      if S'Length = 0 then
+         return False;
+      end if;
+      for C of S loop
+         if C not in '0' .. '9' then
+            return False;
+         end if;
+      end loop;
+      return True;
+   end Looks_Like_Server_Id;
+
    function Is_Client_Endpoint
      (H : TcpHub; Name : Unbounded_String) return Boolean
    is
+      pragma Unreferenced (H);
    begin
-      return Name = H.Client_Endpoint;
+      return not Looks_Like_Server_Id (Name);
    end Is_Client_Endpoint;
 
    function Is_Inter_Server_Send
@@ -366,6 +381,34 @@ package body Communication.TCP is
    end Log_Network_Error;
 
    Incoming_Read_Timeout : constant Duration := 1.0;
+   Max_Sync_Frame        : constant Stream_Element_Offset := 16_384;
+
+   procedure Read_Frame
+     (Socket : Socket_Type;
+      Frame  : out Stream_Element_Array;
+      Last   : out Stream_Element_Offset)
+   is
+      Header   : Stream_Element_Array (1 .. Header_Size);
+      Body_Len : Stream_Element_Offset;
+      Frame_Body : access Stream_Element_Array;
+   begin
+      Read_Full (Socket, Header);
+      Body_Len := Stream_Element_Offset (From_BE32 (Header));
+      if Body_Len = 0 then
+         raise Network_IO_Error with "empty frame body";
+      end if;
+      if Header_Size + Body_Len > Max_Sync_Frame then
+         raise Network_IO_Error with "frame exceeds sync limit";
+      end if;
+      Frame_Body := new Stream_Element_Array (1 .. Body_Len);
+      Read_Full (Socket, Frame_Body.all);
+      Last := Header_Size + Body_Len;
+      if Stream_Element_Offset (Frame'Length) < Last then
+         raise Network_IO_Error with "response buffer too small";
+      end if;
+      Frame (1 .. Header_Size) := Header;
+      Frame (Header_Size + 1 .. Last) := Frame_Body.all;
+   end Read_Frame;
 
    procedure Safe_Close (Socket : in out Socket_Type) is
    begin
@@ -383,15 +426,16 @@ package body Communication.TCP is
    procedure Handle_Connection
      (Hub : TcpHub_Access; Client : in out Socket_Type; Peer : Sock_Addr_Type)
    is
-      Header     : Stream_Element_Array (1 .. Header_Size);
-      Frame_Body : access Stream_Element_Array;
-      Body_Len   : Stream_Element_Offset;
-      Frame      : access Stream_Element_Array;
-      Sender     : Unbounded_String;
-      Pay_Start  : Stream_Element_Offset;
-      Callback   : Message_Received_For_Host_Callback;
+      Sender      : Unbounded_String;
+      Pay_Start   : Stream_Element_Offset;
+      Callback    : Message_Received_For_Host_Callback;
       Sender_Link : Net_Link;
       Local_Link  : Net_Link;
+      Frame       : Stream_Element_Array (1 .. Max_Sync_Frame);
+      Frame_Last  : Stream_Element_Offset;
+      Response    : Stream_Element_Array (1 .. Max_Sync_Frame);
+      Resp_Last   : Stream_Element_Offset;
+      Found       : Boolean;
    begin
       if Client = No_Socket then
          return;
@@ -399,33 +443,43 @@ package body Communication.TCP is
 
       Apply_IO_Timeouts (Client, Incoming_Read_Timeout);
 
-      Read_Full (Client, Header);
-      Body_Len :=
-        Stream_Element_Offset (From_BE32 (Header));
-      if Body_Len = 0 then
-         raise Network_IO_Error with "empty frame body";
-      end if;
-      Frame_Body := new Stream_Element_Array (1 .. Body_Len);
-      Read_Full (Client, Frame_Body.all);
-
-      declare
-         Combined : Stream_Element_Array (1 .. Header_Size + Body_Len);
-      begin
-         Combined (1 .. Header_Size) := Header;
-         Combined (Header_Size + 1 .. Combined'Last) := Frame_Body.all;
-         Frame := new Stream_Element_Array'(Combined);
-      end;
-      Decode_Frame (Frame.all, Sender, Pay_Start);
+      Read_Frame (Client, Frame, Frame_Last);
+      Decode_Frame (Frame (1 .. Frame_Last), Sender, Pay_Start);
 
       if Hub.Audit_State /= null then
-         Record_Receive (Hub.Audit_State.all, Natural (Frame.all'Length));
+         Record_Receive (Hub.Audit_State.all, Natural (Frame_Last));
+      end if;
+
+      if Is_Client_Endpoint (Hub.all, Sender)
+        and then Hub.Sync_Handler /= null
+      then
+         Hub.Sync_Handler.all
+           (Sender,
+            Frame (Pay_Start .. Frame_Last),
+            Response,
+            Resp_Last,
+            Found);
+         if Found then
+            declare
+               Encoded : constant Stream_Element_Array :=
+                 Encode_Frame (Hub.Local_Hostname, Response (1 .. Resp_Last));
+            begin
+               Send_Full (Client, Encoded);
+               if Hub.Audit_State /= null then
+                  Record_Send
+                    (Hub.Audit_State.all, Natural (Encoded'Length));
+               end if;
+            end;
+         end if;
+         Safe_Close (Client);
+         return;
       end if;
 
       Callback := Find_Callback (Hub, Hub.Local_Hostname);
       if Callback /= null then
          declare
-            Payload : constant Stream_Element_Array :=
-              Frame.all (Pay_Start .. Frame.all'Last);
+            Request_Payload : constant Stream_Element_Array :=
+              Frame (Pay_Start .. Frame_Last);
          begin
             Sender_Link :=
               Make_Remote_Link (Net_Hub_Wide_Access (Hub), Sender);
@@ -434,7 +488,7 @@ package body Communication.TCP is
                 (HostName   => Hub.Local_Hostname,
                  Message_CB => Callback,
                  H          => Net_Hub_Wide_Access (Hub));
-            Callback.all (Sender_Link, Local_Link, Payload);
+            Callback.all (Sender_Link, Local_Link, Request_Payload);
          end;
       end if;
 
@@ -620,6 +674,74 @@ package body Communication.TCP is
    begin
       H.Client_Endpoint := To_Unbounded_String (Endpoint_Name);
    end Set_Client_Endpoint;
+
+   procedure Set_Sync_Request_Handler
+     (H : in out TcpHub; Handler : Sync_Request_Handler)
+   is
+   begin
+      H.Sync_Handler := Handler;
+   end Set_Sync_Request_Handler;
+
+   procedure Send_Sync
+     (L             : in out TcpHub;
+      Sender        : Net_Link;
+      To            : Net_Link;
+      Request       : Stream_Element_Array;
+      Response      : out Stream_Element_Array;
+      Response_Last : out Stream_Element_Offset;
+      Timeout       : Duration := 0.0)
+   is
+      Dest      : constant Node_Address := Find_Address (L, To.HostName);
+      Frame     : constant Stream_Element_Array :=
+        Encode_Frame (Sender.HostName, Request);
+      Client    : Socket_Type;
+      Client_Open : Boolean := False;
+      Endpoint  : constant Sock_Addr_Type :=
+        Network_Socket_Address (Host_To_Inet_Addr (Dest.Host), Dest.Port);
+      Pay_Start     : Stream_Element_Offset;
+      Sender_Name   : Unbounded_String;
+      Frame_Buffer  : Stream_Element_Array (1 .. Max_Sync_Frame);
+      Frame_Last    : Stream_Element_Offset;
+      Payload_Len   : Stream_Element_Offset;
+      Dest_Name     : constant String := To_String (To.HostName);
+   begin
+      Create_Socket (Client);
+      Client_Open := True;
+      Apply_IO_Timeouts (Client, Timeout);
+      Connect_With_Timeout (Client, Endpoint, Timeout);
+      Send_Full (Client, Frame);
+
+      Read_Frame (Client, Frame_Buffer, Frame_Last);
+      Decode_Frame (Frame_Buffer (1 .. Frame_Last), Sender_Name, Pay_Start);
+      Payload_Len := Frame_Last - Pay_Start + 1;
+      if Payload_Len > Response'Length then
+         raise Network_IO_Error with "response buffer too small";
+      end if;
+      Response (Response'First .. Response'First + Payload_Len - 1) :=
+        Frame_Buffer (Pay_Start .. Frame_Last);
+      Response_Last := Payload_Len;
+
+      Close_Socket (Client);
+
+      if L.Audit_State /= null then
+         Record_Send (L.Audit_State.all, Natural (Frame'Length));
+         Record_Receive (L.Audit_State.all, Natural (Frame_Last));
+      end if;
+   exception
+      when E : others =>
+         if Client_Open then
+            begin
+               Close_Socket (Client);
+            exception
+               when others => null;
+            end;
+         end if;
+         raise Network_IO_Error
+           with "sync send to "
+                & Dest_Name
+                & " failed: "
+                & Exception_Information (E);
+   end Send_Sync;
 
    overriding
    procedure Register

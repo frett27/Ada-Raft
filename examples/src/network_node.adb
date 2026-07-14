@@ -1,3 +1,4 @@
+with Ada.Calendar;          use Ada.Calendar;
 with Ada.Streams;           use Ada.Streams;
 with Ada.Text_IO;           use Ada.Text_IO;
 with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
@@ -18,10 +19,12 @@ with Raft.Comm;             use Raft.Comm;
 with Raft.Messages;         use Raft.Messages;
 with Communication;         use Communication;
 with Communication.UDP;     use Communication.UDP;
+with Communication.TCP;     use Communication.TCP;
 with GNAT.Sockets;          use GNAT.Sockets;
 with Raft.State_Machine;   use Raft.State_Machine;
 with Communication.Network_Audit; use Communication.Network_Audit;
 with Cluster_Config;         use Cluster_Config;
+with Example_Config;        use Example_Config;
 with Example_Commands;      use Example_Commands;
 with Raft.Snapshot;         use Raft.Snapshot;
 
@@ -34,25 +37,23 @@ package body Network_Node is
 
    Hub         : aliased UdpHub;
    Hub_Access  : Net_Hub_Wide_Access := Hub'Unchecked_Access;
+   Client_Hub  : aliased TcpHub;
+   Client_Hub_Access : Net_Hub_Wide_Access := Client_Hub'Unchecked_Access;
    NHBinding   : NetHub_Binding_Access;
    Node        : Raft_Node_Access;
    Net_Links   : ServerId_NetLink (1 .. Cluster_Config.Max_Nodes);
    Server_Num  : ServerID_Type := 0;
    Local_Id    : ServerID_Type := 0;
    Epoch_Number  : Natural := 0;
-   Client_Host : Unbounded_String;
-   Client_Port : Port_Type;
+
    Raft_Cfg    : Raft_Settings := Default_Raft_Settings;
-   Registered_Client_Names : array (1 .. Max_Clients) of Unbounded_String :=
-     (others => Null_Unbounded_String);
-   Registered_Client_Name_Count : Natural := 0;
 
    type Client_Route_Entry is record
       Client_Id : Client_Id_Type := NO_CLIENT_ID;
       Remote    : Unbounded_String := Null_Unbounded_String;
    end record;
 
-   Client_Routes : array (1 .. Max_Clients) of Client_Route_Entry :=
+   Client_Routes : array (1 .. MAX_CLIENT_SESSIONS) of Client_Route_Entry :=
      (others => <>);
    Pending_Register_Sender : Unbounded_String := Null_Unbounded_String;
    Default_Client_Remote   : Unbounded_String := Null_Unbounded_String;
@@ -68,6 +69,103 @@ package body Network_Node is
 
    Log_Progress_Epochs     : constant Natural := 40;
    Client_Send_Log_Sample  : constant Positive := 10;
+   Max_Sync_Response       : constant Stream_Element_Offset := 16_384;
+   Max_Client_Frame        : constant Stream_Element_Offset := 16_384;
+
+   --  TCP sync path: worker <-> client comms task (rendezvous per connection).
+   protected Client_Message_Box is
+      entry Submit_Request
+        (Sender  : Unbounded_String;
+         Request : Stream_Element_Array);
+      entry Accept_Request
+        (Sender       : out Unbounded_String;
+         Request      : out Stream_Element_Array;
+         Request_Last : out Stream_Element_Offset);
+      entry Submit_Response
+        (Response      : Stream_Element_Array;
+         Response_Last : Stream_Element_Offset;
+         Found         : Boolean);
+      entry Accept_Response
+        (Response      : out Stream_Element_Array;
+         Response_Last : out Stream_Element_Offset;
+         Found         : out Boolean);
+   private
+      Req_Pending  : Boolean := False;
+      Req_Sender   : Unbounded_String;
+      Req_Buffer   : Stream_Element_Array (1 .. Max_Client_Frame);
+      Req_Last     : Stream_Element_Offset;
+      Resp_Pending : Boolean := False;
+      Resp_Buffer  : Stream_Element_Array (1 .. Max_Client_Frame);
+      Resp_Last    : Stream_Element_Offset;
+      Resp_Found   : Boolean;
+   end Client_Message_Box;
+
+   --  Async mailbox: client comms task <-> raft node task.
+   protected Raft_Client_Mailbox is
+      entry Post_Request
+        (Sender       : Unbounded_String;
+         Request      : Stream_Element_Array;
+         Request_Last : Stream_Element_Offset);
+      entry Take_Request
+        (Sender       : out Unbounded_String;
+         Request      : out Stream_Element_Array;
+         Request_Last : out Stream_Element_Offset);
+
+      procedure Deliver_Response
+        (Response      : Stream_Element_Array;
+         Response_Last : Stream_Element_Offset;
+         Found         : Boolean);
+      entry Take_Response
+        (Response      : out Stream_Element_Array;
+         Response_Last : out Stream_Element_Offset;
+         Found         : out Boolean);
+   private
+      Req_Pending  : Boolean := False;
+      Req_Sender   : Unbounded_String;
+      Req_Buffer   : Stream_Element_Array (1 .. Max_Client_Frame);
+      Req_Last     : Stream_Element_Offset;
+      Resp_Pending : Boolean := False;
+      Resp_Buffer  : Stream_Element_Array (1 .. Max_Sync_Response);
+      Resp_Last    : Stream_Element_Offset;
+      Resp_Found   : Boolean;
+   end Raft_Client_Mailbox;
+
+   task Client_Comms_Task is
+      entry Start;
+   end Client_Comms_Task;
+
+   task Server_Comms_Task is
+      entry Start;
+      entry Send_To_Peer
+        (Remote : Unbounded_String; Payload : Stream_Element_Array);
+   end Server_Comms_Task;
+
+   task Raft_Node_Task is
+      entry Start;
+   end Raft_Node_Task;
+
+   type Client_Work_State is record
+      Active        : Boolean := False;
+      Ready         : Boolean := False;
+      Dispatched    : Boolean := False;
+      Sender        : Unbounded_String;
+      Request_Data  : Stream_Element_Array (1 .. Max_Client_Frame);
+      Request_Last  : Stream_Element_Offset := 0;
+      Deadline      : Time;
+      Response      : Stream_Element_Array (1 .. Max_Sync_Response);
+      Response_Last : Stream_Element_Offset := 0;
+      Found         : Boolean := False;
+   end record;
+
+   function Pending_Request_Message (Work : Client_Work_State)
+      return Message_Type'Class
+   is
+      Request_MB : aliased Message_Buffer_Type;
+   begin
+      From_Stream_Element_Array
+        (Work.Request_Data (1 .. Work.Request_Last), Request_MB);
+      return Message_Type'Class'Input (Request_MB'Access);
+   end Pending_Request_Message;
 
    Lock_Directory : constant String := "run";
    Lock_Path      : String (1 .. 128);
@@ -482,7 +580,7 @@ package body Network_Node is
       return Null_Unbounded_String;
    end Find_Client_Route;
 
-   Inbound_Queue_Size   : constant := 8192;
+   Server_Message_Box_Size : constant := 8192;
    Max_Drain_Rounds     : constant Positive := 16;
    Drain_Yield          : constant Duration := 0.001;
    --  Extra election delay while the cluster binds listeners (startup race).
@@ -509,9 +607,9 @@ package body Network_Node is
       Payload : Payload_Access;
    end record;
 
-   type Queue_Type is array (1 .. Inbound_Queue_Size) of Queue_Entry;
+   type Queue_Type is array (1 .. Server_Message_Box_Size) of Queue_Entry;
 
-   protected Inbound_Queue is
+   protected Server_Message_Box is
       procedure Enqueue (Sender : Unbounded_String; Payload : Payload_Access);
       procedure Dequeue
         (Sender : out Unbounded_String;
@@ -526,9 +624,9 @@ package body Network_Node is
       Dropped : Natural := 0;
 
       procedure Drop_Oldest;
-   end Inbound_Queue;
+   end Server_Message_Box;
 
-   protected body Inbound_Queue is
+   protected body Server_Message_Box is
 
       function Tail_Index return Positive is
       begin
@@ -605,7 +703,137 @@ package body Network_Node is
       begin
          return Dropped;
       end Dropped_Count;
-   end Inbound_Queue;
+   end Server_Message_Box;
+
+   protected body Client_Message_Box is
+
+      entry Submit_Request
+        (Sender  : Unbounded_String;
+         Request : Stream_Element_Array) when not Req_Pending
+      is
+      begin
+         Req_Sender := Sender;
+         if Stream_Element_Offset (Request'Length) > Req_Buffer'Last then
+            raise Constraint_Error with "client request too large";
+         end if;
+         if Request'Length > 0 then
+            Req_Buffer (1 .. Request'Length) := Request;
+         end if;
+         Req_Last := Stream_Element_Offset (Request'Length);
+         Req_Pending := True;
+      end Submit_Request;
+
+      entry Accept_Request
+        (Sender       : out Unbounded_String;
+         Request      : out Stream_Element_Array;
+         Request_Last : out Stream_Element_Offset) when Req_Pending
+      is
+      begin
+         Sender := Req_Sender;
+         Request := Req_Buffer;
+         Request_Last := Req_Last;
+         Req_Pending := False;
+      end Accept_Request;
+
+      entry Submit_Response
+        (Response      : Stream_Element_Array;
+         Response_Last : Stream_Element_Offset;
+         Found         : Boolean) when not Resp_Pending
+      is
+      begin
+         if Response_Last > Response'Last or else Response_Last > Resp_Buffer'Last
+         then
+            raise Constraint_Error with "client response too large";
+         end if;
+         if Response_Last > 0 then
+            Resp_Buffer (1 .. Response_Last) :=
+              Response (Response'First .. Response'First + Response_Last - 1);
+         end if;
+         Resp_Last := Response_Last;
+         Resp_Found := Found;
+         Resp_Pending := True;
+      end Submit_Response;
+
+      entry Accept_Response
+        (Response      : out Stream_Element_Array;
+         Response_Last : out Stream_Element_Offset;
+         Found         : out Boolean) when Resp_Pending
+      is
+      begin
+         Response := Resp_Buffer;
+         Response_Last := Resp_Last;
+         Found := Resp_Found;
+         Resp_Pending := False;
+      end Accept_Response;
+
+   end Client_Message_Box;
+
+   protected body Raft_Client_Mailbox is
+
+      entry Post_Request
+        (Sender       : Unbounded_String;
+         Request      : Stream_Element_Array;
+         Request_Last : Stream_Element_Offset) when not Req_Pending
+      is
+      begin
+         Req_Sender := Sender;
+         if Request_Last > Req_Buffer'Last then
+            raise Constraint_Error with "client request too large";
+         end if;
+         if Request_Last > 0 then
+            Req_Buffer (1 .. Request_Last) := Request (1 .. Request_Last);
+         end if;
+         Req_Last := Request_Last;
+         Req_Pending := True;
+      end Post_Request;
+
+      entry Take_Request
+        (Sender       : out Unbounded_String;
+         Request      : out Stream_Element_Array;
+         Request_Last : out Stream_Element_Offset) when Req_Pending
+      is
+      begin
+         Sender := Req_Sender;
+         Request := Req_Buffer;
+         Request_Last := Req_Last;
+         Req_Pending := False;
+      end Take_Request;
+
+      procedure Deliver_Response
+        (Response      : Stream_Element_Array;
+         Response_Last : Stream_Element_Offset;
+         Found         : Boolean)
+      is
+      begin
+         if Resp_Pending then
+            raise Program_Error with "client response slot busy";
+         end if;
+         if Response_Last > Response'Last or else Response_Last > Resp_Buffer'Last
+         then
+            raise Constraint_Error with "client response too large";
+         end if;
+         if Response_Last > 0 then
+            Resp_Buffer (1 .. Response_Last) :=
+              Response (Response'First .. Response'First + Response_Last - 1);
+         end if;
+         Resp_Last := Response_Last;
+         Resp_Found := Found;
+         Resp_Pending := True;
+      end Deliver_Response;
+
+      entry Take_Response
+        (Response      : out Stream_Element_Array;
+         Response_Last : out Stream_Element_Offset;
+         Found         : out Boolean) when Resp_Pending
+      is
+      begin
+         Response := Resp_Buffer;
+         Response_Last := Resp_Last;
+         Found := Resp_Found;
+         Resp_Pending := False;
+      end Take_Response;
+
+   end Raft_Client_Mailbox;
 
    procedure Set_Timer
      (Timer : Timer_Type; Counter : Natural)
@@ -647,29 +875,7 @@ package body Network_Node is
          return;
       end if;
 
-      begin
-         Communication.Send
-           (Net_Links (Local_Id),
-            Make_Remote_Link (Hub_Access, Remote),
-            Payload);
-      exception
-         when E : Network_IO_Error =>
-            Put_Line
-              ("network error node "
-               & ServerID_Type'Image (Local_Id)
-               & " -> "
-               & To_String (Remote)
-               & ": "
-               & Exception_Message (E));
-         when E : others =>
-            Put_Line
-              ("network error node "
-               & ServerID_Type'Image (Local_Id)
-               & " -> "
-               & To_String (Remote)
-               & ": "
-               & Exception_Information (E));
-      end;
+      Server_Comms_Task.Send_To_Peer (Remote, Payload);
    end Send_Outbound_Payload;
 
    procedure Send_Outbound_Message
@@ -683,12 +889,12 @@ package body Network_Node is
 
    function Is_Configured_Client (Sender : String) return Boolean is
    begin
-      for I in 1 .. Registered_Client_Name_Count loop
-         if Sender = To_String (Registered_Client_Names (I)) then
-            return True;
+      for SID in ServerID_Type range 1 .. Server_Num loop
+         if Sender = Server_Hostname (SID) then
+            return False;
          end if;
       end loop;
-      return Sender = Client_Sender_Name;
+      return True;
    end Is_Configured_Client;
 
    function Response_Client_Id (M : Message_Type'Class) return Client_Id_Type is
@@ -834,7 +1040,7 @@ package body Network_Node is
       pragma Unreferenced (To);
    begin
       Inbound_Enqueued := Inbound_Enqueued + 1;
-      Inbound_Queue.Enqueue (Get_Host_Name (From), Copy_To_Heap (Message));
+      Server_Message_Box.Enqueue (Get_Host_Name (From), Copy_To_Heap (Message));
    end Link_Callback;
 
    procedure Handle_Raft_Message
@@ -855,7 +1061,7 @@ package body Network_Node is
    end Handle_Raft_Message;
 
    procedure Report_Inbound_Drops is
-      Dropped : constant Natural := Inbound_Queue.Dropped_Count;
+      Dropped : constant Natural := Server_Message_Box.Dropped_Count;
    begin
       if Dropped > Last_Drop_Report then
          Put_Line
@@ -869,13 +1075,13 @@ package body Network_Node is
       end if;
    end Report_Inbound_Drops;
 
-   procedure Process_Inbound_Messages is
+   procedure Process_Server_Inbound is
       Sender  : Unbounded_String;
       Payload : Payload_Access;
       Found   : Boolean;
    begin
       loop
-         Inbound_Queue.Dequeue (Sender, Payload, Found);
+         Server_Message_Box.Dequeue (Sender, Payload, Found);
          exit when not Found;
 
          if Payload = null then
@@ -894,18 +1100,17 @@ package body Network_Node is
          null;
       end loop;
 
-      Enqueue_Client_Responses;
       Report_Inbound_Drops;
-   end Process_Inbound_Messages;
+   end Process_Server_Inbound;
 
-   procedure Drain_Inbound_Messages is
+   procedure Drain_Server_Messages is
    begin
       for Round in 1 .. Max_Drain_Rounds loop
-         Process_Inbound_Messages;
-         exit when Inbound_Queue.Is_Empty;
+         Process_Server_Inbound;
+         exit when Server_Message_Box.Is_Empty;
          delay Drain_Yield;
       end loop;
-   end Drain_Inbound_Messages;
+   end Drain_Server_Messages;
 
    procedure Run_Epoch_Step is
    begin
@@ -921,15 +1126,183 @@ package body Network_Node is
       end loop;
    end Run_Epoch_Step;
 
-   procedure Process_Network_Round is
+   function Is_Final_Client_Response
+     (Request_Msg, Response_Msg : Message_Type'Class) return Boolean
+   is
    begin
-      Drain_Inbound_Messages;
-      Run_Epoch_Step;
-      Drain_Inbound_Messages;
-      Epoch_Number := Epoch_Number + 1;
-      Log_Role_Change;
-      Log_Progress;
-   end Process_Network_Round;
+      if Request_Msg'Tag = Request_Register_Client'Tag then
+         return Response_Msg'Tag = Response_Register_Client'Tag;
+
+      elsif Request_Msg'Tag = Request_Send_Command'Tag then
+         if Response_Msg'Tag /= Response_Send_Command'Tag then
+            return False;
+         end if;
+
+         declare
+            Req : constant Request_Send_Command :=
+              Request_Send_Command (Request_Msg);
+            Res : constant Response_Send_Command :=
+              Response_Send_Command (Response_Msg);
+         begin
+            if Res.Not_Leader or else Res.Error then
+               return True;
+            end if;
+
+            return Res.Client_Id = Req.Client_Id
+              and then Res.Serial = Req.Serial
+              and then Res.Command_Committed;
+         end;
+      end if;
+
+      return True;
+   end Is_Final_Client_Response;
+
+   function Try_Take_Client_Inbox (Taken : out Boolean)
+      return Message_Type'Class
+   is
+   begin
+      Taken := False;
+      if Node = null or else Node.State.Client_Inbox = null then
+         return Request_Register_Client'(null record);
+      end if;
+
+      declare
+         M : Message_Type'Class :=
+           Message_Type'Class'Input (Node.State.Client_Inbox);
+      begin
+         Taken := True;
+         return M;
+      end;
+   exception
+      when Ada.IO_Exceptions.End_Error =>
+         return Request_Register_Client'(null record);
+   end Try_Take_Client_Inbox;
+
+   procedure Serialize_Client_Response
+     (M             : Message_Type'Class;
+      Response      : out Stream_Element_Array;
+      Response_Last : out Stream_Element_Offset)
+   is
+      MB : aliased Message_Buffer_Type;
+   begin
+      Message_Type'Class'Output (MB'Access, M);
+      declare
+         Bytes : constant Stream_Element_Array := To_Stream_Element_Array (MB);
+      begin
+         if Stream_Element_Offset (Bytes'Length) > Response'Length then
+            raise Constraint_Error with "sync response too large";
+         end if;
+         Response (Response'First .. Response'First + Bytes'Length - 1) :=
+           Bytes;
+         Response_Last := Stream_Element_Offset (Bytes'Length);
+      end;
+   end Serialize_Client_Response;
+
+   procedure Return_Client_Inbox (M : Message_Type'Class) is
+   begin
+      if Node /= null and then Node.State.Client_Inbox /= null then
+         Message_Type'Class'Output (Node.State.Client_Inbox, M);
+      end if;
+   end Return_Client_Inbox;
+
+   function Poll_Final_Client_Response (Work : in out Client_Work_State)
+      return Boolean
+   is
+      Request_Msg : constant Message_Type'Class :=
+        Pending_Request_Message (Work);
+   begin
+      loop
+         declare
+            Taken : Boolean;
+            Reply : Message_Type'Class := Try_Take_Client_Inbox (Taken);
+         begin
+            exit when not Taken;
+
+            if Is_Final_Client_Response (Request_Msg, Reply) then
+               Serialize_Client_Response
+                 (Reply, Work.Response, Work.Response_Last);
+               return True;
+            end if;
+
+            Return_Client_Inbox (Reply);
+         end;
+      end loop;
+
+      return False;
+   end Poll_Final_Client_Response;
+
+   procedure Begin_Client_Work
+     (Sender  : Unbounded_String;
+      Request : Stream_Element_Array;
+      Work    : out Client_Work_State)
+   is
+   begin
+      Work.Active        := True;
+      Work.Ready         := False;
+      Work.Dispatched    := False;
+      Work.Found         := False;
+      Work.Sender        := Sender;
+      Work.Deadline      := Clock + Client_Timeout_S;
+      Work.Response_Last := 0;
+      if Stream_Element_Offset (Request'Length) > Work.Request_Data'Last then
+         raise Constraint_Error with "client request too large";
+      end if;
+      if Request'Length > 0 then
+         Work.Request_Data (1 .. Request'Length) := Request;
+      end if;
+      Work.Request_Last := Stream_Element_Offset (Request'Length);
+   end Begin_Client_Work;
+
+   procedure Step_Client_Work (Work : in out Client_Work_State) is
+   begin
+      if Work.Ready then
+         return;
+      end if;
+
+      if not Work.Dispatched then
+         Handle_Raft_Message
+           (Work.Sender, Work.Request_Data (1 .. Work.Request_Last));
+         Work.Dispatched := True;
+
+         if Poll_Final_Client_Response (Work) then
+            Work.Found := True;
+            Work.Ready := True;
+            return;
+         end if;
+      end if;
+
+      if Clock >= Work.Deadline then
+         Work.Ready := True;
+         Work.Found := False;
+         return;
+      end if;
+
+      if Poll_Final_Client_Response (Work) then
+         Work.Found := True;
+         Work.Ready := True;
+      end if;
+   end Step_Client_Work;
+
+   procedure Client_Sync_Handler
+     (Sender        : Unbounded_String;
+      Request       : Stream_Element_Array;
+      Response      : out Stream_Element_Array;
+      Response_Last : out Stream_Element_Offset;
+      Found         : out Boolean)
+   is
+      Full_Response : Stream_Element_Array (1 .. Max_Sync_Response);
+   begin
+      Client_Message_Box.Submit_Request (Sender, Request);
+      Client_Message_Box.Accept_Response
+        (Full_Response, Response_Last, Found);
+      if Response_Last > Response'Length then
+         raise Constraint_Error with "sync response too large";
+      end if;
+      if Response_Last > 0 then
+         Response (Response'First .. Response'First + Response_Last - 1) :=
+           Full_Response (1 .. Response_Last);
+      end if;
+   end Client_Sync_Handler;
 
    procedure Configure_Addresses (Config : Cluster_Configuration) is
    begin
@@ -954,20 +1327,32 @@ package body Network_Node is
             end if;
          end;
       end loop;
+   end Configure_Addresses;
 
-      for I in 1 .. Configured_Client_Count (Config) loop
+   procedure Configure_Client_Addresses (Config : Cluster_Configuration) is
+   begin
+      for SID in ServerID_Type range 1 .. Config.Server_Count loop
          declare
-            Client : constant Client_Endpoint_Config :=
-              Client_Endpoint (Config, I);
+            Found : Boolean := False;
          begin
-            Configure_Address
-              (Hub,
-               To_Unbounded_String (Client_Endpoint_Name (Client)),
-               (Host => To_Unbounded_String (Client_Endpoint_Host (Client)),
-                Port => Client.Port));
+            for I in Config.Nodes'Range loop
+               if Config.Nodes (I).Id = SID then
+                  Configure_Address
+                    (Client_Hub,
+                     To_Unbounded_String (Server_Hostname (SID)),
+                     (Host => To_Unbounded_String (Node_Host (Config.Nodes (I))),
+                      Port => Client_API_Port (Config.Nodes (I).Port)));
+                  Found := True;
+                  exit;
+               end if;
+            end loop;
+            if not Found then
+               raise Config_Error
+                 with "missing node entry for server id " & SID'Image;
+            end if;
          end;
       end loop;
-   end Configure_Addresses;
+   end Configure_Client_Addresses;
 
    procedure Initialize
      (Config : Cluster_Configuration; Server_Id : ServerID_Type)
@@ -981,24 +1366,11 @@ package body Network_Node is
       Local_Id       := Server_Id;
       Set_Lock_Path (Local_Id);
       Raft_Cfg       := Config.Raft;
-      Client_Host    := To_Unbounded_String (Client_Host_Image (Config));
-      Client_Port    := Config.Client_Port;
       Epoch_Number   := 0;
       Last_Drop_Report := 0;
       Client_Routes := (others => <>);
       Pending_Register_Sender := Null_Unbounded_String;
-      Registered_Client_Name_Count := Config.Client_Count;
-
-      for I in 1 .. Registered_Client_Name_Count loop
-         Registered_Client_Names (I) :=
-           To_Unbounded_String (Client_Endpoint_Name (Config.Clients (I)));
-      end loop;
-
-      if Registered_Client_Name_Count > 0 then
-         Default_Client_Remote := Registered_Client_Names (1);
-      else
-         Default_Client_Remote := To_Unbounded_String (Client_Sender_Name);
-      end if;
+      Default_Client_Remote := To_Unbounded_String (Client_Sender_Name);
 
       Set_Compact_Threshold (Raft_Cfg.Compact_Threshold);
       Set_Compact_Log_Retention (Raft_Cfg.Compact_Log_Retention);
@@ -1006,14 +1378,16 @@ package body Network_Node is
       Ada.Numerics.Float_Random.Reset (Gen);
 
       Create_Hub (Hub);
-      if Registered_Client_Name_Count > 0 then
-         Set_Client_Endpoint
-           (Hub, To_String (Registered_Client_Names (1)));
-      else
-         Set_Client_Endpoint (Hub, Client_Sender_Name);
-      end if;
       Set_Inter_Server_Timeout (Hub, Raft_Cfg.Inter_Server_Timeout);
       Configure_Addresses (Config);
+
+      Create_Hub (Client_Hub);
+      Register
+        (Client_Hub,
+         To_Unbounded_String (Server_Hostname (Local_Id)),
+         Link_Callback'Unrestricted_Access);
+      Set_Sync_Request_Handler (Client_Hub, Client_Sync_Handler'Access);
+      Configure_Client_Addresses (Config);
 
       for SID in 1 .. Server_Num loop
          if SID = Local_Id then
@@ -1024,7 +1398,7 @@ package body Network_Node is
                Net_Links (SID));
          else
             Net_Links (SID) :=
-              Make_Remote_Link
+              Communication.UDP.Make_Remote_Link
                 (Hub_Access, To_Unbounded_String (Server_Hostname (SID)));
          end if;
       end loop;
@@ -1048,10 +1422,7 @@ package body Network_Node is
 
       Last_Logged_Role := Node.State.Current_Raft_State;
       if Verbose_Logging then
-         Node_Log
-           ("verbose logging on, registered "
-            & Natural'Image (Registered_Client_Name_Count)
-            & " client endpoint(s)");
+         Node_Log ("verbose logging on");
       else
          Node_Log
            ("logging client traffic (every "
@@ -1071,19 +1442,30 @@ package body Network_Node is
                  (Hub,
                   Config.Nodes (I).Port,
                   Allow_Port_Reuse => False);
+               Start_Listener
+                 (Client_Hub, Client_API_Port (Config.Nodes (I).Port));
+               Node_Log
+                 ("client sync TCP listening on port "
+                  & Port_Type'Image (Client_API_Port (Config.Nodes (I).Port)));
             exception
-               when E : Network_IO_Error =>
+               when E : Communication.UDP.Network_IO_Error
+                 | Communication.TCP.Network_IO_Error =>
                   Release_Instance_Lock;
                   raise Server_Instance_Error with Exception_Message (E);
             end;
             exit;
          end if;
       end loop;
+
+      Server_Comms_Task.Start;
+      Client_Comms_Task.Start;
+      Raft_Node_Task.Start;
    end Initialize;
 
    procedure Shutdown is
    begin
       Release_Instance_Lock;
+      Communication.TCP.Shutdown (Client_Hub);
       Communication.UDP.Shutdown (Hub);
    end Shutdown;
 
@@ -1120,5 +1502,124 @@ package body Network_Node is
    begin
       return Server_Num;
    end Server_Count;
+
+   function Current_Epoch return Natural is
+   begin
+      return Epoch_Number;
+   end Current_Epoch;
+
+   task body Client_Comms_Task is
+   begin
+      accept Start;
+      loop
+         declare
+            Sender        : Unbounded_String;
+            Request       : Stream_Element_Array (1 .. Max_Client_Frame);
+            Request_Last  : Stream_Element_Offset;
+            Response      : Stream_Element_Array (1 .. Max_Sync_Response);
+            Response_Last : Stream_Element_Offset;
+            Found         : Boolean;
+         begin
+            Client_Message_Box.Accept_Request (Sender, Request, Request_Last);
+            Raft_Client_Mailbox.Post_Request
+              (Sender, Request (1 .. Request_Last), Request_Last);
+            Raft_Client_Mailbox.Take_Response
+              (Response, Response_Last, Found);
+            Client_Message_Box.Submit_Response
+              (Response (1 .. Response'Last), Response_Last, Found);
+         end;
+      end loop;
+   end Client_Comms_Task;
+
+   task body Server_Comms_Task is
+   begin
+      accept Start;
+      loop
+         accept Send_To_Peer
+           (Remote : Unbounded_String; Payload : Stream_Element_Array)
+         do
+            if Local_Id >= 1 and then Local_Id <= Server_Num then
+               begin
+                  Communication.Send
+                    (Net_Links (Local_Id),
+                     Communication.UDP.Make_Remote_Link (Hub_Access, Remote),
+                     Payload);
+               exception
+                  when E : Communication.UDP.Network_IO_Error =>
+                     Put_Line
+                       ("network error node "
+                        & ServerID_Type'Image (Local_Id)
+                        & " -> "
+                        & To_String (Remote)
+                        & ": "
+                        & Exception_Message (E));
+                  when E : others =>
+                     Put_Line
+                       ("network error node "
+                        & ServerID_Type'Image (Local_Id)
+                        & " -> "
+                        & To_String (Remote)
+                        & ": "
+                        & Exception_Information (E));
+               end;
+            end if;
+         end Send_To_Peer;
+      end loop;
+   end Server_Comms_Task;
+
+   task body Raft_Node_Task is
+      Next_Epoch    : Time;
+      Work          : Client_Work_State;
+      Local_Sender  : Unbounded_String;
+      Local_Request : Stream_Element_Array (1 .. Max_Client_Frame);
+      Local_Last    : Stream_Element_Offset;
+   begin
+      accept Start;
+      Next_Epoch := Clock + Raft_Cfg.Epoch_Interval;
+      loop
+         if Work.Active then
+            Drain_Server_Messages;
+         else
+            Process_Server_Inbound;
+         end if;
+
+         if Clock >= Next_Epoch then
+            Run_Epoch_Step;
+            Epoch_Number := Epoch_Number + 1;
+            Log_Role_Change;
+            Log_Progress;
+            Next_Epoch := Clock + Raft_Cfg.Epoch_Interval;
+         end if;
+
+         if Work.Active then
+            if not Work.Ready then
+               Step_Client_Work (Work);
+            end if;
+
+            if Work.Ready then
+               Raft_Client_Mailbox.Deliver_Response
+                 (Work.Response (1 .. Work.Response'Last),
+                  Work.Response_Last,
+                  Work.Found);
+               Work.Active     := False;
+               Work.Ready      := False;
+               Work.Dispatched := False;
+            end if;
+         end if;
+
+         if not Work.Active then
+            select
+               Raft_Client_Mailbox.Take_Request
+                 (Local_Sender, Local_Request, Local_Last);
+               Begin_Client_Work
+                 (Local_Sender, Local_Request (1 .. Local_Last), Work);
+            or
+               delay Loop_Interval;
+            end select;
+         else
+            delay 0.001;
+         end if;
+      end loop;
+   end Raft_Node_Task;
 
 end Network_Node;

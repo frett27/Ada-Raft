@@ -192,7 +192,7 @@ begin
    end if;
 
    Load (Config_Image (Config_Args), Config);
-   Initialize (Config);
+   Initialize (Config, Config_Args.Client);
 
    if Script.Count = 0 then
       Run_Shell;

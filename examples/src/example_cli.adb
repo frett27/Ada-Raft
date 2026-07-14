@@ -3,6 +3,8 @@ with Ada.Command_Line; use Ada.Command_Line;
 with Ada.Strings;       use Ada.Strings;
 with Ada.Strings.Fixed; use Ada.Strings.Fixed;
 with Ada.Characters.Latin_1; use Ada.Characters.Latin_1;
+with GNAT.Sockets;      use GNAT.Sockets;
+with Example_Config;    use Example_Config;
 
 package body Example_Cli is
 
@@ -46,6 +48,48 @@ package body Example_Cli is
                                .. Args.Config_Path'First + Args.Config_Len - 1);
    end Config_Image;
 
+   procedure Set_Client_Name
+     (Into : in out Client_Settings; Value : String)
+   is
+   begin
+      if Value'Length > Into.Name'Length then
+         raise Parse_Error with "client name too long: " & Value;
+      end if;
+      if Value'Length = 0 then
+         raise Parse_Error with "empty client name";
+      end if;
+      Into.Name (Into.Name'First .. Into.Name'First + Value'Length - 1) :=
+        Value;
+      Into.Name_Length := Value'Length;
+   end Set_Client_Name;
+
+   procedure Set_Client_Host
+     (Into : in out Client_Settings; Value : String)
+   is
+   begin
+      if Value'Length > Into.Host'Length then
+         raise Parse_Error with "client host too long: " & Value;
+      end if;
+      if Value'Length = 0 then
+         raise Parse_Error with "empty client host";
+      end if;
+      Into.Host (Into.Host'First .. Into.Host'First + Value'Length - 1) :=
+        Value;
+      Into.Host_Length := Value'Length;
+   end Set_Client_Host;
+
+   procedure Set_Client_Port
+     (Into : in out Client_Settings; Value : String)
+   is
+      Port_Int : Integer;
+   begin
+      Port_Int := Integer'Value (Trim (Value, Both));
+      if Port_Int <= 0 or else Port_Int > Integer (Port_Type'Last) then
+         raise Parse_Error with "invalid client port: " & Value;
+      end if;
+      Into.Port := Port_Type (Port_Int);
+   end Set_Client_Port;
+
    procedure Print_Server_Usage is
    begin
       Put_Line ("usage: raft_server [options]");
@@ -61,6 +105,9 @@ package body Example_Cli is
       Put_Line ("usage: raft_client [options] [command]");
       Put_Line ("options:");
       Put_Line ("  -c, --config PATH      cluster TOML configuration file");
+      Put_Line ("      --name NAME        client sender name (default: client)");
+      Put_Line ("      --host HOST        client listen address (default: 127.0.0.1)");
+      Put_Line ("      --port PORT        client UDP listen port (default: 9200)");
       Put_Line ("  -h, --help             show this help");
       Put_Line ("commands:");
       Put_Line ("  register               open a client session with the leader");
@@ -347,6 +394,15 @@ package body Example_Cli is
                Args.Help := True;
             elsif Arg = "-c" or else Arg = "--config" then
                Set_Config (Args.Config_Path, Args.Config_Len, Option_Value (I));
+               I := I + 1;
+            elsif Arg = "--name" then
+               Set_Client_Name (Args.Client, Option_Value (I));
+               I := I + 1;
+            elsif Arg = "--host" then
+               Set_Client_Host (Args.Client, Option_Value (I));
+               I := I + 1;
+            elsif Arg = "--port" then
+               Set_Client_Port (Args.Client, Option_Value (I));
                I := I + 1;
             elsif Is_Option (Arg) then
                raise Parse_Error with "unknown option: " & Arg;
