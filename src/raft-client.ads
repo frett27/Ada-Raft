@@ -79,6 +79,13 @@ package Raft.Client is
 
    function Has_Leader (C : Raft_Client) return Boolean;
 
+   procedure Prepare_Register
+     (C : in out Raft_Client; First_Probe : ServerID_Type);
+
+   procedure Advance_Probe_Server (C : in out Raft_Client);
+
+   procedure Send_Register_Probe (C : in out Raft_Client);
+
    procedure Start_Register (C : in out Raft_Client);
 
    procedure Start_Send_Command (C : in out Raft_Client; Cmd : Command_Type);

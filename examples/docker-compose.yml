@@ -9,9 +9,9 @@
 #   ./bin/raft_client -c cluster.host.toml audit
 #
 # Published ports (host -> container):
-#   9101 -> raft-node-1
-#   9102 -> raft-node-2
-#   9103 -> raft-node-3
+#   9101-9103  Raft UDP
+#   9301-9303  client sync TCP (raft port + 200)
+#   9401-9403  audit/monitor TCP (raft port + 300)
 #
 # The client listens on host port 9200; containers reach it via host.docker.internal.
 
@@ -31,6 +31,8 @@ services:
       - "1"
     ports:
       - "9101:9101"
+      - "9301:9301"
+      - "9401:9401"
     networks:
       - raft
     extra_hosts:
@@ -49,6 +51,8 @@ services:
       - "2"
     ports:
       - "9102:9102"
+      - "9302:9302"
+      - "9402:9402"
     networks:
       - raft
     extra_hosts:
@@ -67,6 +71,8 @@ services:
       - "3"
     ports:
       - "9103:9103"
+      - "9303:9303"
+      - "9403:9403"
     networks:
       - raft
     extra_hosts:

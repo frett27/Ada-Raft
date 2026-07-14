@@ -1,0 +1,6 @@
+=== cluster snapshot 2026-07-14 13:28:15 ===
+node 1 role=LEADER epoch= 64 pending= 4 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 0
+node 2 role=FOLLOWER epoch= 57 pending= 0 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 0
+node 3 role=FOLLOWER epoch= 51 pending= 0 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 0
+verdict: HEALTHY: single leader, reachable= 3 epoch_spread= 13
+leader_app_sum= 0

@@ -10,6 +10,9 @@ package Example_Config is
 
    Client_Timeout_S : constant Duration := 10.0;
 
+   --  Per-server TCP timeout while probing for registration/reconnect.
+   Client_Probe_Timeout_S : constant Duration := 2.0;
+
    --  Leader drops client sessions with no RPC activity for this long.
    Client_Session_Inactivity_S : constant Duration := 10.0;
 
@@ -24,7 +27,14 @@ package Example_Config is
    --  Dedicated synchronous client TCP port = raft node port + offset.
    Client_TCP_Port_Offset : constant := 200;
 
+   --  Read-only audit/monitor TCP port = raft node port + offset.
+   Audit_TCP_Port_Offset : constant := 300;
+   Audit_Endpoint_Name : constant String := "monitor";
+   Audit_Query_Timeout_S : constant Duration := 2.0;
+
    function Client_API_Port (Raft_Port : Port_Type) return Port_Type;
+
+   function Audit_Port (Raft_Port : Port_Type) return Port_Type;
 
    Max_Client_Name_Length : constant := 32;
    Max_Client_Host_Length : constant := 64;
@@ -45,6 +55,9 @@ package Example_Config is
 
    function Client_API_Port (Raft_Port : Port_Type) return Port_Type is
       (Raft_Port + Port_Type (Client_TCP_Port_Offset));
+
+   function Audit_Port (Raft_Port : Port_Type) return Port_Type is
+      (Raft_Port + Port_Type (Audit_TCP_Port_Offset));
 
    --  Raft timers in epochs (decremented once per Run_Epoch_Step).
    Election_Heartbeat_Ratio  : constant Positive := 4;

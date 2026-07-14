@@ -32,6 +32,10 @@ package Network_Node is
 
    function Audit_Report return String;
 
+   function Client_Audit_Report return String;
+
+   function Status_Report return String;
+
    function Server_Count return ServerID_Type;
 
 end Network_Node;

@@ -1,6 +1,7 @@
 with GNAT.Sockets; use GNAT.Sockets;
 with Ada.Calendar; use Ada.Calendar;
 with Raft;       use Raft;
+with Example_Config; use Example_Config;
 
 package Cluster_Config is
 
@@ -10,10 +11,11 @@ package Cluster_Config is
    subtype Host_String is String (1 .. Max_Host_Length);
 
    type Node_Config is record
-      Id   : ServerID_Type;
-      Host : Host_String;
+      Id         : ServerID_Type;
+      Host       : Host_String;
       Host_Length : Natural := 0;
-      Port : Port_Type;
+      Port       : Port_Type;
+      Audit_Port : Port_Type := 0;
    end record;
 
    type Node_Config_Table is array (1 .. Max_Nodes) of Node_Config;
@@ -45,5 +47,10 @@ package Cluster_Config is
    function Node_Host (Node : Node_Config) return String;
 
    function Server_Hostname (SID : ServerID_Type) return String;
+
+   function Node_Audit_Port (Node : Node_Config) return Port_Type;
+
+   function Find_Node
+     (Config : Cluster_Configuration; SID : ServerID_Type) return Node_Config;
 
 end Cluster_Config;

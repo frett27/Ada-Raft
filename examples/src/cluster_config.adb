@@ -218,7 +218,39 @@ package body Cluster_Config is
          Node.Host_Length,
          As_Config_String
            (Require_Key (Table, "host", "nodes"), "nodes.host"));
+
+      Node.Audit_Port := 0;
+      declare
+         Item : constant TOML_Value := Table.Get_Or_Null ("audit_port");
+      begin
+         if Item.Is_Present then
+            Node.Audit_Port :=
+              Port_Type (As_Config_Integer (Item, "nodes.audit_port"));
+         end if;
+      end;
    end Load_Node;
+
+   function Node_Audit_Port (Node : Node_Config) return Port_Type is
+   begin
+      if Node.Audit_Port /= 0 then
+         return Node.Audit_Port;
+      end if;
+      return Example_Config.Audit_Port (Node.Port);
+   end Node_Audit_Port;
+
+   function Find_Node
+     (Config : Cluster_Configuration; SID : ServerID_Type) return Node_Config
+   is
+   begin
+      for I in Config.Nodes'Range loop
+         exit when Config.Nodes (I).Id = 0;
+         if Config.Nodes (I).Id = SID then
+            return Config.Nodes (I);
+         end if;
+      end loop;
+      raise Config_Error
+        with "missing node entry for server id " & Trim (SID'Image, Left);
+   end Find_Node;
 
    procedure Validate_Node_Coverage (Config : Cluster_Configuration) is
    begin

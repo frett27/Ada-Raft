@@ -8,7 +8,7 @@ maintainers-logins = ["frett27"]
 licenses = "MIT OR Apache-2.0 WITH LLVM-exception"
 website = ""
 
-executables = ["raft_server", "raft_client"]
+executables = ["raft_server", "raft_client", "raft_monitor"]
 
 [[depends-on]]
 raft = "*"

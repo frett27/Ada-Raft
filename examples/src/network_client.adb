@@ -25,8 +25,9 @@ package body Network_Client is
    Inbox      : aliased Response_Inbox;
    Server_Num : ServerID_Type := 0;
    Net_Links  : ServerId_NetLink (1 .. Cluster_Config.Max_Nodes);
-   Local_Link : Net_Link;
-   Ready      : Boolean := False;
+   Local_Link  : Net_Link;
+   Ready       : Boolean := False;
+   Probe_Round : Natural := 0;
 
    procedure Link_Callback
      (From, To : in Net_Link; Message : in Stream_Element_Array)
@@ -36,6 +37,32 @@ package body Network_Client is
       null;
    end Link_Callback;
 
+   function First_Probe_Server return ServerID_Type is
+   begin
+      Probe_Round := Probe_Round + 1;
+      return
+        1 + ServerID_Type ((Probe_Round - 1) mod Natural (Server_Num));
+   end First_Probe_Server;
+
+   procedure Run_Register_Until_Deadline (Deadline : Time) is
+   begin
+      while Clock < Deadline loop
+         exit when Register_Complete (Client);
+
+         declare
+            Done : Boolean := Poll (Client);
+         begin
+            pragma Unreferenced (Done);
+         end;
+
+         if Phase (Client) = Registering then
+            Send_Register_Probe (Client);
+         end if;
+
+         delay Loop_Interval;
+      end loop;
+   end Run_Register_Until_Deadline;
+
    procedure Client_Send_To_Server
      (To : ServerID_Type; M : Message_Type'Class)
    is
@@ -43,7 +70,12 @@ package body Network_Client is
       Response_MB : aliased Message_Buffer_Type;
       Response    : Stream_Element_Array (1 .. Max_Response_Msg);
       Resp_Last   : Stream_Element_Offset;
+      Timeout     : Duration := Client_Timeout_S;
    begin
+      if Phase (Client) = Registering then
+         Timeout := Client_Probe_Timeout_S;
+      end if;
+
       Message_Type'Class'Output (Request_MB'Access, M);
       Send_Sync
         (Hub,
@@ -52,13 +84,18 @@ package body Network_Client is
          To_Stream_Element_Array (Request_MB),
          Response,
          Resp_Last,
-         Client_Timeout_S);
+         Timeout);
 
       From_Stream_Element_Array (Response (1 .. Resp_Last), Response_MB);
       Deliver
         (Inbox, Message_Type'Class'Input (Response_MB'Access));
    exception
       when E : Network_IO_Error =>
+         if Phase (Client) = Registering then
+            Advance_Probe_Server (Client);
+            return;
+         end if;
+
          raise Cluster_Unreachable
            with "sync TCP to server " & ServerID_Type'Image (To)
                 & " failed: "
@@ -161,15 +198,13 @@ package body Network_Client is
          return Reconnect_To_Leader;
       end if;
 
-      Start_Register (Client);
-      while Clock < Deadline loop
-         exit when Poll (Client);
-         delay Loop_Interval;
-      end loop;
+      if Phase (Client) /= Idle then
+         Abort_In_Flight_Operation (Client);
+      end if;
+
+      Prepare_Register (Client, First_Probe_Server);
+      Run_Register_Until_Deadline (Deadline);
       return Register_Complete (Client);
-   exception
-      when Cluster_Unreachable =>
-         return False;
    end Register_With_Cluster;
 
    function Is_Registered return Boolean is
@@ -191,10 +226,23 @@ package body Network_Client is
    end Ensure_Registered;
 
    function Reconnect_To_Leader return Boolean is
-      Max_Rounds : constant Natural :=
-        Natural (Float (Client_Timeout_S / Loop_Interval) + 1.0);
+      Deadline : constant Time := Clock + Client_Timeout_S;
    begin
-      Raft.Client.Reconnect_To_Leader (Client, Max_Rounds);
+      if Register_Complete (Client) then
+         return True;
+      end if;
+
+      if Client_Id (Client) = NO_CLIENT_ID then
+         return Register_With_Cluster;
+      end if;
+
+      if Phase (Client) /= Idle then
+         Abort_In_Flight_Operation (Client);
+      end if;
+
+      Forget_Leader (Client);
+      Prepare_Register (Client, First_Probe_Server);
+      Run_Register_Until_Deadline (Deadline);
       return Register_Complete (Client);
    exception
       when Client_No_Leader | Client_Timeout =>

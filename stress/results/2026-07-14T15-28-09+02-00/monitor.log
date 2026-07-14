@@ -1,0 +1,60 @@
+=== cluster snapshot 2026-07-14 13:28:15 ===
+node 1 role=LEADER epoch= 67 pending= 5 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 0
+node 2 role=FOLLOWER epoch= 61 pending= 0 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 0
+node 3 role=FOLLOWER epoch= 55 pending= 0 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 0
+verdict: HEALTHY: single leader, reachable= 3 epoch_spread= 12
+leader_app_sum= 0
+=== cluster snapshot 2026-07-14 13:28:17 ===
+node 1 role=LEADER epoch= 105 pending= 14 in_flight= 0/ 8 sends= 211 responses= 0 app_sum= 6500129 OVERLOADED
+node 2 role=FOLLOWER epoch= 100 pending= 5 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 6500129
+node 3 role=FOLLOWER epoch= 94 pending= 5 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 6500129
+verdict: WARNING: overload signals on  1 node(s)
+leader_app_sum= 6500129
+=== cluster snapshot 2026-07-14 13:28:19 ===
+node 1 role=LEADER epoch= 144 pending= 15 in_flight= 0/ 8 sends= 1364 responses= 0 app_sum= 6500129 OVERLOADED
+node 2 role=FOLLOWER epoch= 138 pending= 5 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 6500129
+node 3 role=FOLLOWER epoch= 133 pending= 4 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 6500129
+verdict: WARNING: overload signals on  1 node(s)
+leader_app_sum= 6500129
+=== cluster snapshot 2026-07-14 13:28:21 ===
+node 1 role=LEADER epoch= 183 pending= 18 in_flight= 0/ 8 sends= 2645 responses= 0 app_sum= 6500129 OVERLOADED
+node 2 role=FOLLOWER epoch= 178 pending= 5 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 6500129
+node 3 role=FOLLOWER epoch= 172 pending= 4 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 6500129
+verdict: WARNING: overload signals on  1 node(s)
+leader_app_sum= 6500129
+=== cluster snapshot 2026-07-14 13:28:23 ===
+node 1 role=LEADER epoch= 223 pending= 18 in_flight= 0/ 8 sends= 3870 responses= 0 app_sum= 6500129 OVERLOADED
+node 2 role=FOLLOWER epoch= 218 pending= 5 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 6500129
+node 3 role=FOLLOWER epoch= 212 pending= 4 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 6500129
+verdict: WARNING: overload signals on  1 node(s)
+leader_app_sum= 6500129
+=== cluster snapshot 2026-07-14 13:28:25 ===
+node 1 role=LEADER epoch= 263 pending= 18 in_flight= 0/ 8 sends= 5193 responses= 0 app_sum= 6500129 OVERLOADED
+node 2 role=FOLLOWER epoch= 258 pending= 5 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 6500129
+node 3 role=FOLLOWER epoch= 252 pending= 4 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 6500129
+verdict: WARNING: overload signals on  1 node(s)
+leader_app_sum= 6500129
+=== cluster snapshot 2026-07-14 13:28:27 ===
+node 1 role=LEADER epoch= 301 pending= 26 in_flight= 0/ 8 sends= 5911 responses= 0 app_sum= 9704753 OVERLOADED
+node 2 role=FOLLOWER epoch= 297 pending= 22 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 9604593
+node 3 role=FOLLOWER epoch= 292 pending= 19 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 9704753
+verdict: WARNING: overload signals on  1 node(s)
+leader_app_sum= 9704753
+=== cluster snapshot 2026-07-14 13:28:29 ===
+node 1 role=LEADER epoch= 341 pending= 36 in_flight= 0/ 8 sends= 5911 responses= 0 app_sum= 9704753 OVERLOADED
+node 2 role=FOLLOWER epoch= 337 pending= 22 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 9704753
+node 3 role=FOLLOWER epoch= 332 pending= 19 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 9704753
+verdict: WARNING: overload signals on  1 node(s)
+leader_app_sum= 9704753
+=== cluster snapshot 2026-07-14 13:28:31 ===
+node 1 role=LEADER epoch= 381 pending= 45 in_flight= 0/ 8 sends= 5911 responses= 0 app_sum= 9704753 OVERLOADED
+node 2 role=FOLLOWER epoch= 377 pending= 22 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 9704753
+node 3 role=FOLLOWER epoch= 371 pending= 20 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 9704753
+verdict: WARNING: overload signals on  1 node(s)
+leader_app_sum= 9704753
+=== cluster snapshot 2026-07-14 13:28:33 ===
+node 1 role=LEADER epoch= 421 pending= 55 in_flight= 0/ 8 sends= 5911 responses= 0 app_sum= 9704753 OVERLOADED
+node 2 role=FOLLOWER epoch= 417 pending= 22 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 9704753
+node 3 role=FOLLOWER epoch= 411 pending= 20 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 9704753
+verdict: WARNING: overload signals on  1 node(s)
+leader_app_sum= 9704753

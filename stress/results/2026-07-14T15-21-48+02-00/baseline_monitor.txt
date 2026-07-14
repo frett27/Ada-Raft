@@ -1,0 +1,6 @@
+=== cluster snapshot 2026-07-14 13:22:18 ===
+node 1 UNREACHABLE
+node 2 UNREACHABLE
+node 3 UNREACHABLE
+verdict: UNREACHABLE: no audit endpoint responded
+leader_app_sum= 0

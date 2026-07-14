@@ -11,6 +11,8 @@ with Ada.Exceptions;         use Ada.Exceptions;
 with Ada.Tags;               use Ada.Tags;
 with Ada.Environment_Variables; use Ada.Environment_Variables;
 with Ada.Integer_Text_IO;
+with Ada.Characters.Latin_1; use Ada.Characters.Latin_1;
+with Interfaces;            use Interfaces;
 with Interfaces.C;
 
 with Raft;                   use Raft;
@@ -71,6 +73,12 @@ package body Network_Node is
    Client_Send_Log_Sample  : constant Positive := 10;
    Max_Sync_Response       : constant Stream_Element_Offset := 16_384;
    Max_Client_Frame        : constant Stream_Element_Offset := 16_384;
+   Max_Audit_Response      : constant Stream_Element_Offset := 32_768;
+   Audit_Frame_Header_Size : constant Stream_Element_Offset := 4;
+   Audit_Name_Len_Size     : constant Stream_Element_Offset := 2;
+   Audit_Max_Frame         : constant Stream_Element_Offset := 16_384;
+   Audit_Listen_Backlog    : constant Natural := 32;
+   Audit_Read_Timeout      : constant Duration := 2.0;
 
    --  Limit concurrent client sync handlers on the leader (fast TCP reject).
    protected Client_Load_Guard is
@@ -154,6 +162,20 @@ package body Network_Node is
    task Raft_Node_Task is
       entry Start;
    end Raft_Node_Task;
+
+   protected Audit_Server_Lifecycle is
+      procedure Register_Server (Socket : Socket_Type);
+      procedure Request_Stop;
+      function Stop_Requested return Boolean;
+      procedure Close_Server;
+   private
+      Server_Socket : Socket_Type := No_Socket;
+      Stop          : Boolean := False;
+   end Audit_Server_Lifecycle;
+
+   task Audit_Server_Task is
+      entry Start (Port_No : Port_Type);
+   end Audit_Server_Task;
 
    type Client_Work_State is record
       Active        : Boolean := False;
@@ -588,6 +610,8 @@ package body Network_Node is
       end if;
    end Log_Role_Change;
 
+   function Pending_Inbound_Count return Natural;
+
    procedure Log_Progress is
       Pending : Natural := 0;
    begin
@@ -601,9 +625,7 @@ package body Network_Node is
          return;
       end if;
 
-      if Inbound_Enqueued > Inbound_Processed then
-         Pending := Inbound_Enqueued - Inbound_Processed;
-      end if;
+      Pending := Pending_Inbound_Count;
 
       Node_Log
         ("progress role="
@@ -622,6 +644,28 @@ package body Network_Node is
          & Integer'Image (Application_Sum));
       Last_Progress_Sends := Client_Sends_Received;
    end Log_Progress;
+
+   function Count_Active_Pending_Client_Requests return Natural is
+      Total : Natural := 0;
+   begin
+      for I in Node.State.Pending_Client_Requests'Range loop
+         if Node.State.Pending_Client_Requests (I).Active then
+            Total := Total + 1;
+         end if;
+      end loop;
+      return Total;
+   end Count_Active_Pending_Client_Requests;
+
+   function Count_Active_Client_Sessions return Natural is
+      Total : Natural := 0;
+   begin
+      for I in Node.State.Client_Sessions'Range loop
+         if Node.State.Client_Sessions (I).Active then
+            Total := Total + 1;
+         end if;
+      end loop;
+      return Total;
+   end Count_Active_Client_Sessions;
 
    procedure Set_Client_Route
      (Client_Id : Client_Id_Type; Remote : Unbounded_String)
@@ -680,8 +724,9 @@ package body Network_Node is
    end Purge_Stale_Client_Routes;
 
    Server_Message_Box_Size : constant := 8192;
-   Max_Drain_Rounds     : constant Positive := 16;
-   Drain_Yield          : constant Duration := 0.001;
+   Max_Drain_Rounds      : constant Positive := 32;
+   Max_Drain_Safety      : constant Natural := 4096;
+   Drain_Yield           : constant Duration := 0.001;
    --  Extra election delay while the cluster binds listeners (startup race).
    Startup_Grace_Epochs : constant Natural := 20;
 
@@ -715,6 +760,7 @@ package body Network_Node is
          Payload : out Payload_Access;
          Found : out Boolean);
       function Is_Empty return Boolean;
+      function Queue_Depth return Natural;
       function Dropped_Count return Natural;
    private
       Items   : Queue_Type;
@@ -758,6 +804,7 @@ package body Network_Node is
          end if;
          Count   := Count - 1;
          Dropped := Dropped + 1;
+         Inbound_Processed := Inbound_Processed + 1;
       end Drop_Oldest;
 
       procedure Enqueue (Sender : Unbounded_String; Payload : Payload_Access) is
@@ -798,11 +845,21 @@ package body Network_Node is
          return Count = 0;
       end Is_Empty;
 
+      function Queue_Depth return Natural is
+      begin
+         return Count;
+      end Queue_Depth;
+
       function Dropped_Count return Natural is
       begin
          return Dropped;
       end Dropped_Count;
    end Server_Message_Box;
+
+   function Pending_Inbound_Count return Natural is
+   begin
+      return Server_Message_Box.Queue_Depth;
+   end Pending_Inbound_Count;
 
    protected body Client_Load_Guard is
 
@@ -1184,9 +1241,12 @@ package body Network_Node is
      (From, To : in Net_Link; Message : in Stream_Element_Array)
    is
       pragma Unreferenced (To);
+      Payload : constant Payload_Access := Copy_To_Heap (Message);
    begin
-      Inbound_Enqueued := Inbound_Enqueued + 1;
-      Server_Message_Box.Enqueue (Get_Host_Name (From), Copy_To_Heap (Message));
+      if Payload /= null then
+         Server_Message_Box.Enqueue (Get_Host_Name (From), Payload);
+         Inbound_Enqueued := Inbound_Enqueued + 1;
+      end if;
    end Link_Callback;
 
    procedure Handle_Raft_Message
@@ -1249,14 +1309,39 @@ package body Network_Node is
       Report_Inbound_Drops;
    end Process_Server_Inbound;
 
-   procedure Drain_Server_Messages is
+   procedure Drain_All_Server_Inbound is
+      Safety : Natural := 0;
    begin
-      for Round in 1 .. Max_Drain_Rounds loop
+      loop
+         Process_Server_Inbound;
+         exit when Server_Message_Box.Is_Empty;
+         Safety := Safety + 1;
+         exit when Safety >= Max_Drain_Safety;
+         delay Drain_Yield;
+      end loop;
+   end Drain_All_Server_Inbound;
+
+   procedure Drain_Server_Inbound (Max_Rounds : Positive) is
+   begin
+      for Round in 1 .. Max_Rounds loop
          Process_Server_Inbound;
          exit when Server_Message_Box.Is_Empty;
          delay Drain_Yield;
       end loop;
+   end Drain_Server_Inbound;
+
+   procedure Drain_Server_Messages is
+   begin
+      Drain_Server_Inbound (Max_Drain_Rounds);
    end Drain_Server_Messages;
+
+   function Poll_Interval return Duration is
+   begin
+      if Server_Message_Box.Is_Empty then
+         return Loop_Interval;
+      end if;
+      return Drain_Yield;
+   end Poll_Interval;
 
    procedure Run_Epoch_Step is
    begin
@@ -1780,6 +1865,10 @@ package body Network_Node is
                Node_Log
                  ("client sync TCP listening on port "
                   & Port_Type'Image (Client_API_Port (Config.Nodes (I).Port)));
+               Audit_Server_Task.Start (Node_Audit_Port (Config.Nodes (I)));
+               Node_Log
+                 ("audit monitor TCP listening on port "
+                  & Port_Type'Image (Node_Audit_Port (Config.Nodes (I))));
             exception
                when E : Communication.UDP.Network_IO_Error
                  | Communication.TCP.Network_IO_Error =>
@@ -1797,6 +1886,8 @@ package body Network_Node is
 
    procedure Shutdown is
    begin
+      Audit_Server_Lifecycle.Request_Stop;
+      delay 0.2;
       Release_Instance_Lock;
       Communication.TCP.Shutdown (Client_Hub);
       Communication.UDP.Shutdown (Hub);
@@ -1822,6 +1913,17 @@ package body Network_Node is
         (Test_Application_State (Node.State.Application_State.all));
    end Application_State_Image;
 
+   function Copy_String_To_Stream (Text : String) return Stream_Element_Array is
+      Result : Stream_Element_Array (1 .. Text'Length);
+   begin
+      for I in 1 .. Text'Length loop
+         Result (Stream_Element_Offset (I)) :=
+           Stream_Element
+             (Character'Pos (Text (Text'First + I - 1)));
+      end loop;
+      return Result;
+   end Copy_String_To_Stream;
+
    function Audit_Report return String is
       Audit_State : constant Audit_State_Access := Audit (Hub);
    begin
@@ -1830,6 +1932,76 @@ package body Network_Node is
       end if;
       return Image (Audit_State.all);
    end Audit_Report;
+
+   function Client_Audit_Report return String is
+      Audit_State : constant Audit_State_Access := Audit (Client_Hub);
+   begin
+      if Audit_State = null then
+         return "audit unavailable";
+      end if;
+      return Image (Audit_State.all);
+   end Client_Audit_Report;
+
+   function Status_Report return String is
+      NS : constant Raft_Node_State := Node.State.Node_State;
+      Result : Unbounded_String := Null_Unbounded_String;
+      procedure Put_Line (Line : String) is
+      begin
+         if Length (Result) > 0 then
+            Append (Result, LF);
+         end if;
+         Append (Result, Line);
+      end Put_Line;
+   begin
+      Put_Line ("node=" & Trim (ServerID_Type'Image (Local_Id), Left));
+      Put_Line
+        ("role="
+         & RaftStateEnum'Image (Node.State.Current_Raft_State));
+      Put_Line ("epoch=" & Natural'Image (Epoch_Number));
+      Put_Line ("term=" & Term_Type'Image (NS.Current_Term));
+      Put_Line
+        ("commit_index="
+         & TransactionLogIndex_Type'Image (Node.State.Commit_Index_Strict));
+      Put_Line
+        ("last_applied="
+         & TransactionLogIndex_Type'Image (Node.State.Last_Applied_Strict));
+      Put_Line
+        ("snapshot_index="
+         & TransactionLogIndex_Type'Image (NS.Snapshot_Last_Included_Index)
+         & "@"
+         & Term_Type'Image (NS.Snapshot_Last_Included_Term));
+      Put_Line
+        ("known_leader="
+         & Trim (ServerID_Type'Image (Node.State.Known_Leader_Id), Left));
+      Put_Line
+        ("pending_inbound=" & Natural'Image (Pending_Inbound_Count));
+      Put_Line ("inbound_enqueued=" & Natural'Image (Inbound_Enqueued));
+      Put_Line ("inbound_processed=" & Natural'Image (Inbound_Processed));
+      Put_Line
+        ("inbound_dropped="
+         & Natural'Image (Server_Message_Box.Dropped_Count));
+      Put_Line ("client_sends=" & Natural'Image (Client_Sends_Received));
+      Put_Line ("client_responses=" & Natural'Image (Client_Responses_Sent));
+      Put_Line
+        ("client_in_flight="
+         & Natural'Image (Client_Load_Guard.In_Flight));
+      Put_Line
+        ("client_rejected="
+         & Natural'Image (Client_Load_Guard.Rejected_Total));
+      Put_Line
+        ("client_slots_max=" & Natural'Image (Max_Client_In_Flight));
+      Put_Line
+        ("pending_client_requests="
+         & Natural'Image (Count_Active_Pending_Client_Requests));
+      Put_Line
+        ("active_client_sessions="
+         & Natural'Image (Count_Active_Client_Sessions));
+      Put_Line ("app_sum=" & Integer'Image (Application_Sum));
+      Put_Line ("application_state=" & Application_State_Image);
+      Put_Line ("udp_audit=" & Audit_Report);
+      Put_Line ("tcp_audit=" & Client_Audit_Report);
+      return To_String (Result);
+   end Status_Report;
 
    function Server_Count return ServerID_Type is
    begin
@@ -1840,6 +2012,244 @@ package body Network_Node is
    begin
       return Epoch_Number;
    end Current_Epoch;
+
+   protected body Audit_Server_Lifecycle is
+      procedure Register_Server (Socket : Socket_Type) is
+      begin
+         Server_Socket := Socket;
+      end Register_Server;
+
+      procedure Request_Stop is
+      begin
+         Stop := True;
+         if Server_Socket /= No_Socket then
+            begin
+               Close_Socket (Server_Socket);
+            exception
+               when Socket_Error =>
+                  null;
+            end;
+            Server_Socket := No_Socket;
+         end if;
+      end Request_Stop;
+
+      function Stop_Requested return Boolean is
+      begin
+         return Stop;
+      end Stop_Requested;
+
+      procedure Close_Server is
+      begin
+         Request_Stop;
+      end Close_Server;
+   end Audit_Server_Lifecycle;
+
+   function Audit_To_BE32 (Value : Unsigned_32) return Stream_Element_Array is
+      Result : Stream_Element_Array (1 .. 4);
+   begin
+      Result (1) := Stream_Element (Shift_Right (Value, 24) and 16#FF#);
+      Result (2) := Stream_Element (Shift_Right (Value, 16) and 16#FF#);
+      Result (3) := Stream_Element (Shift_Right (Value, 8) and 16#FF#);
+      Result (4) := Stream_Element (Value and 16#FF#);
+      return Result;
+   end Audit_To_BE32;
+
+   function Audit_From_BE32 (Data : Stream_Element_Array) return Unsigned_32 is
+   begin
+      return
+        Shift_Left (Unsigned_32 (Data (Data'First)), 24)
+        or Shift_Left (Unsigned_32 (Data (Data'First + 1)), 16)
+        or Shift_Left (Unsigned_32 (Data (Data'First + 2)), 8)
+        or Unsigned_32 (Data (Data'First + 3));
+   end Audit_From_BE32;
+
+   procedure Audit_Read_Full
+     (Socket : Socket_Type; Buffer : out Stream_Element_Array)
+   is
+      Offset : Stream_Element_Offset := Buffer'First;
+      Last   : Stream_Element_Offset;
+   begin
+      while Offset <= Buffer'Last loop
+         Receive_Socket (Socket, Buffer (Offset .. Buffer'Last), Last);
+         if Last < Offset then
+            raise Communication.TCP.Network_IO_Error
+              with "audit socket closed while receiving";
+         end if;
+         Offset := Last + 1;
+      end loop;
+   end Audit_Read_Full;
+
+   procedure Audit_Send_Full
+     (Socket : Socket_Type; Buffer : Stream_Element_Array)
+   is
+      Last : Stream_Element_Offset;
+   begin
+      Send_Socket (Socket, Buffer, Last);
+      if Last < Buffer'Last then
+         raise Communication.TCP.Network_IO_Error
+           with "audit short send on socket";
+      end if;
+   end Audit_Send_Full;
+
+   procedure Audit_Apply_Timeouts (Socket : Socket_Type) is
+   begin
+      Set_Socket_Option
+        (Socket,
+         Socket_Level,
+         (Name => Send_Timeout, Timeout => Audit_Read_Timeout));
+      Set_Socket_Option
+        (Socket,
+         Socket_Level,
+         (Name => Receive_Timeout, Timeout => Audit_Read_Timeout));
+   end Audit_Apply_Timeouts;
+
+   procedure Audit_Safe_Close (Socket : in out Socket_Type) is
+   begin
+      if Socket /= No_Socket then
+         begin
+            Close_Socket (Socket);
+         exception
+            when Socket_Error =>
+               null;
+         end;
+         Socket := No_Socket;
+      end if;
+   end Audit_Safe_Close;
+
+   function Audit_Encode_Frame
+     (Sender_Name : Unbounded_String; Payload : Stream_Element_Array)
+      return Stream_Element_Array
+   is
+      Name_Bytes : constant String := To_String (Sender_Name);
+      Body_Len   : constant Stream_Element_Offset :=
+        Audit_Name_Len_Size
+        + Stream_Element_Offset (Name_Bytes'Length)
+        + Stream_Element_Offset (Payload'Length);
+      Frame      : Stream_Element_Array
+        (1 .. Audit_Frame_Header_Size + Body_Len);
+      Name_Array : Stream_Element_Array (1 .. Name_Bytes'Length);
+      Offset     : Stream_Element_Offset := Audit_Frame_Header_Size + 1;
+   begin
+      for I in Name_Bytes'Range loop
+         Name_Array (Stream_Element_Offset (I)) :=
+           Stream_Element (Character'Pos (Name_Bytes (I)));
+      end loop;
+
+      Frame (1 .. Audit_Frame_Header_Size) :=
+        Audit_To_BE32 (Unsigned_32 (Body_Len));
+      Frame (Offset .. Offset + 1) :=
+        (Stream_Element (Shift_Right (Unsigned_16 (Name_Bytes'Length), 8)
+                         and 16#FF#),
+         Stream_Element (Unsigned_16 (Name_Bytes'Length) and 16#FF#));
+      Offset := Offset + Audit_Name_Len_Size;
+      if Name_Array'Length > 0 then
+         Frame
+           (Offset .. Offset + Stream_Element_Offset (Name_Array'Length) - 1) :=
+           Name_Array;
+         Offset := Offset + Stream_Element_Offset (Name_Array'Length);
+      end if;
+      if Payload'Length > 0 then
+         Frame
+           (Offset .. Offset + Stream_Element_Offset (Payload'Length) - 1) :=
+           Payload;
+      end if;
+      return Frame;
+   end Audit_Encode_Frame;
+
+   procedure Audit_Read_Frame
+     (Socket : Socket_Type;
+      Frame  : out Stream_Element_Array;
+      Last   : out Stream_Element_Offset)
+   is
+      Header   : Stream_Element_Array (1 .. Audit_Frame_Header_Size);
+      Body_Len : Stream_Element_Offset;
+      Frame_Body : access Stream_Element_Array;
+   begin
+      Audit_Read_Full (Socket, Header);
+      Body_Len := Stream_Element_Offset (Audit_From_BE32 (Header));
+      if Body_Len = 0 then
+         raise Communication.TCP.Network_IO_Error with "audit empty frame body";
+      end if;
+      if Audit_Frame_Header_Size + Body_Len > Audit_Max_Frame then
+         raise Communication.TCP.Network_IO_Error
+           with "audit frame exceeds sync limit";
+      end if;
+      Frame_Body := new Stream_Element_Array (1 .. Body_Len);
+      Audit_Read_Full (Socket, Frame_Body.all);
+      Last := Audit_Frame_Header_Size + Body_Len;
+      if Stream_Element_Offset (Frame'Length) < Last then
+         raise Communication.TCP.Network_IO_Error
+           with "audit response buffer too small";
+      end if;
+      Frame (1 .. Audit_Frame_Header_Size) := Header;
+      Frame (Audit_Frame_Header_Size + 1 .. Last) := Frame_Body.all;
+   end Audit_Read_Frame;
+
+   procedure Handle_Audit_Connection (Client : Socket_Type) is
+      Frame      : Stream_Element_Array (1 .. Audit_Max_Frame);
+      Frame_Last : Stream_Element_Offset;
+      Report     : constant String := Status_Report;
+      Payload    : constant Stream_Element_Array :=
+        Copy_String_To_Stream (Report);
+      Response   : constant Stream_Element_Array :=
+        Audit_Encode_Frame
+          (To_Unbounded_String (Server_Hostname (Local_Id)), Payload);
+   begin
+      Audit_Apply_Timeouts (Client);
+      Audit_Read_Frame (Client, Frame, Frame_Last);
+      Audit_Send_Full (Client, Response);
+   exception
+      when E : others =>
+         if Verbose_Logging then
+            Node_Log
+              ("audit connection error: " & Exception_Information (E));
+         end if;
+   end Handle_Audit_Connection;
+
+   task body Audit_Server_Task is
+      Listen_Port : Port_Type;
+      Server      : Socket_Type;
+   begin
+      accept Start (Port_No : Port_Type) do
+         Listen_Port := Port_No;
+      end Start;
+
+      Create_Socket (Server);
+      Set_Socket_Option
+        (Server,
+         Socket_Level,
+         (Reuse_Address, Enabled => True));
+      Bind_Socket
+        (Server,
+         (Family => Family_Inet,
+          Addr   => Any_Inet_Addr,
+          Port   => Listen_Port));
+      Listen_Socket (Server, Audit_Listen_Backlog);
+      Audit_Server_Lifecycle.Register_Server (Server);
+
+      while not Audit_Server_Lifecycle.Stop_Requested loop
+         declare
+            Client : Socket_Type;
+            Peer   : Sock_Addr_Type;
+         begin
+            begin
+               Accept_Socket (Server, Client, Peer);
+            exception
+               when Socket_Error =>
+                  exit when Audit_Server_Lifecycle.Stop_Requested;
+                  delay 0.05;
+                  goto Continue;
+            end;
+
+            Handle_Audit_Connection (Client);
+            Audit_Safe_Close (Client);
+         <<Continue>>
+            null;
+         end;
+      end loop;
+
+      Audit_Safe_Close (Server);
+   end Audit_Server_Task;
 
    task body Client_Comms_Task is
    begin
@@ -1910,19 +2320,29 @@ package body Network_Node is
       accept Start;
       Next_Epoch := Clock + Raft_Cfg.Epoch_Interval;
       loop
-         if Work.Active then
-            Drain_Server_Messages;
-         else
-            Process_Server_Inbound;
-         end if;
+         declare
+            Epoch_Tick : Boolean := False;
+         begin
+            --  Timers and elections before inbound/client work so a loaded
+            --  node still advances epochs and can step down stale leaders.
+            if Clock >= Next_Epoch then
+               Run_Epoch_Step;
+               Epoch_Number := Epoch_Number + 1;
+               Log_Role_Change;
+               Epoch_Tick := True;
+               Next_Epoch := Clock + Raft_Cfg.Epoch_Interval;
+            end if;
 
-         if Clock >= Next_Epoch then
-            Run_Epoch_Step;
-            Epoch_Number := Epoch_Number + 1;
-            Log_Role_Change;
-            Log_Progress;
-            Next_Epoch := Clock + Raft_Cfg.Epoch_Interval;
-         end if;
+            if Work.Active then
+               Drain_Server_Messages;
+            else
+               Drain_All_Server_Inbound;
+            end if;
+
+            if Epoch_Tick then
+               Log_Progress;
+            end if;
+         end;
 
          if Work.Active then
             if not Work.Ready then
@@ -1947,7 +2367,7 @@ package body Network_Node is
                Begin_Client_Work
                  (Local_Sender, Local_Request (1 .. Local_Last), Work);
             or
-               delay Loop_Interval;
+               delay Poll_Interval;
             end select;
          else
             delay 0.001;

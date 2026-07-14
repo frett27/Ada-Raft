@@ -1,0 +1,14 @@
+registered client id= 8 leader= 1 next_serial= 0
+registered client id= 12 leader= 1 next_serial= 0
+registered client id= 22 leader= 1 next_serial= 0
+registered client id= 42 leader= 1 next_serial= 0
+registered client id= 31 leader= 1 next_serial= 0
+registered client id= 1172 leader= 1 next_serial= 0
+registered client id= 2519 leader= 1 next_serial= 0
+send failed: TCP to cluster failed (check ./launch.sh start; after load test try ./launch.sh stop && ./launch.sh start)
+send failed: TCP to cluster failed (check ./launch.sh start; after load test try ./launch.sh stop && ./launch.sh start)
+send failed: TCP to cluster failed (check ./launch.sh start; after load test try ./launch.sh stop && ./launch.sh start)
+send failed: timed out waiting for leader
+send failed: timed out waiting for leader
+send failed: timed out waiting for leader
+send failed: TCP to cluster failed (check ./launch.sh start; after load test try ./launch.sh stop && ./launch.sh start)

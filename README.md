@@ -1,103 +1,101 @@
 # AdaRaft
 
-An Ada implementation of [Raft](https://raft.github.io/) — by building a **deterministic, multi-node model** first, then growing the protocol core inside it.
+An Ada implementation of [Raft](https://raft.github.io/) — a consensus protocol that lets a cluster of servers **agree on one ordered history of changes**, even when some machines fail.
 
-The Raft protocol lets a cluster of servers **agree on a replicated, ordered log** and apply the same commands to application state, provided a **quorum** remains available and can communicate. This is usefull for sharing a common vision for a set of nodes / machines, to be fault tolerant and be able to continue to work if some nodes fails.
+**For product and ops readers:** Raft is the pattern behind reliable configuration stores (etcd, Consul), coordination services, and the metadata layers of many distributed databases. The payoff is a **single source of truth** across replicas, **continued service** while a minority of nodes is down, and **no silent divergence** where different clients see different worlds.
 
-Consensus (Raft and similar protocols) is used when several machines must share **one authoritative state** despite failures:
+**For engineers:** AdaRaft implements the core protocol (election, log replication, commit, compaction, snapshots) and ships a **deterministic test harness** first, then optional **examples** with UDP inter-node RPC and a sync TCP client API.
 
-- **Configuration and naming** — cluster membership, service discovery, feature flags (e.g. etcd, Consul).
-- **Metadata and coordination** — locks, leader election for jobs, workflow checkpoints (ZooKeeper-style patterns).
-- **Replicated control planes** — one ordered history of admin commands applied on every replica.
-- **Highly available data services** — metadata layers for distributed databases and storage (CockroachDB, TiKV, Rook, etc.).
-- **Embedded and edge clusters** — modest quorums (3–5 nodes) that must keep running if a unit or link fails.
+This began as a holiday project. The design bet is simple: nail protocol edge cases in reproducible tests **before** mixing in every real-world failure mode (network flakiness, disk errors, hostile load). That order is intentional — not a claim that production hardening is done.
 
-What you gain: **agreement** on the same ordered updates, **durability** across restarts (with persistence), and **continued operation** while a minority of nodes is down — without every client picking a different “truth”.
+---
 
-This project began as a holiday project. The main idea behind the design is to allow **extensive tests on edge cases** — split votes, stale leaders, log gaps, partitions, snapshot catch-up — **before** layering on everything real deployments need (network I/O, disk failures, timeouts in the wild, and all the error paths that come with them). Time and messaging stay under explicit control (external timers, epoch stepping, a queued message buffer) so those scenarios can be stepped through reproducibly. The tests have been useful; they are still far from complete, and I/O handling is largely deferred.
+## Where consensus shows up
 
-If that order of concerns sounds interesting, you are welcome to look around.
+| Domain | Typical need |
+|--------|----------------|
+| Configuration & naming | Membership, service discovery, feature flags |
+| Coordination | Locks, job leadership, workflow checkpoints |
+| Control planes | One ordered admin log applied on every replica |
+| Distributed data | Metadata for databases and storage systems |
+| Embedded / edge | Small quorums (3–5 nodes) that must outlive unit or link loss |
+
+---
 
 ## Why Ada?
 
-Raft is usually implemented in Go or Java; we used here **Ada** anyway, because large Ada systems have long been built around **readability, strong typing, and correctness under review** — the kind of properties that help when state machines grow awkward. Ada is probably leader in static analysis of algorithm and benefit from decades of programming in sensitive area that involve human life or high cost for errors (lift, avionic, financial, trains, space, .. )
+Raft is usually written in Go or Java. We used **Ada** because large, safety-sensitive systems (avionics, rail, finance, space, lifts, and similar) have long relied on **readable code, strong typing, and review-friendly structure** — properties that help when state machines get subtle.
 
-AdaRaft seems tiny compared to those industrial codebases, but it tries to borrow that ada mindset:
+AdaRaft is tiny compared to those industrial codebases, but follows the same habits:
 
-- **Explicit structure** — protocol states, message types, and log indices are modeled in the type system rather than left implicit.
-- **Review-friendly code** — fewer surprises when tracing follower → candidate → leader transitions or snapshot install paths.
-- **A path to proof** — [SPARK](doc/spark.md) contracts on parts of the communication and buffer layers; we would like to extend that gradually, not pretend the whole crate is verified yet.
-- **Same language for core and tests** — Ada end to end, which matches how many large Ada projects keep implementation and validation close together.
+- **Explicit structure** — roles, message types, and log indices live in the type system.
+- **Review-friendly flow** — follower → candidate → leader paths and snapshot install are traceable.
+- **A path to proof** — [SPARK](doc/spark.md) contracts on parts of communication and buffers; not full-crate verification.
+- **One language for core and tests** — implementation and validation stay aligned.
 
-We do **not** claim aviation-grade certification for this repo. We simply hope Ada's experience from large, correctness-sensitive projects can **power** a consensus core that is small enough to test thoroughly before I/O complexity piles on.
+We do **not** claim aviation-grade certification. The goal is a consensus core small enough to test thoroughly, informed by Ada’s correctness culture.
 
-## Why this project?
+---
 
-Consensus algorithms sit in an awkward spot: they look simple on paper, but **correctness really matters**. A small mistake in term handling, log matching, or commit rules can mean split brain, lost updates, or two nodes disagreeing quietly on state — often long after the buggy change landed. That is why people treat Raft-like code as **review-heavy, test-heavy** territory, not as glue logic.
+## How we validate correctness
 
-What we wanted here was a place to **test that behaviour extensively and deterministically**, so regressions show up as failing tests rather than as heisenbugs in a cluster:
+Consensus bugs often hide in timing: split votes, stale leaders, partitions, log gaps, snapshot catch-up. Wall-clock tests make those painful to reproduce.
 
-- **Repeatable runs** — same epoch steps and message delivery order give the same outcome; useful when refactoring election or snapshot code.
-- **Edge cases on demand** — split votes, stale leaders, partitions, lagging followers, compaction: scenarios that are painful to reproduce with wall-clock timing alone.
-- **Regression safety net** — **35 tests** at last count (states, protocol RPCs, log storage, compaction, 3-node system runs including a long command stream); meant to grow as corner cases are pinned.
+AdaRaft keeps **time and messaging under explicit control**:
 
-AdaRaft is a modest attempt to implement [Raft](https://raft.github.io/) in **Ada** with that testing posture in mind, together with:
+| Mechanism | Effect |
+|-----------|--------|
+| External timers | Election and heartbeat counters stepped per **epoch** — no sleeping in tests. |
+| Message buffer | RPCs queued and delivered in a chosen order; partitions simulated cleanly. |
+| Protocol-first tests | Behaviour mapped to Raft **Figure 2** before exhaustive I/O error paths. |
+| Layered coverage | Units, isolated RPCs, 3-node scenarios, compaction, 1000+ command runs, 11-node stress. |
+| SPARK (partial) | Contracts on some paths; room to grow. |
 
-- Ada's emphasis on **clarity and correctness** (see [Why Ada?](#why-ada) above)
-- a design that prioritises **protocol edge cases** before exhaustive I/O error handling (yet)
-- a small codebase (easier to read than to deploy)
-- a deterministic harness — details in [Correctness approach](#correctness-approach) below
-- a hook for an **application state machine** (`Apply_Command`, snapshot/restore)
-- some **SPARK** contracts ([doc/spark.md](doc/spark.md)); proof coverage is still limited
+**35 tests** at last count (states, protocol, log storage, compaction, system runs). The in-memory hub is deliberate: edge cases stay reproducible. **examples/** add real UDP/TCP on top; load and ops hardening are still open work — see [examples/doc/scheduling_and_priorities.md](examples/doc/scheduling_and_priorities.md).
 
-It is not a product and not a replacement for mature consensus services — but we do think **deterministic regression tests** are a sensible way to guard this kind of algorithm while it evolves.
+Details: [doc/tests.md](doc/tests.md), [doc/conception.md](doc/conception.md).
 
-## Correctness approach
+---
 
-Consensus bugs are often timing-dependent and awkward to reproduce. Here we tried to **exercise the protocol rules and edge cases first** in a controlled setting — and to treat network, disk, and other I/O failures as a later concern, not mixed in from day one.
+## Who this is for
 
-| Idea | What we did |
-|------|-------------|
-| **Protocol before I/O** | Focus tests on Raft behaviour (terms, votes, logs, commits, snapshots); defer most real-world I/O error handling. |
-| Deterministic time | Timers are external counters, stepped per **epoch**; tests can force timeouts without sleeping. |
-| Deterministic messaging | RPCs pass through a **message buffer** with explicit delivery — partitions and reordering without flaky wall-clock races. |
-| Reproducible runs | `Advance_One_Epoch`, `Run_Steps`, etc. in [doc/tests.md](doc/tests.md). |
-| Paper as guide | Tests are loosely mapped to Raft **Figure 2** (elections, terms, log match, commit, snapshots). |
-| Layered tests | Buffer units, isolated RPCs, **shifted-log** units, 3-node compaction/snapshot, long-run replication (1000+ commands), 11-node stress. |
-| Contracts | SPARK on some paths — in the spirit of Ada/SPARK work on large systems; more proof coverage would be welcome. |
+**Good fit**
 
-The in-memory hub is intentional for that first phase: it keeps edge cases testable. Production-style transport and I/O error paths would sit on top — if someone needs them — once the core behaviour is better understood.
+- Learning Raft with readable Ada code
+- Ada teams exploring replicated state without a foreign runtime
+- Contributors who want to pin corner cases before fighting production I/O
 
-## Who might find it useful?
+**Poor fit**
 
-- anyone **learning Raft** who wants readable Ada code
-- Ada developers who care about **correctness and reviewability** in replicated state
-- contributors who want to **probe edge cases** without fighting network and disk I/O first
+- Drop-in replacement for etcd, ZooKeeper, or Consul today
+- Heavy client load or full production ops out of the box
 
-Probably **not** for you if you need production etcd-like service, real networking, or heavy client load out of the box.
+---
 
 ## What works today
 
-- [X] Basic Raft algorithm (follower / candidate / leader)
-- [X] Leader election
-- [X] Log replication
-- [X] **Shifted transaction log** (`Raft.Log_Storage`) — fixed physical slots, unbounded logical indices via compaction rebase
+- [X] Raft roles (follower / candidate / leader), election, replication
+- [X] **Shifted log** (`Raft.Log_Storage`) — bounded physical slots, unbounded logical indices
 - [X] Log compaction + `InstallSnapshot` (including application state in snapshots)
-- [X] Optional **log retention** after compact (`Set_Compact_Log_Retention`) — keep a suffix of committed entries for incremental follower catch-up
-- [X] Application state machine (`Apply_Command`, snapshot/restore)
-- [X] Deterministic test harness (epochs, message buffer, partitions, node reset)
-- [X] Leader replication debug lines (`[ leader N replication ]` in traces)
-- [X] Client handling / commit broadcast (leader; examples)
-- [X] TCP client API (examples: register, send, reconnect, watchdog)
-- [ ] Generatize an audit end point to be able to have a full view of clluster nodes (maybe exporter, of a binary synthesis to save bandwidth)
-- [ ] High-volume client / replication tuning (examples overload under load)
-- [ ] Formal verification (SPARK proof coverage still in progress)
+- [X] Optional post-compact **log retention** for follower catch-up
+- [X] Application state hook (`Apply_Command`, snapshot/restore)
+- [X] Deterministic test harness (epochs, buffer, partitions, node reset)
+- [X] Client path in **examples** (register, send, reconnect, watchdog; session expiry)
+- [X] Examples transport (UDP Raft, TCP client API)
+- [ ] Cluster audit / metrics export (unified view of nodes)
+- [ ] High-volume client and replication tuning
+- [ ] Broader SPARK proof coverage
 
-Core Raft through **log compaction (§7)** is in place. **Examples** add UDP inter-node RPC and a sync TCP client API; membership changes are not.
+Core Raft through **log compaction (§7)** is implemented. **Membership changes** are not.
+
+Integrating your own commands, log tuning, and snapshots: [doc/library_api.md](doc/library_api.md).  
+Client wire protocol and CLI: [examples/doc/client_api.md](examples/doc/client_api.md).
+
+---
 
 ## Quick start
 
-You will need GNAT, [Alire](https://alire.ada.dev/), and AUnit.
+Requires GNAT, [Alire](https://alire.ada.dev/), and AUnit.
 
 ```bash
 cd tests
@@ -106,118 +104,99 @@ gprbuild -P tests_raft.gpr
 ./bin/tests_raft
 ```
 
-If all goes well, tests report **35** routines with no failed assertions.
+Expect **35** routines, zero failed assertions.
 
-> **Note:** `alr build` inside `tests/` may fail due to an Alire dependency issue. `gprbuild` after `alr printenv` is what we use day to day — see [doc/tests.md](doc/tests.md).
+> **Note:** `alr build` in `tests/` may fail on dependency resolution; `gprbuild` after `alr printenv` is the supported path — [doc/tests.md](doc/tests.md).
+
+Examples cluster:
+
+```bash
+cd examples
+./launch.sh start
+./bin/raft_client -c cluster.toml --name client send 42
+```
+
+---
 
 ## Architecture in brief
-
-Nodes talk through a **local message hub** and **message buffer**, with **external timers** ticked per epoch — the same shape used in tests.
 
 ```
   Client command  →  Leader  →  AppendEntries  →  Followers
                          ↓
               Apply committed entries to application state
                          ↓
-              Compact log (snapshot + optional retention window)
+              Compact log (snapshot + optional retention)
                          ↓
-              InstallSnapshot when follower is behind snapshot boundary
+              InstallSnapshot when a follower is behind
 ```
 
-The replicated log is a **`Shifted_Log`**: logical indices grow with the cluster; compaction drops prefixes and advances `Base` while keeping at most `MAX_PHYSICAL_INDEX` (100) slots in memory.
+Tests use a **local message hub** and **epoch timers**. The replicated log is a **`Shifted_Log`**: logical indices grow; compaction advances `Base` within `MAX_PHYSICAL_INDEX` (100) physical slots.
 
-More detail: [doc/conception.md](doc/conception.md)
+Your application extends `Raft.State_Machine.Application_State` and registers it with `Create_Machine`. See [doc/library_api.md](doc/library_api.md) and the sample in `tests/src/test_raft.ads`.
 
-Library integration (commands, application state, log, snapshots):
-[doc/library_api.md](doc/library_api.md)
+---
 
-- [doc/tests.md](doc/tests.md) — tests and paper mapping
-- [doc/spark.md](doc/spark.md) — SPARK notes
-- [doc/other_implementations.md](doc/other_implementations.md) — related work
+## Status and production use
 
-## Application state
+**Research / learning quality** — useful for study, prototypes, and controlled environments; **not production-ready as shipped**.
 
-Raft replicates the log; your program holds the meaningful state. See
-[doc/library_api.md](doc/library_api.md) for the full integration guide (commands,
-`Shifted_Log`, snapshots, `Create_Machine`).
+- Deterministic tests use an in-memory hub; **examples/** add network I/O
+- Client sessions expire after inactivity; high concurrent load can still stall the leader
+- APIs and on-disk layouts may change
 
-Extend `Raft.State_Machine.Application_State` and pass it to `Create_Machine`:
+**AdaRaft is not hardened.** No warranty under real partitions, clock skew, disk loss, misconfiguration, or hostile clients. Trust in the field comes from pilots, ops layers, and feedback loops — we welcome that, without promising enterprise support.
 
-- `Apply_Command` — one committed entry
-- `Save_Snapshot` / `Restore_Snapshot` — blob format after the 8-byte Raft header (`lastIncludedIndex`, `lastIncludedTerm`)
+| Staged use | Rationale |
+|------------|-----------|
+| Ada-only prototypes | Replicated config/state without another language runtime |
+| Labs & HIL benches | Validation style already matches deterministic tests |
+| Edge (careful) | Small quorum + strong typing, if you own persistence and transport |
+| Teaching & SPARK experiments | Readable core, extensible tests |
+| Stepping stone | Prove protocol in Ada, harden transport and ops from learnings |
 
-There is a tiny example (`Test_Application_State`, a running sum) in `tests/src/test_raft.ads`.
+For most production teams, **etcd, ZooKeeper, or Consul** remain the pragmatic default. AdaRaft is a **core to stress in tests**, then wrap with the layers below.
 
-Compaction settings (optional, for tests or tuning):
-
-```ada
-Raft.Snapshot.Set_Compact_Threshold (100);      -- entries before compact
-Raft.Snapshot.Set_Compact_Log_Retention (20);   -- 0 = trim through commit (default)
-```
-
-## Status
-
-This is **research / learning** quality: the core has a fair amount of testing in the deterministic setup above, but we would not call it production-ready.
-
-- deterministic tests use an in-memory hub; **examples/** add UDP + TCP (see [examples/doc/client_api.md](examples/doc/client_api.md))
-- client sessions expire after inactivity; high concurrent load can still stall the leader
-- design may change as we learn
-
-Feel free to explore; treat production use as something to grow deliberately, not something that is guaranteed today.
-
-## Production disclaimer
-
-**AdaRaft is not hardened as shipped.** There is no warranty of fitness, availability, durability, or correctness under real failures (partitions, clock issues, disk problems, misconfiguration, hostile clients, etc.). APIs and on-disk layouts may still change.
-
-That said, **libraries become trustworthy through real-world checks** — staged pilots, field feedback, and the I/O and ops layers people add around a core. We are not closing the door to that; we simply have not walked through it yet.
-
-### Where it might still make sense to try
-
-| Kind of use | Why AdaRaft might fit |
-|-------------|------------------------|
-| **Ada-only prototypes** | Small replicated config or state in an Ada codebase, without pulling in a foreign runtime. |
-| **Controlled environments** | Lab clusters, simulators, hardware-in-the-loop benches — places where deterministic tests already match how you validate. |
-| **Edge / embedded (carefully)** | modest quorum, bounded log, strong typing and review — if you accept doing your own persistence and network glue. |
-| **Research & teaching** | consensus study in Ada, SPARK experiments, extending tests from real incidents you hit in a pilot. |
-| **Stepping stone** | prove the protocol core in Ada, then harden transport and ops from what you learn before wider rollout. |
-
-For many teams, **etcd, ZooKeeper, or Consul** remain the pragmatic default for production consensus today. AdaRaft is closer to a **core you can stress in tests and then harden with your own field experience**.
-
-If you run a pilot, issues found in real conditions are exactly the kind of feedback that should feed back into tests and, eventually, a more hardened library — we would welcome that loop, without promising enterprise support.
-
-### What a real deployment still needs around the core
-
-AdaRaft only covers the **Raft core**. Field use usually adds:
-
-| Area | Typically required |
-|------|-------------------|
-| Transport | Real RPC, TLS, timeouts, backpressure |
-| Persistence | Durable log and snapshots, crash recovery, backups |
-| Operations | Monitoring, alerts, runbooks, metrics |
-| Deployment | Quorum sizing, rolling restarts, config/secrets |
-| Client API | Idempotency and retries (basic); commit notifications; not hardened under load |
-| Security | Peer auth, client auth, audit |
-| Testing | Chaos on real networks, load, upgrades, DR drills |
+| Layer | Usually still required |
+|-------|--------------------------|
+| Transport | TLS, timeouts, backpressure |
+| Persistence | Durable log, snapshots, recovery, backups |
+| Operations | Monitoring, alerts, runbooks |
+| Deployment | Quorum sizing, rolling restarts, secrets |
+| Client API | Retries and idempotency (basic here; not load-hardened) |
+| Security | Peer and client authentication, audit |
+| Testing | Chaos, load, upgrades, disaster recovery |
 | Verification | Review, fuzzing, formal methods beyond current SPARK |
-| Support | Incidents, corrupted logs, loss of quorum |
 
-Those layers are where **real-world hardening** happens; the deterministic test suite here is meant to hold the protocol steady while you add them.
+---
 
-## Code style
+## Documentation
 
-Test sources are built with GNAT style checks (`-gnaty…`). To reformat with **`gnatpp`** via Alire (not part of `gnat_native`), see [doc/style.md](doc/style.md).
+| Document | Content |
+|----------|---------|
+| [doc/conception.md](doc/conception.md) | Design and data structures |
+| [doc/library_api.md](doc/library_api.md) | Commands, app state, log, snapshots |
+| [doc/tests.md](doc/tests.md) | Test harness and paper mapping |
+| [doc/spark.md](doc/spark.md) | SPARK notes |
+| [doc/other_implementations.md](doc/other_implementations.md) | Related work |
+| [examples/doc/client_api.md](examples/doc/client_api.md) | TCP client API |
+| [examples/doc/scheduling_and_priorities.md](examples/doc/scheduling_and_priorities.md) | Load and task scheduling |
+
+Code style (GNAT `-gnaty`, `gnatpp`): [doc/style.md](doc/style.md).
+
+---
 
 ## Roadmap
 
-Things we might look at eventually (no promises):
+No fixed dates — possible directions:
 
-- [X] Client handling / commit broadcast (examples)
-- [ ] More SPARK proof coverage
+- [ ] Cluster audit / metrics export
 - [ ] Membership changes
-- [ ] Pre-vote, log transmission tweaks
-- [X] Network transport (examples: UDP Raft, TCP client API)
-- [ ] Durable persistence for `Shifted_Log` and snapshots
-- [ ] High-volume client / leader scheduling (see [examples/doc/scheduling_and_priorities.md](examples/doc/scheduling_and_priorities.md))
+- [ ] Pre-vote and replication tuning
+- [ ] Durable persistence for log and snapshots
+- [ ] High-volume scheduling improvements
+- [ ] More SPARK coverage
+
+---
 
 ## License
 
@@ -226,4 +205,4 @@ MIT OR Apache-2.0 WITH LLVM-exception (see `alire.toml`).
 ## Changelog
 
 - **2024-08-15** — Raft system testing (clearer tests)
-- **2026** — Log compaction, application state machine, `Shifted_Log` / `Raft.Log_Storage`, optional post-compact log retention, long-run compaction tests, leader replication debug traces; examples TCP client API, session expiry, watchdog
+- **2026** — Log compaction, `Shifted_Log`, application state machine, post-compact retention, long-run tests; examples TCP client API, session expiry, watchdog, overload handling

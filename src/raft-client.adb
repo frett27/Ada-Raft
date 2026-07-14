@@ -235,18 +235,18 @@ package body Raft.Client is
       Send_Pending_Command (C);
    end Resume_Pending_After_Register;
 
-   procedure Start_Register (C : in out Raft_Client) is
+   procedure Prepare_Register
+     (C : in out Raft_Client; First_Probe : ServerID_Type)
+   is
    begin
       C.Op_Phase := Registering;
 
       if C.Leader_Id /= NULL_SERVER then
          C.Probe_Server := C.Leader_Id;
       else
-         C.Probe_Server := 1;
+         C.Probe_Server := First_Probe;
       end if;
-
-      Send_Register_Probe (C);
-   end Start_Register;
+   end Prepare_Register;
 
    function Try_Next_Probe_Server (C : Raft_Client) return ServerID_Type is
    begin
@@ -256,6 +256,17 @@ package body Raft.Client is
 
       return 1;
    end Try_Next_Probe_Server;
+
+   procedure Advance_Probe_Server (C : in out Raft_Client) is
+   begin
+      C.Probe_Server := Try_Next_Probe_Server (C);
+   end Advance_Probe_Server;
+
+   procedure Start_Register (C : in out Raft_Client) is
+   begin
+      Prepare_Register (C, 1);
+      Send_Register_Probe (C);
+   end Start_Register;
 
    function Handle_Register_Response
      (C   : in out Raft_Client;

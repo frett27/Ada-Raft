@@ -7,13 +7,16 @@ servers = 3
 id = 1
 host = "raft-node-1"
 port = 9101
+audit_port = 9401
 
 [[nodes]]
 id = 2
 host = "raft-node-2"
 port = 9102
+audit_port = 9402
 
 [[nodes]]
 id = 3
 host = "raft-node-3"
 port = 9103
+audit_port = 9403

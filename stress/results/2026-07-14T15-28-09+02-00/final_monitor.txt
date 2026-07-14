@@ -1,0 +1,6 @@
+=== cluster snapshot 2026-07-14 13:28:33 ===
+node 1 role=LEADER epoch= 433 pending= 59 in_flight= 0/ 8 sends= 5911 responses= 0 app_sum= 9704753 OVERLOADED
+node 2 role=FOLLOWER epoch= 429 pending= 22 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 9704753
+node 3 role=FOLLOWER epoch= 424 pending= 19 in_flight= 0/ 8 sends= 0 responses= 0 app_sum= 9704753
+verdict: WARNING: overload signals on  1 node(s)
+leader_app_sum= 9704753

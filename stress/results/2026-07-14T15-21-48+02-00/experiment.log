@@ -1,0 +1,17 @@
+[experiment] run_id=2026-07-14T15-21-48+02-00
+[experiment] config=/home/use/projets/2019-Ada_Raft/AdaRaft/examples/cluster.toml clients=8 commands_per_client=200 concurrency=8
+[experiment] stopping cluster
+stopped node 1 (supervisor pid 2918770)
+stopped node 2 (supervisor pid 2918820)
+stopped node 3 (supervisor pid 2918874)
+[experiment] starting cluster
+started node 1 (supervisor pid 2986808, auto-restart on kill, log: /home/use/projets/2019-Ada_Raft/AdaRaft/examples/logs/node-1.log)
+started node 2 (supervisor pid 2986858, auto-restart on kill, log: /home/use/projets/2019-Ada_Raft/AdaRaft/examples/logs/node-2.log)
+started node 3 (supervisor pid 2986908, auto-restart on kill, log: /home/use/projets/2019-Ada_Raft/AdaRaft/examples/logs/node-3.log)
+[experiment] cluster did not reach HEALTHY/WARNING within timeout
+=== cluster snapshot 2026-07-14 13:22:18 ===
+node 1 UNREACHABLE
+node 2 UNREACHABLE
+node 3 UNREACHABLE
+verdict: UNREACHABLE: no audit endpoint responded
+leader_app_sum= 0

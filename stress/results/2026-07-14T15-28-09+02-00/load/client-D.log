@@ -1,0 +1,29 @@
+registered client id= 6 leader= 1 next_serial= 0
+registered client id= 14 leader= 1 next_serial= 0
+send serial= 0 committed=TRUE leader= 1 index= 5
+registered client id= 18 leader= 1 next_serial= 0
+send serial= 1 committed=TRUE leader= 1 index= 9
+send serial= 2 committed=TRUE leader= 1 index= 10
+send serial= 3 committed=TRUE leader= 1 index= 11
+send serial= 4 committed=TRUE leader= 1 index= 12
+send serial= 5 committed=TRUE leader= 1 index= 13
+registered client id= 27 leader= 1 next_serial= 0
+send serial= 6 committed=TRUE leader= 1 index= 14
+send serial= 7 committed=TRUE leader= 1 index= 15
+send serial= 8 committed=TRUE leader= 1 index= 16
+send serial= 9 committed=TRUE leader= 1 index= 17
+send serial= 10 committed=TRUE leader= 1 index= 18
+registered client id= 54 leader= 1 next_serial= 0
+send serial= 11 committed=TRUE leader= 1 index= 19
+registered client id= 32 leader= 1 next_serial= 0
+send serial= 12 committed=TRUE leader= 1 index= 20
+send serial= 13 committed=TRUE leader= 1 index= 21
+send serial= 14 committed=TRUE leader= 1 index= 22
+registered client id= 2431 leader= 1 next_serial= 0
+send failed: timed out waiting for leader
+send failed: timed out waiting for leader
+send failed: timed out waiting for leader
+send failed: timed out waiting for leader
+send failed: TCP to cluster failed (check ./launch.sh start; after load test try ./launch.sh stop && ./launch.sh start)
+send failed: TCP to cluster failed (check ./launch.sh start; after load test try ./launch.sh stop && ./launch.sh start)
+send failed: TCP to cluster failed (check ./launch.sh start; after load test try ./launch.sh stop && ./launch.sh start)
