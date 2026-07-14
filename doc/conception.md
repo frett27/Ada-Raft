@@ -93,6 +93,8 @@ Raft replicates the **log**; the user owns **application state** via `Raft.State
 
 Register with `Create_Machine` (`App_State`). On commit advance, `Apply_Committed_Entries` runs `lastApplied .. commitIndex`. `InstallSnapshot` restores application state and replays the log suffix.
 
+Step-by-step integration: [library_api.md](library_api.md).
+
 ## Tests
 
 Layers: buffer units, isolated RPCs, 3-node scenarios, compaction/snapshot, **log storage** units, long command runs with periodic compact. See [tests.md](tests.md).

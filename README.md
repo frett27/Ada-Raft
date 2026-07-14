@@ -75,10 +75,12 @@ Probably **not** for you if you need production etcd-like service, real networki
 - [X] Application state machine (`Apply_Command`, snapshot/restore)
 - [X] Deterministic test harness (epochs, message buffer, partitions, node reset)
 - [X] Leader replication debug lines (`[ leader N replication ]` in traces)
-- [ ] Client handling / commit broadcast
+- [X] Client handling / commit broadcast (leader; examples)
+- [X] TCP client API (examples: register, send, reconnect, watchdog)
+- [ ] High-volume client / replication tuning (examples overload under load)
 - [ ] Formal verification (SPARK proof coverage still in progress)
 
-Core Raft through **log compaction (§7)** is in place. Client protocol and membership changes are not.
+Core Raft through **log compaction (§7)** is in place. **Examples** add UDP inter-node RPC and a sync TCP client API; membership changes are not.
 
 ## Quick start
 
@@ -113,13 +115,20 @@ The replicated log is a **`Shifted_Log`**: logical indices grow with the cluster
 
 More detail: [doc/conception.md](doc/conception.md)
 
+Library integration (commands, application state, log, snapshots):
+[doc/library_api.md](doc/library_api.md)
+
 - [doc/tests.md](doc/tests.md) — tests and paper mapping
 - [doc/spark.md](doc/spark.md) — SPARK notes
 - [doc/other_implementations.md](doc/other_implementations.md) — related work
 
 ## Application state
 
-Raft replicates the log; your program holds the meaningful state. Extend `Raft.State_Machine.Application_State` and pass it to `Create_Machine`:
+Raft replicates the log; your program holds the meaningful state. See
+[doc/library_api.md](doc/library_api.md) for the full integration guide (commands,
+`Shifted_Log`, snapshots, `Create_Machine`).
+
+Extend `Raft.State_Machine.Application_State` and pass it to `Create_Machine`:
 
 - `Apply_Command` — one committed entry
 - `Save_Snapshot` / `Restore_Snapshot` — blob format after the 8-byte Raft header (`lastIncludedIndex`, `lastIncludedTerm`)
@@ -137,7 +146,8 @@ Raft.Snapshot.Set_Compact_Log_Retention (20);   -- 0 = trim through commit (defa
 
 This is **research / learning** quality: the core has a fair amount of testing in the deterministic setup above, but we would not call it production-ready.
 
-- no real network layer yet
+- deterministic tests use an in-memory hub; **examples/** add UDP + TCP (see [examples/doc/client_api.md](examples/doc/client_api.md))
+- client sessions expire after inactivity; high concurrent load can still stall the leader
 - design may change as we learn
 
 Feel free to explore; treat production use as something to grow deliberately, not something that is guaranteed today.
@@ -172,7 +182,7 @@ AdaRaft only covers the **Raft core**. Field use usually adds:
 | Persistence | Durable log and snapshots, crash recovery, backups |
 | Operations | Monitoring, alerts, runbooks, metrics |
 | Deployment | Quorum sizing, rolling restarts, config/secrets |
-| Client API | Idempotency, commit notifications, retries (not here yet) |
+| Client API | Idempotency and retries (basic); commit notifications; not hardened under load |
 | Security | Peer auth, client auth, audit |
 | Testing | Chaos on real networks, load, upgrades, DR drills |
 | Verification | Review, fuzzing, formal methods beyond current SPARK |
@@ -188,12 +198,13 @@ Test sources are built with GNAT style checks (`-gnaty…`). To reformat with **
 
 Things we might look at eventually (no promises):
 
-- [ ] Client handling / commit broadcast
+- [X] Client handling / commit broadcast (examples)
 - [ ] More SPARK proof coverage
 - [ ] Membership changes
 - [ ] Pre-vote, log transmission tweaks
-- [ ] Network transport
+- [X] Network transport (examples: UDP Raft, TCP client API)
 - [ ] Durable persistence for `Shifted_Log` and snapshots
+- [ ] High-volume client / leader scheduling (see [examples/doc/scheduling_and_priorities.md](examples/doc/scheduling_and_priorities.md))
 
 ## License
 
@@ -202,4 +213,4 @@ MIT OR Apache-2.0 WITH LLVM-exception (see `alire.toml`).
 ## Changelog
 
 - **2024-08-15** — Raft system testing (clearer tests)
-- **2026** — Log compaction, application state machine, `Shifted_Log` / `Raft.Log_Storage`, optional post-compact log retention, long-run compaction tests, leader replication debug traces
+- **2026** — Log compaction, application state machine, `Shifted_Log` / `Raft.Log_Storage`, optional post-compact log retention, long-run compaction tests, leader replication debug traces; examples TCP client API, session expiry, watchdog
