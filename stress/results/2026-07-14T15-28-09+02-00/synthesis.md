@@ -16,9 +16,9 @@
 | Metric | Value |
 |--------|-------|
 | Load duration | 15,604 s |
-| Client committed | 52 / 1600 (3,25%) |
-| Client failures (log lines) | 34 |
-| **Throughput (client)** | **3,33 tx/s** |
+| Client committed | 54 / 1600 (3.38%) |
+| Client failures (log lines) | 55 |
+| **Throughput (client)** | **3.60 tx/s** |
 | Load exit code | 1 |
 
 Client throughput =  responses / wall-clock load time.
@@ -30,6 +30,20 @@ Client throughput =  responses / wall-clock load time.
 | leader_app_sum start | 0 |
 | leader_app_sum end | 9704753 |
 | Monitor snapshots | 10 |
+
+## Per-client results
+
+```
+client-A: committed=1 failures=7
+client-B: committed=34 failures=6
+client-C: committed=1 failures=7
+client-D: committed=15 failures=7
+client-E: committed=1 failures=7
+client-F: committed=0 failures=7
+client-G: committed=2 failures=7
+client-H: committed=0 failures=7
+
+```
 
 ## Cluster verdicts during run
 

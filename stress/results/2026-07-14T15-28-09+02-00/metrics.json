@@ -3,13 +3,14 @@
   "started_at": "2026-07-14T15:28:09+02:00",
   "finished_at": "2026-07-14T15:28:31+02:00",
   "submitted": 1600,
-  "committed": 52,
-  "failures": 34,
-  "success_rate_pct": 3,25,
+  "committed": 54,
+  "failures": 55,
+  "success_rate_pct": 3.38,
   "load_duration_s": 15,604,
-  "throughput_tps": 3,33,
+  "throughput_tps": 3.60,
   "load_exit_code": 1,
   "leader_app_sum_start": 0,
   "leader_app_sum_end": 9704753,
-  "monitor_snapshots": 10
+  "monitor_snapshots": 10,
+  "cluster_stable": "partial"
 }

@@ -18,7 +18,11 @@ package Example_Config is
 
    --  Max concurrent client sync TCP handlers on the leader before refusing
    --  new connections (protects Raft replication from client overload).
-   Max_Client_In_Flight : constant Natural := 8;
+   Max_Client_In_Flight : constant Natural := 4;
+
+   --  Pipelined client requests between TCP sync and Raft_Node_Task.
+   --  Keep at 1 until per-slot response routing is proven under load.
+   Max_Client_Pipeline_Slots : constant Positive := 1;
 
    Default_Client_Port : constant Port_Type := 9200;
    Default_Client_Host : constant String := "127.0.0.1";

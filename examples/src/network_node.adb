@@ -91,67 +91,60 @@ package body Network_Node is
       Rejected : Natural := 0;
    end Client_Load_Guard;
 
-   --  TCP sync path: worker <-> client comms task (rendezvous per connection).
-   protected Client_Message_Box is
-      entry Submit_Request
+   Client_Pipeline_Depth : constant Positive := Max_Client_Pipeline_Slots;
+
+   type Client_Slot_State is (Free, Queued, Response_Ready);
+
+   type Client_Slot_Record is record
+      State         : Client_Slot_State := Free;
+      Sender        : Unbounded_String;
+      Request       : Stream_Element_Array (1 .. Max_Client_Frame);
+      Request_Last  : Stream_Element_Offset := 0;
+      Response      : Stream_Element_Array (1 .. Max_Sync_Response);
+      Response_Last : Stream_Element_Offset := 0;
+      Resp_Found    : Boolean := False;
+   end record;
+
+   Client_Slots      : array (1 .. Client_Pipeline_Depth) of Client_Slot_Record;
+   Client_Raft_Queue : array (1 .. Client_Pipeline_Depth) of Positive;
+   Client_Raft_Head  : Positive := 1;
+   Client_Raft_Tail  : Positive := 1;
+   Client_Raft_Count : Natural := 0;
+
+   protected Client_Pipeline is
+      procedure Attach_Request
         (Sender  : Unbounded_String;
-         Request : Stream_Element_Array);
-      entry Accept_Request
-        (Sender       : out Unbounded_String;
-         Request      : out Stream_Element_Array;
-         Request_Last : out Stream_Element_Offset);
-      entry Submit_Response
-        (Response      : Stream_Element_Array;
-         Response_Last : Stream_Element_Offset;
-         Found         : Boolean);
-      entry Accept_Response
-        (Response      : out Stream_Element_Array;
+         Request : Stream_Element_Array;
+         Slot    : out Natural);
+      entry Await_Client_Response
+        (Slot          : Natural;
+         Response      : out Stream_Element_Array;
          Response_Last : out Stream_Element_Offset;
          Found         : out Boolean);
-   private
-      Req_Pending  : Boolean := False;
-      Req_Sender   : Unbounded_String;
-      Req_Buffer   : Stream_Element_Array (1 .. Max_Client_Frame);
-      Req_Last     : Stream_Element_Offset;
-      Resp_Pending : Boolean := False;
-      Resp_Buffer  : Stream_Element_Array (1 .. Max_Client_Frame);
-      Resp_Last    : Stream_Element_Offset;
-      Resp_Found   : Boolean;
-   end Client_Message_Box;
-
-   --  Async mailbox: client comms task <-> raft node task.
-   protected Raft_Client_Mailbox is
-      entry Post_Request
-        (Sender       : Unbounded_String;
-         Request      : Stream_Element_Array;
-         Request_Last : Stream_Element_Offset);
-      entry Take_Request
-        (Sender       : out Unbounded_String;
-         Request      : out Stream_Element_Array;
-         Request_Last : out Stream_Element_Offset);
-
-      procedure Deliver_Response
-        (Response      : Stream_Element_Array;
+      entry Take_Raft_Request
+        (Slot          : out Natural;
+         Sender        : out Unbounded_String;
+         Request       : out Stream_Element_Array;
+         Request_Last  : out Stream_Element_Offset);
+      procedure Deliver_Raft_Response
+        (Slot          : Natural;
+         Response      : Stream_Element_Array;
          Response_Last : Stream_Element_Offset;
          Found         : Boolean);
-      entry Take_Response
-        (Response      : out Stream_Element_Array;
+      function Try_Fetch_Response
+        (Slot          : Natural;
+         Response      : out Stream_Element_Array;
          Response_Last : out Stream_Element_Offset;
-         Found         : out Boolean);
-   private
-      Req_Pending  : Boolean := False;
-      Req_Sender   : Unbounded_String;
-      Req_Buffer   : Stream_Element_Array (1 .. Max_Client_Frame);
-      Req_Last     : Stream_Element_Offset;
-      Resp_Pending : Boolean := False;
-      Resp_Buffer  : Stream_Element_Array (1 .. Max_Sync_Response);
-      Resp_Last    : Stream_Element_Offset;
-      Resp_Found   : Boolean;
-   end Raft_Client_Mailbox;
-
-   task Client_Comms_Task is
-      entry Start;
-   end Client_Comms_Task;
+         Found         : out Boolean) return Boolean;
+      function Response_Pending return Boolean;
+      function Has_Raft_Request return Boolean;
+      procedure Try_Take_Raft_Request
+        (Taken         : out Boolean;
+         Slot          : out Natural;
+         Sender        : out Unbounded_String;
+         Request       : out Stream_Element_Array;
+         Request_Last  : out Stream_Element_Offset);
+   end Client_Pipeline;
 
    task Server_Comms_Task is
       entry Start;
@@ -181,6 +174,7 @@ package body Network_Node is
       Active        : Boolean := False;
       Ready         : Boolean := False;
       Dispatched    : Boolean := False;
+      Slot          : Natural := 0;
       Sender        : Unbounded_String;
       Request_Data  : Stream_Element_Array (1 .. Max_Client_Frame);
       Request_Last  : Stream_Element_Offset := 0;
@@ -727,6 +721,12 @@ package body Network_Node is
    Max_Drain_Rounds      : constant Positive := 32;
    Max_Drain_Safety      : constant Natural := 4096;
    Drain_Yield           : constant Duration := 0.001;
+   --  Pause new client pipeline work while Raft inbound is backlogged.
+   Client_Work_Inbound_Cap : constant Natural := 16;
+   --  Bound shared-inbox polling per client work step (avoids wedging).
+   Max_Poll_Inbox_Rounds   : constant Positive := 128;
+   --  Cap inter-server inbound per main-loop iteration (epoch stays timely).
+   Max_Inbound_Per_Loop    : constant Positive := 64;
    --  Extra election delay while the cluster binds listeners (startup race).
    Startup_Grace_Epochs : constant Natural := 20;
 
@@ -893,139 +893,202 @@ package body Network_Node is
 
    end Client_Load_Guard;
 
-   protected body Client_Message_Box is
+   protected body Client_Pipeline is
 
-      entry Submit_Request
+      function Response_Pending return Boolean is
+      begin
+         for Slot of Client_Slots loop
+            if Slot.State = Response_Ready then
+               return True;
+            end if;
+         end loop;
+         return False;
+      end Response_Pending;
+
+      procedure Enqueue_Raft (Slot : Positive) is
+      begin
+         if Slot not in Client_Slots'Range then
+            raise Constraint_Error with "invalid client pipeline slot";
+         end if;
+         if Client_Raft_Count >= Client_Raft_Queue'Length then
+            raise Program_Error with "raft client queue full";
+         end if;
+         Client_Raft_Queue (Client_Raft_Tail) := Slot;
+         if Client_Raft_Tail = Client_Raft_Queue'Last then
+            Client_Raft_Tail := Client_Raft_Queue'First;
+         else
+            Client_Raft_Tail := Client_Raft_Tail + 1;
+         end if;
+         Client_Raft_Count := Client_Raft_Count + 1;
+      end Enqueue_Raft;
+
+      procedure Attach_Request
         (Sender  : Unbounded_String;
-         Request : Stream_Element_Array) when not Req_Pending
+         Request : Stream_Element_Array;
+         Slot    : out Natural)
       is
+         Free_Slot : Positive;
       begin
-         Req_Sender := Sender;
-         if Stream_Element_Offset (Request'Length) > Req_Buffer'Last then
-            raise Constraint_Error with "client request too large";
-         end if;
-         if Request'Length > 0 then
-            Req_Buffer (1 .. Request'Length) := Request;
-         end if;
-         Req_Last := Stream_Element_Offset (Request'Length);
-         Req_Pending := True;
-      end Submit_Request;
+         Slot := 0;
+         for I in Client_Slots'Range loop
+            if Client_Slots (I).State = Free then
+               Free_Slot := I;
+               if Stream_Element_Offset (Request'Length) >
+                 Client_Slots (Free_Slot).Request'Last
+               then
+                  raise Constraint_Error with "client request too large";
+               end if;
+               Client_Slots (Free_Slot).Sender := Sender;
+               if Request'Length > 0 then
+                  Client_Slots (Free_Slot).Request (1 .. Request'Length) :=
+                    Request;
+               end if;
+               Client_Slots (Free_Slot).Request_Last :=
+                 Stream_Element_Offset (Request'Length);
+               Client_Slots (Free_Slot).State := Queued;
+               Enqueue_Raft (Free_Slot);
+               Slot := Free_Slot;
+               return;
+            end if;
+         end loop;
+      end Attach_Request;
 
-      entry Accept_Request
-        (Sender       : out Unbounded_String;
-         Request      : out Stream_Element_Array;
-         Request_Last : out Stream_Element_Offset) when Req_Pending
+      entry Await_Client_Response
+        (Slot          : Natural;
+         Response      : out Stream_Element_Array;
+         Response_Last : out Stream_Element_Offset;
+         Found         : out Boolean)
+      when Response_Pending
       is
+         S : constant Positive := Positive (Slot);
       begin
-         Sender := Req_Sender;
-         Request := Req_Buffer;
-         Request_Last := Req_Last;
-         Req_Pending := False;
-      end Accept_Request;
-
-      entry Submit_Response
-        (Response      : Stream_Element_Array;
-         Response_Last : Stream_Element_Offset;
-         Found         : Boolean) when not Resp_Pending
-      is
-      begin
-         if Response_Last > Response'Last or else Response_Last > Resp_Buffer'Last
+         if Slot not in Client_Slots'Range
+           or else Client_Slots (S).State /= Response_Ready
          then
+            requeue Client_Pipeline.Await_Client_Response with abort;
+         end if;
+         Response_Last := Client_Slots (S).Response_Last;
+         if Response_Last > Response'Last then
             raise Constraint_Error with "client response too large";
          end if;
          if Response_Last > 0 then
-            Resp_Buffer (1 .. Response_Last) :=
-              Response (Response'First .. Response'First + Response_Last - 1);
+            Response (Response'First .. Response'First + Response_Last - 1) :=
+              Client_Slots (S).Response (1 .. Response_Last);
          end if;
-         Resp_Last := Response_Last;
-         Resp_Found := Found;
-         Resp_Pending := True;
-      end Submit_Response;
+         Found := Client_Slots (S).Resp_Found;
+         Client_Slots (S).State := Free;
+      end Await_Client_Response;
 
-      entry Accept_Response
-        (Response      : out Stream_Element_Array;
-         Response_Last : out Stream_Element_Offset;
-         Found         : out Boolean) when Resp_Pending
+      entry Take_Raft_Request
+        (Slot          : out Natural;
+         Sender        : out Unbounded_String;
+         Request       : out Stream_Element_Array;
+         Request_Last  : out Stream_Element_Offset)
+      when Client_Raft_Count > 0
       is
+         S : constant Positive := Client_Raft_Queue (Client_Raft_Head);
       begin
-         Response := Resp_Buffer;
-         Response_Last := Resp_Last;
-         Found := Resp_Found;
-         Resp_Pending := False;
-      end Accept_Response;
-
-   end Client_Message_Box;
-
-   protected body Raft_Client_Mailbox is
-
-      entry Post_Request
-        (Sender       : Unbounded_String;
-         Request      : Stream_Element_Array;
-         Request_Last : Stream_Element_Offset) when not Req_Pending
-      is
-      begin
-         Req_Sender := Sender;
-         if Request_Last > Req_Buffer'Last then
-            raise Constraint_Error with "client request too large";
+         if Client_Raft_Head = Client_Raft_Queue'Last then
+            Client_Raft_Head := Client_Raft_Queue'First;
+         else
+            Client_Raft_Head := Client_Raft_Head + 1;
          end if;
-         if Request_Last > 0 then
-            Req_Buffer (1 .. Request_Last) :=
-              Request
-                (Request'First ..
-                 Request'First
-                   + Stream_Element_Offset (Natural (Request_Last) - 1));
-         end if;
-         Req_Last := Request_Last;
-         Req_Pending := True;
-      end Post_Request;
+         Client_Raft_Count := Client_Raft_Count - 1;
+         Slot := S;
+         Sender := Client_Slots (S).Sender;
+         Request := Client_Slots (S).Request;
+         Request_Last := Client_Slots (S).Request_Last;
+      end Take_Raft_Request;
 
-      entry Take_Request
-        (Sender       : out Unbounded_String;
-         Request      : out Stream_Element_Array;
-         Request_Last : out Stream_Element_Offset) when Req_Pending
-      is
-      begin
-         Sender := Req_Sender;
-         Request := Req_Buffer;
-         Request_Last := Req_Last;
-         Req_Pending := False;
-      end Take_Request;
-
-      procedure Deliver_Response
-        (Response      : Stream_Element_Array;
+      procedure Deliver_Raft_Response
+        (Slot          : Natural;
+         Response      : Stream_Element_Array;
          Response_Last : Stream_Element_Offset;
          Found         : Boolean)
       is
       begin
-         if Resp_Pending then
-            raise Program_Error with "client response slot busy";
+         if Slot not in Client_Slots'Range then
+            raise Constraint_Error with "invalid client pipeline slot";
          end if;
-         if Response_Last > Response'Last or else Response_Last > Resp_Buffer'Last
+         declare
+            S : constant Positive := Positive (Slot);
+         begin
+            if Response_Last > Response'Last
+              or else Response_Last > Client_Slots (S).Response'Last
+            then
+               raise Constraint_Error with "client response too large";
+            end if;
+            if Response_Last > 0 then
+               Client_Slots (S).Response (1 .. Response_Last) :=
+                 Response (Response'First .. Response'First + Response_Last - 1);
+            end if;
+            Client_Slots (S).Response_Last := Response_Last;
+            Client_Slots (S).Resp_Found := Found;
+            Client_Slots (S).State := Response_Ready;
+         end;
+      end Deliver_Raft_Response;
+
+      function Try_Fetch_Response
+        (Slot          : Natural;
+         Response      : out Stream_Element_Array;
+         Response_Last : out Stream_Element_Offset;
+         Found         : out Boolean) return Boolean
+      is
+         S : constant Positive := Positive (Slot);
+      begin
+         if Slot not in Client_Slots'Range
+           or else Client_Slots (S).State /= Response_Ready
          then
+            return False;
+         end if;
+
+         Response_Last := Client_Slots (S).Response_Last;
+         if Response_Last > Response'Last then
             raise Constraint_Error with "client response too large";
          end if;
          if Response_Last > 0 then
-            Resp_Buffer (1 .. Response_Last) :=
-              Response (Response'First .. Response'First + Response_Last - 1);
+            Response (Response'First .. Response'First + Response_Last - 1) :=
+              Client_Slots (S).Response (1 .. Response_Last);
          end if;
-         Resp_Last := Response_Last;
-         Resp_Found := Found;
-         Resp_Pending := True;
-      end Deliver_Response;
+         Found := Client_Slots (S).Resp_Found;
+         Client_Slots (S).State := Free;
+         return True;
+      end Try_Fetch_Response;
 
-      entry Take_Response
-        (Response      : out Stream_Element_Array;
-         Response_Last : out Stream_Element_Offset;
-         Found         : out Boolean) when Resp_Pending
-      is
+      function Has_Raft_Request return Boolean is
       begin
-         Response := Resp_Buffer;
-         Response_Last := Resp_Last;
-         Found := Resp_Found;
-         Resp_Pending := False;
-      end Take_Response;
+         return Client_Raft_Count > 0;
+      end Has_Raft_Request;
 
-   end Raft_Client_Mailbox;
+      procedure Try_Take_Raft_Request
+        (Taken         : out Boolean;
+         Slot          : out Natural;
+         Sender        : out Unbounded_String;
+         Request       : out Stream_Element_Array;
+         Request_Last  : out Stream_Element_Offset)
+      is
+         S : Positive;
+      begin
+         if Client_Raft_Count = 0 then
+            Taken := False;
+            return;
+         end if;
+
+         S := Client_Raft_Queue (Client_Raft_Head);
+         if Client_Raft_Head = Client_Raft_Queue'Last then
+            Client_Raft_Head := Client_Raft_Queue'First;
+         else
+            Client_Raft_Head := Client_Raft_Head + 1;
+         end if;
+         Client_Raft_Count := Client_Raft_Count - 1;
+         Slot := S;
+         Sender := Client_Slots (S).Sender;
+         Request := Client_Slots (S).Request;
+         Request_Last := Client_Slots (S).Request_Last;
+         Taken := True;
+      end Try_Take_Raft_Request;
+
+   end Client_Pipeline;
 
    procedure Set_Timer
      (Timer : Timer_Type; Counter : Natural)
@@ -1335,6 +1398,14 @@ package body Network_Node is
       Drain_Server_Inbound (Max_Drain_Rounds);
    end Drain_Server_Messages;
 
+   procedure Drain_Priority_Server_Inbound is
+   begin
+      if Server_Message_Box.Is_Empty then
+         return;
+      end if;
+      Drain_Server_Inbound (Max_Inbound_Per_Loop);
+   end Drain_Priority_Server_Inbound;
+
    function Poll_Interval return Duration is
    begin
       if Server_Message_Box.Is_Empty then
@@ -1568,8 +1639,12 @@ package body Network_Node is
    is
       Request_Msg : constant Message_Type'Class :=
         Pending_Request_Message (Work);
+      Rounds      : Natural := 0;
    begin
       loop
+         Rounds := Rounds + 1;
+         exit when Rounds > Max_Poll_Inbox_Rounds;
+
          declare
             Taken : Boolean;
             Reply : Message_Type'Class := Try_Take_Client_Inbox (Taken);
@@ -1590,25 +1665,29 @@ package body Network_Node is
    end Poll_Final_Client_Response;
 
    procedure Begin_Client_Work
-     (Sender  : Unbounded_String;
-      Request : Stream_Element_Array;
-      Work    : out Client_Work_State)
+     (Slot         : Natural;
+      Sender       : Unbounded_String;
+      Request      : Stream_Element_Array;
+      Request_Last : Stream_Element_Offset;
+      Work         : out Client_Work_State)
    is
    begin
       Work.Active        := True;
       Work.Ready         := False;
       Work.Dispatched    := False;
       Work.Found         := False;
+      Work.Slot          := Slot;
       Work.Sender        := Sender;
       Work.Deadline      := Clock + Client_Timeout_S;
       Work.Response_Last := 0;
-      if Stream_Element_Offset (Request'Length) > Work.Request_Data'Last then
+      if Request_Last > Work.Request_Data'Last then
          raise Constraint_Error with "client request too large";
       end if;
-      if Request'Length > 0 then
-         Work.Request_Data (1 .. Request'Length) := Request;
+      if Request_Last > 0 then
+         Work.Request_Data (1 .. Request_Last) :=
+           Request (Request'First .. Request'First + Request_Last - 1);
       end if;
-      Work.Request_Last := Stream_Element_Offset (Request'Length);
+      Work.Request_Last := Request_Last;
    end Begin_Client_Work;
 
    procedure Step_Client_Work (Work : in out Client_Work_State) is
@@ -1652,6 +1731,12 @@ package body Network_Node is
         and then Node.State.Current_Raft_State = LEADER;
    end Client_Load_Limited;
 
+   function Client_Work_Allowed return Boolean is
+   begin
+      return Client_Load_Limited
+        and then Pending_Inbound_Count <= Client_Work_Inbound_Cap;
+   end Client_Work_Allowed;
+
    procedure Client_Sync_Handler
      (Sender        : Unbounded_String;
       Request       : Stream_Element_Array;
@@ -1663,6 +1748,25 @@ package body Network_Node is
       Track_Load    : constant Boolean := Client_Load_Limited;
       Accepted      : Boolean;
    begin
+      if Node /= null
+        and then Node.State.Current_Raft_State /= LEADER
+      then
+         if Build_Error_Response (Request, Full_Response, Response_Last) then
+            Found := True;
+            if Response_Last > Response'Length then
+               raise Constraint_Error with "sync response too large";
+            end if;
+            if Response_Last > 0 then
+               Response
+                 (Response'First .. Response'First + Response_Last - 1) :=
+                 Full_Response (1 .. Response_Last);
+            end if;
+         else
+            Found := False;
+         end if;
+         return;
+      end if;
+
       if Track_Load then
          Client_Load_Guard.Try_Accept (Accepted);
          if not Accepted then
@@ -1698,23 +1802,61 @@ package body Network_Node is
          end if;
       end if;
 
+      declare
+         Slot : Natural;
       begin
-         Client_Message_Box.Submit_Request (Sender, Request);
-         Client_Message_Box.Accept_Response
-           (Full_Response, Response_Last, Found);
-         if Response_Last > Response'Length then
-            raise Constraint_Error with "sync response too large";
-         end if;
-         if Response_Last > 0 then
-            Response (Response'First .. Response'First + Response_Last - 1) :=
-              Full_Response (1 .. Response_Last);
-         end if;
-      exception
-         when others =>
+         Client_Pipeline.Attach_Request (Sender, Request, Slot);
+         if Slot = 0 then
             if Track_Load then
                Client_Load_Guard.Release;
             end if;
-            raise;
+            if Build_Error_Response (Request, Full_Response, Response_Last) then
+               Found := True;
+               if Response_Last > Response'Length then
+                  raise Constraint_Error with "sync response too large";
+               end if;
+               if Response_Last > 0 then
+                  Response
+                    (Response'First .. Response'First + Response_Last - 1) :=
+                    Full_Response (1 .. Response_Last);
+               end if;
+            else
+               Found := False;
+            end if;
+            return;
+         end if;
+
+         begin
+            declare
+               Deadline : constant Time := Clock + Client_Timeout_S;
+               Ready    : Boolean := False;
+            begin
+               loop
+                  Ready :=
+                    Client_Pipeline.Try_Fetch_Response
+                      (Slot, Full_Response, Response_Last, Found);
+                  exit when Ready;
+                  exit when Clock >= Deadline;
+                  delay Poll_Interval;
+               end loop;
+
+               if not Ready then
+                  Found := False;
+               elsif Response_Last > Response'Length then
+                  raise Constraint_Error with "sync response too large";
+               elsif Response_Last > 0 then
+                  Response
+                    (Response'First .. Response'First + Response_Last - 1) :=
+                    Full_Response (1 .. Response_Last);
+               end if;
+            end;
+         exception
+            when others =>
+               if Track_Load then
+                  Client_Load_Guard.Release;
+               end if;
+               raise;
+         end;
       end;
 
       if Track_Load then
@@ -1880,7 +2022,6 @@ package body Network_Node is
       end loop;
 
       Server_Comms_Task.Start;
-      Client_Comms_Task.Start;
       Raft_Node_Task.Start;
    end Initialize;
 
@@ -2251,28 +2392,24 @@ package body Network_Node is
       Audit_Safe_Close (Server);
    end Audit_Server_Task;
 
-   task body Client_Comms_Task is
+   procedure Log_Work_Response (Work : Client_Work_State) is
    begin
-      accept Start;
-      loop
-         declare
-            Sender        : Unbounded_String;
-            Request       : Stream_Element_Array (1 .. Max_Client_Frame);
-            Request_Last  : Stream_Element_Offset;
-            Response      : Stream_Element_Array (1 .. Max_Sync_Response);
-            Response_Last : Stream_Element_Offset;
-            Found         : Boolean;
-         begin
-            Client_Message_Box.Accept_Request (Sender, Request, Request_Last);
-            Raft_Client_Mailbox.Post_Request
-              (Sender, Request (1 .. Request_Last), Request_Last);
-            Raft_Client_Mailbox.Take_Response
-              (Response, Response_Last, Found);
-            Client_Message_Box.Submit_Response
-              (Response (1 .. Response'Last), Response_Last, Found);
-         end;
-      end loop;
-   end Client_Comms_Task;
+      if not Work.Found or else Work.Response_Last = 0 then
+         return;
+      end if;
+      declare
+         Response_MB : aliased Message_Buffer_Type;
+      begin
+         From_Stream_Element_Array
+           (Work.Response (1 .. Work.Response_Last), Response_MB);
+         Log_Client_Response
+           (Work.Sender,
+            Message_Type'Class'Input (Response_MB'Access));
+      exception
+         when others =>
+            null;
+      end;
+   end Log_Work_Response;
 
    task body Server_Comms_Task is
    begin
@@ -2311,11 +2448,116 @@ package body Network_Node is
    end Server_Comms_Task;
 
    task body Raft_Node_Task is
-      Next_Epoch    : Time;
-      Work          : Client_Work_State;
+      Next_Epoch : Time;
+      Work_Slots : array (1 .. Client_Pipeline_Depth) of Client_Work_State :=
+        (others => <>);
       Local_Sender  : Unbounded_String;
       Local_Request : Stream_Element_Array (1 .. Max_Client_Frame);
       Local_Last    : Stream_Element_Offset;
+      Local_Slot    : Natural;
+
+      procedure Fill_Client_Work_Slots is
+      begin
+         if not Client_Work_Allowed then
+            return;
+         end if;
+
+         for I in Work_Slots'Range loop
+            if not Work_Slots (I).Active then
+               declare
+                  Taken : Boolean;
+               begin
+                  Client_Pipeline.Try_Take_Raft_Request
+                    (Taken,
+                     Local_Slot,
+                     Local_Sender,
+                     Local_Request,
+                     Local_Last);
+                  exit when not Taken;
+                  Begin_Client_Work
+                    (Local_Slot,
+                     Local_Sender,
+                     Local_Request,
+                     Local_Last,
+                     Work_Slots (I));
+               end;
+            end if;
+         end loop;
+      end Fill_Client_Work_Slots;
+
+      procedure Step_All_Client_Work is
+      begin
+         for I in Work_Slots'Range loop
+            if Work_Slots (I).Active and then not Work_Slots (I).Ready then
+               if not Server_Message_Box.Is_Empty then
+                  Process_Server_Inbound;
+               end if;
+               Step_Client_Work (Work_Slots (I));
+            end if;
+         end loop;
+      end Step_All_Client_Work;
+
+      procedure Abort_Client_Work_Slot (Work : in out Client_Work_State) is
+      begin
+         if not Work.Active or else Work.Ready then
+            return;
+         end if;
+         Build_Server_Error_Response (Work);
+         Work.Found := True;
+         Work.Ready := True;
+      end Abort_Client_Work_Slot;
+
+      procedure Abort_All_Client_Work is
+      begin
+         for I in Work_Slots'Range loop
+            Abort_Client_Work_Slot (Work_Slots (I));
+         end loop;
+      end Abort_All_Client_Work;
+
+      procedure Flush_Non_Leader_Client_Pipeline is
+         Taken : Boolean;
+         Work  : Client_Work_State;
+      begin
+         loop
+            Client_Pipeline.Try_Take_Raft_Request
+              (Taken,
+               Local_Slot,
+               Local_Sender,
+               Local_Request,
+               Local_Last);
+            exit when not Taken;
+            Begin_Client_Work
+              (Local_Slot,
+               Local_Sender,
+               Local_Request,
+               Local_Last,
+               Work);
+            Abort_Client_Work_Slot (Work);
+            Client_Pipeline.Deliver_Raft_Response
+              (Work.Slot,
+               Work.Response (1 .. Work.Response'Last),
+               Work.Response_Last,
+               Work.Found);
+         end loop;
+      end Flush_Non_Leader_Client_Pipeline;
+
+      procedure Deliver_Completed_Client_Work is
+      begin
+         for I in Work_Slots'Range loop
+            if Work_Slots (I).Active and then Work_Slots (I).Ready then
+               Log_Work_Response (Work_Slots (I));
+               Client_Pipeline.Deliver_Raft_Response
+                 (Work_Slots (I).Slot,
+                  Work_Slots (I).Response (1 .. Work_Slots (I).Response'Last),
+                  Work_Slots (I).Response_Last,
+                  Work_Slots (I).Found);
+               Work_Slots (I).Active     := False;
+               Work_Slots (I).Ready      := False;
+               Work_Slots (I).Dispatched := False;
+               Work_Slots (I).Slot       := 0;
+            end if;
+         end loop;
+      end Deliver_Completed_Client_Work;
    begin
       accept Start;
       Next_Epoch := Clock + Raft_Cfg.Epoch_Interval;
@@ -2323,55 +2565,35 @@ package body Network_Node is
          declare
             Epoch_Tick : Boolean := False;
          begin
-            --  Timers and elections before inbound/client work so a loaded
-            --  node still advances epochs and can step down stale leaders.
-            if Clock >= Next_Epoch then
+            while Clock >= Next_Epoch loop
                Run_Epoch_Step;
                Epoch_Number := Epoch_Number + 1;
                Log_Role_Change;
                Epoch_Tick := True;
-               Next_Epoch := Clock + Raft_Cfg.Epoch_Interval;
-            end if;
+               Next_Epoch := Next_Epoch + Raft_Cfg.Epoch_Interval;
+            end loop;
 
-            if Work.Active then
-               Drain_Server_Messages;
-            else
-               Drain_All_Server_Inbound;
-            end if;
+            Drain_Priority_Server_Inbound;
 
             if Epoch_Tick then
                Log_Progress;
             end if;
          end;
 
-         if Work.Active then
-            if not Work.Ready then
-               Step_Client_Work (Work);
+         if Client_Load_Limited then
+            if not Client_Work_Allowed then
+               Abort_All_Client_Work;
             end if;
-
-            if Work.Ready then
-               Raft_Client_Mailbox.Deliver_Response
-                 (Work.Response (1 .. Work.Response'Last),
-                  Work.Response_Last,
-                  Work.Found);
-               Work.Active     := False;
-               Work.Ready      := False;
-               Work.Dispatched := False;
-            end if;
-         end if;
-
-         if not Work.Active then
-            select
-               Raft_Client_Mailbox.Take_Request
-                 (Local_Sender, Local_Request, Local_Last);
-               Begin_Client_Work
-                 (Local_Sender, Local_Request (1 .. Local_Last), Work);
-            or
-               delay Poll_Interval;
-            end select;
+            Step_All_Client_Work;
+            Deliver_Completed_Client_Work;
+            Fill_Client_Work_Slots;
          else
-            delay 0.001;
+            Abort_All_Client_Work;
+            Deliver_Completed_Client_Work;
+            Flush_Non_Leader_Client_Pipeline;
          end if;
+
+         delay Poll_Interval;
       end loop;
    end Raft_Node_Task;
 
