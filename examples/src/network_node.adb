@@ -148,8 +148,6 @@ package body Network_Node is
 
    task Server_Comms_Task is
       entry Start;
-      entry Send_To_Peer
-        (Remote : Unbounded_String; Payload : Stream_Element_Array);
    end Server_Comms_Task;
 
    task Raft_Node_Task is
@@ -727,6 +725,16 @@ package body Network_Node is
    Max_Poll_Inbox_Rounds   : constant Positive := 128;
    --  Cap inter-server inbound per main-loop iteration (epoch stays timely).
    Max_Inbound_Per_Loop    : constant Positive := 64;
+   --  Extra drain budget while the Raft inbox is backlogged.
+   Max_Inbound_When_Backlogged : constant Positive := 128;
+   --  Matches cluster_health.Overload_Pending_Inbound_Min.
+   Raft_Inbound_Backlog_Max    : constant Natural := 32;
+   --  Epoch steps per main-loop iteration (avoids timer bursts before drain).
+   Max_Epochs_Per_Loop         : constant Positive := 4;
+   --  Extra inbound drain rounds when backlogged.
+   Backlog_Drain_Rounds        : constant Positive := 4;
+   Outbound_Message_Box_Size   : constant := 2048;
+   Max_Outbound_Frame          : constant Stream_Element_Offset := 16_384;
    --  Extra election delay while the cluster binds listeners (startup race).
    Startup_Grace_Epochs : constant Natural := 20;
 
@@ -855,6 +863,133 @@ package body Network_Node is
          return Dropped;
       end Dropped_Count;
    end Server_Message_Box;
+
+   type Outbound_Entry is record
+      Remote       : Unbounded_String;
+      Payload_Last : Stream_Element_Offset := 0;
+      Data         : Stream_Element_Array (1 .. Max_Outbound_Frame);
+   end record;
+
+   type Outbound_Queue_Type is
+     array (1 .. Outbound_Message_Box_Size) of Outbound_Entry;
+
+   protected Outbound_Message_Box is
+      procedure Enqueue
+        (Remote : Unbounded_String; Payload : Stream_Element_Array);
+      procedure Dequeue
+        (Remote       : out Unbounded_String;
+         Data         : out Stream_Element_Array;
+         Payload_Last : out Stream_Element_Offset;
+         Found        : out Boolean);
+      function Is_Empty return Boolean;
+      function Queue_Depth return Natural;
+      function Dropped_Count return Natural;
+   private
+      Items   : Outbound_Queue_Type;
+      First   : Positive := 1;
+      Count   : Natural := 0;
+      Dropped : Natural := 0;
+
+      procedure Drop_Oldest;
+   end Outbound_Message_Box;
+
+   protected body Outbound_Message_Box is
+
+      function Tail_Index return Positive is
+      begin
+         if Count = 0 then
+            return First;
+         end if;
+         declare
+            Pos : Natural := First + Count - 1;
+         begin
+            if Pos > Items'Length then
+               Pos := Pos - Items'Length;
+            end if;
+            return Positive (Pos);
+         end;
+      end Tail_Index;
+
+      procedure Drop_Oldest is
+      begin
+         if Count = 0 then
+            return;
+         end if;
+         First := First + 1;
+         if First > Items'Last then
+            First := Items'First;
+         end if;
+         Count   := Count - 1;
+         Dropped := Dropped + 1;
+      end Drop_Oldest;
+
+      procedure Enqueue
+        (Remote : Unbounded_String; Payload : Stream_Element_Array)
+      is
+         Pos : constant Positive := Tail_Index;
+      begin
+         if Length (Remote) = 0 or else Payload'Length = 0 then
+            return;
+         end if;
+         if Stream_Element_Offset (Payload'Length) > Max_Outbound_Frame then
+            raise Constraint_Error with "outbound frame too large";
+         end if;
+         while Count >= Items'Length loop
+            Drop_Oldest;
+         end loop;
+         Items (Pos).Remote := Remote;
+         Items (Pos).Payload_Last :=
+           Stream_Element_Offset (Payload'Length);
+         Items (Pos).Data (1 .. Payload'Length) := Payload;
+         Count := Count + 1;
+      end Enqueue;
+
+      procedure Dequeue
+        (Remote       : out Unbounded_String;
+         Data         : out Stream_Element_Array;
+         Payload_Last : out Stream_Element_Offset;
+         Found        : out Boolean)
+      is
+         Item : Outbound_Entry;
+      begin
+         if Count = 0 then
+            Found := False;
+            return;
+         end if;
+         Item := Items (First);
+         Remote       := Item.Remote;
+         Payload_Last := Item.Payload_Last;
+         if Payload_Last > Data'Last then
+            raise Constraint_Error with "outbound dequeue buffer too small";
+         end if;
+         if Payload_Last > 0 then
+            Data (Data'First .. Data'First + Payload_Last - 1) :=
+              Item.Data (1 .. Payload_Last);
+         end if;
+         First := First + 1;
+         if First > Items'Last then
+            First := Items'First;
+         end if;
+         Count := Count - 1;
+         Found := True;
+      end Dequeue;
+
+      function Is_Empty return Boolean is
+      begin
+         return Count = 0;
+      end Is_Empty;
+
+      function Queue_Depth return Natural is
+      begin
+         return Count;
+      end Queue_Depth;
+
+      function Dropped_Count return Natural is
+      begin
+         return Dropped;
+      end Dropped_Count;
+
+   end Outbound_Message_Box;
 
    function Pending_Inbound_Count return Natural is
    begin
@@ -1129,8 +1264,7 @@ package body Network_Node is
       if Local_Id < 1 or else Local_Id > Server_Num then
          return;
       end if;
-
-      Server_Comms_Task.Send_To_Peer (Remote, Payload);
+      Outbound_Message_Box.Enqueue (Remote, Payload);
    end Send_Outbound_Payload;
 
    procedure Send_Outbound_Message
@@ -1344,12 +1478,18 @@ package body Network_Node is
       end if;
    end Report_Inbound_Drops;
 
-   procedure Process_Server_Inbound is
-      Sender  : Unbounded_String;
-      Payload : Payload_Access;
-      Found   : Boolean;
+   function Inbound_Backlogged return Boolean is
    begin
-      loop
+      return Pending_Inbound_Count > Raft_Inbound_Backlog_Max;
+   end Inbound_Backlogged;
+
+   procedure Process_Server_Inbound_Batch (Max_Messages : Positive) is
+      Sender    : Unbounded_String;
+      Payload   : Payload_Access;
+      Found     : Boolean;
+      Processed : Natural := 0;
+   begin
+      while Processed < Max_Messages loop
          Server_Message_Box.Dequeue (Sender, Payload, Found);
          exit when not Found;
 
@@ -1364,46 +1504,57 @@ package body Network_Node is
             Handle_Raft_Message (Sender, Data);
          end;
          Free_Payload (Payload);
+         Processed := Processed + 1;
 
          <<Next_Message>>
          null;
       end loop;
 
       Report_Inbound_Drops;
+   end Process_Server_Inbound_Batch;
+
+   procedure Process_Server_Inbound is
+   begin
+      Process_Server_Inbound_Batch (Max_Inbound_Per_Loop);
    end Process_Server_Inbound;
 
    procedure Drain_All_Server_Inbound is
       Safety : Natural := 0;
    begin
       loop
-         Process_Server_Inbound;
          exit when Server_Message_Box.Is_Empty;
+         Process_Server_Inbound_Batch (Max_Inbound_When_Backlogged);
          Safety := Safety + 1;
          exit when Safety >= Max_Drain_Safety;
          delay Drain_Yield;
       end loop;
    end Drain_All_Server_Inbound;
 
-   procedure Drain_Server_Inbound (Max_Rounds : Positive) is
+   procedure Drain_Server_Inbound (Max_Messages : Positive) is
    begin
-      for Round in 1 .. Max_Rounds loop
-         Process_Server_Inbound;
-         exit when Server_Message_Box.Is_Empty;
-         delay Drain_Yield;
-      end loop;
+      Process_Server_Inbound_Batch (Max_Messages);
    end Drain_Server_Inbound;
 
    procedure Drain_Server_Messages is
    begin
-      Drain_Server_Inbound (Max_Drain_Rounds);
+      Drain_Server_Inbound
+        (Positive (Max_Drain_Rounds) * Positive (Max_Inbound_Per_Loop));
    end Drain_Server_Messages;
+
+   function Inbound_Drain_Budget return Positive is
+   begin
+      if Inbound_Backlogged then
+         return Max_Inbound_When_Backlogged;
+      end if;
+      return Max_Inbound_Per_Loop;
+   end Inbound_Drain_Budget;
 
    procedure Drain_Priority_Server_Inbound is
    begin
       if Server_Message_Box.Is_Empty then
          return;
       end if;
-      Drain_Server_Inbound (Max_Inbound_Per_Loop);
+      Drain_Server_Inbound (Inbound_Drain_Budget);
    end Drain_Priority_Server_Inbound;
 
    function Poll_Interval return Duration is
@@ -1734,6 +1885,7 @@ package body Network_Node is
    function Client_Work_Allowed return Boolean is
    begin
       return Client_Load_Limited
+        and then not Inbound_Backlogged
         and then Pending_Inbound_Count <= Client_Work_Inbound_Cap;
    end Client_Work_Allowed;
 
@@ -1751,6 +1903,23 @@ package body Network_Node is
       if Node /= null
         and then Node.State.Current_Raft_State /= LEADER
       then
+         if Build_Error_Response (Request, Full_Response, Response_Last) then
+            Found := True;
+            if Response_Last > Response'Length then
+               raise Constraint_Error with "sync response too large";
+            end if;
+            if Response_Last > 0 then
+               Response
+                 (Response'First .. Response'First + Response_Last - 1) :=
+                 Full_Response (1 .. Response_Last);
+            end if;
+         else
+            Found := False;
+         end if;
+         return;
+      end if;
+
+      if Inbound_Backlogged then
          if Build_Error_Response (Request, Full_Response, Response_Last) then
             Found := True;
             if Response_Last > Response'Length then
@@ -2412,18 +2581,26 @@ package body Network_Node is
    end Log_Work_Response;
 
    task body Server_Comms_Task is
+      Remote       : Unbounded_String;
+      Frame        : Stream_Element_Array (1 .. Max_Outbound_Frame);
+      Payload_Last : Stream_Element_Offset;
+      Found        : Boolean;
    begin
       accept Start;
       loop
-         accept Send_To_Peer
-           (Remote : Unbounded_String; Payload : Stream_Element_Array)
-         do
-            if Local_Id >= 1 and then Local_Id <= Server_Num then
+         Outbound_Message_Box.Dequeue
+           (Remote, Frame, Payload_Last, Found);
+         if Found then
+            if Local_Id >= 1
+              and then Local_Id <= Server_Num
+              and then Length (Remote) > 0
+              and then Payload_Last > 0
+            then
                begin
                   Communication.Send
                     (Net_Links (Local_Id),
                      Communication.UDP.Make_Remote_Link (Hub_Access, Remote),
-                     Payload);
+                     Frame (1 .. Payload_Last));
                exception
                   when E : Communication.UDP.Network_IO_Error =>
                      Put_Line
@@ -2443,7 +2620,9 @@ package body Network_Node is
                         & Exception_Information (E));
                end;
             end if;
-         end Send_To_Peer;
+         else
+            delay Drain_Yield;
+         end if;
       end loop;
    end Server_Comms_Task;
 
@@ -2489,8 +2668,10 @@ package body Network_Node is
       begin
          for I in Work_Slots'Range loop
             if Work_Slots (I).Active and then not Work_Slots (I).Ready then
-               if not Server_Message_Box.Is_Empty then
-                  Process_Server_Inbound;
+               if not Server_Message_Box.Is_Empty
+                 and then not Inbound_Backlogged
+               then
+                  Process_Server_Inbound_Batch (1);
                end if;
                Step_Client_Work (Work_Slots (I));
             end if;
@@ -2563,30 +2744,42 @@ package body Network_Node is
       Next_Epoch := Clock + Raft_Cfg.Epoch_Interval;
       loop
          declare
-            Epoch_Tick : Boolean := False;
+            Epoch_Tick  : Boolean := False;
+            Epoch_Steps : Natural := 0;
+            Drain_Round : Positive;
          begin
-            while Clock >= Next_Epoch loop
+            if Inbound_Backlogged then
+               for Drain_Round in 1 .. Backlog_Drain_Rounds loop
+                  exit when Server_Message_Box.Is_Empty;
+                  Drain_Priority_Server_Inbound;
+               end loop;
+            else
+               Drain_Priority_Server_Inbound;
+            end if;
+
+            while Clock >= Next_Epoch
+              and then Epoch_Steps < Natural (Max_Epochs_Per_Loop)
+            loop
                Run_Epoch_Step;
                Epoch_Number := Epoch_Number + 1;
                Log_Role_Change;
                Epoch_Tick := True;
+               Epoch_Steps := Epoch_Steps + 1;
                Next_Epoch := Next_Epoch + Raft_Cfg.Epoch_Interval;
             end loop;
-
-            Drain_Priority_Server_Inbound;
 
             if Epoch_Tick then
                Log_Progress;
             end if;
          end;
 
-         if Client_Load_Limited then
-            if not Client_Work_Allowed then
-               Abort_All_Client_Work;
-            end if;
+         if Client_Load_Limited and then Client_Work_Allowed then
             Step_All_Client_Work;
             Deliver_Completed_Client_Work;
             Fill_Client_Work_Slots;
+         elsif Client_Load_Limited then
+            Abort_All_Client_Work;
+            Deliver_Completed_Client_Work;
          else
             Abort_All_Client_Work;
             Deliver_Completed_Client_Work;
