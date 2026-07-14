@@ -112,6 +112,7 @@ package body Example_Cli is
       Put_Line ("commands:");
       Put_Line ("  register               open a client session with the leader");
       Put_Line ("  reconnect              rediscover leader after an election");
+      Put_Line ("  watchdog               tell the leader this session is alive");
       Put_Line ("  send <int> [<int> ...] send one or more commands (session serial)");
       Put_Line ("  status                 show client session state");
       Put_Line ("  audit                  print network audit counters");
@@ -124,6 +125,7 @@ package body Example_Cli is
       Put_Line ("commands:");
       Put_Line ("  register               open a client session with the leader");
       Put_Line ("  reconnect              rediscover leader after an election");
+      Put_Line ("  watchdog               tell the leader this session is alive");
       Put_Line ("  send <int> [<int> ...] send one or more commands (session serial)");
       Put_Line ("  status                 show client session state");
       Put_Line ("  audit                  print network audit counters");
@@ -143,6 +145,8 @@ package body Example_Cli is
          Args.Command := Register;
       elsif Arg = "reconnect" then
          Args.Command := Reconnect;
+      elsif Arg = "watchdog" then
+         Args.Command := Watchdog;
       elsif Arg = "audit" then
          Args.Command := Audit;
       elsif Arg = "help" then
@@ -280,6 +284,11 @@ package body Example_Cli is
                raise Parse_Error with "reconnect takes no arguments";
             end if;
             Append_Command (Script, Reconnect);
+         elsif Cmd (1 .. Cmd_Len) = "watchdog" then
+            if Peek_Word /= "" then
+               raise Parse_Error with "watchdog takes no arguments";
+            end if;
+            Append_Command (Script, Watchdog);
          elsif Cmd (1 .. Cmd_Len) = "audit" then
             if Peek_Word /= "" then
                raise Parse_Error with "audit takes no arguments";

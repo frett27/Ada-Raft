@@ -3,6 +3,7 @@ with Ada.Text_IO; use Ada.Text_IO;
 with Ada.Text_IO.Text_Streams;
 with Ada.Strings.Fixed; use Ada.Strings.Fixed;
 with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
+with Ada.Calendar;          use Ada.Calendar;
 
 with Ada.Tags; use Ada.Tags;
 
@@ -169,13 +170,51 @@ package body Raft.Node is
       for I in MState.Client_Sessions'Range loop
          if not MState.Client_Sessions (I).Active then
             MState.Client_Sessions (I) :=
-              (Active    => True,
-               Client_Id => Client_Id,
-               Completed => (others => <>));
+              (Active        => True,
+               Client_Id     => Client_Id,
+               Last_Activity => Clock,
+               Completed     => (others => <>));
             return;
          end if;
       end loop;
    end Create_Client_Session;
+
+   procedure Touch_Client_Session
+     (MState : RaftNodeStruct_Access; Client_Id : Client_Id_Type)
+   is
+      Idx : constant Natural := Find_Client_Session_Index (MState, Client_Id);
+   begin
+      if Idx /= 0 then
+         MState.Client_Sessions (Idx).Last_Activity := Clock;
+      end if;
+   end Touch_Client_Session;
+
+   procedure Deactivate_Client_Session
+     (MState : RaftNodeStruct_Access; Client_Id : Client_Id_Type)
+   is
+      Idx : constant Natural := Find_Client_Session_Index (MState, Client_Id);
+   begin
+      if Idx = 0 then
+         return;
+      end if;
+
+      MState.Client_Sessions (Idx).Active := False;
+      MState.Client_Sessions (Idx).Client_Id := NO_CLIENT_ID;
+      MState.Client_Sessions (Idx).Completed := (others => <>);
+   end Deactivate_Client_Session;
+
+   procedure Clear_Pending_For_Client
+     (MState : RaftNodeStruct_Access; Client_Id : Client_Id_Type)
+   is
+   begin
+      for I in MState.Pending_Client_Requests'Range loop
+         if MState.Pending_Client_Requests (I).Active
+           and then MState.Pending_Client_Requests (I).Client_Id = Client_Id
+         then
+            MState.Pending_Client_Requests (I).Active := False;
+         end if;
+      end loop;
+   end Clear_Pending_For_Client;
 
    function Lookup_Completed_Response
      (Session : Client_Session_Entry;
@@ -1473,6 +1512,21 @@ package body Raft.Node is
                   Serial     => Query.Serial));
          end;
          return;
+      elsif M'Tag = Request_Client_Watchdog'Tag then
+         declare
+            Watchdog : constant Request_Client_Watchdog :=
+              Request_Client_Watchdog (M);
+         begin
+            Deliver_Client_Response
+              (Machine_State.MState,
+               Response_Client_Watchdog'
+                 (Alive      => False,
+                  Not_Leader => True,
+                  Error      => Machine_State.MState.Known_Leader_Id = NULL_SERVER,
+                  Leader_Id  => Machine_State.MState.Known_Leader_Id,
+                  Client_Id  => Watchdog.Client_Id));
+         end;
+         return;
       elsif M'Tag = Request_Vote_Response'Tag then
          Debug_Put_Line (Machine_State, "[Candidate got a vote response]");
          declare
@@ -1820,6 +1874,13 @@ package body Raft.Node is
          begin
             Handle_Client_Query (Machine_State, Query);
          end;
+      elsif M'Tag = Request_Client_Watchdog'Tag then
+         declare
+            Watchdog : constant Request_Client_Watchdog :=
+              Request_Client_Watchdog (M);
+         begin
+            Handle_Client_Watchdog (Machine_State, Watchdog);
+         end;
       elsif M'Tag = Append_Entries_Request'Tag then
          declare
             Req : constant Append_Entries_Request :=
@@ -1928,6 +1989,21 @@ package body Raft.Node is
                   Leader_Id  => Machine_State.MState.Known_Leader_Id,
                   Client_Id  => Query.Client_Id,
                   Serial     => Query.Serial));
+         end;
+         return;
+      elsif M'Tag = Request_Client_Watchdog'Tag then
+         declare
+            Watchdog : constant Request_Client_Watchdog :=
+              Request_Client_Watchdog (M);
+         begin
+            Deliver_Client_Response
+              (Machine_State.MState,
+               Response_Client_Watchdog'
+                 (Alive      => False,
+                  Not_Leader => True,
+                  Error      => Machine_State.MState.Known_Leader_Id = NULL_SERVER,
+                  Leader_Id  => Machine_State.MState.Known_Leader_Id,
+                  Client_Id  => Watchdog.Client_Id));
          end;
          return;
       elsif M'Tag = Append_Entries_Response'Tag
@@ -2164,6 +2240,8 @@ package body Raft.Node is
             return;
          end if;
 
+         Touch_Client_Session (Machine_State.MState, RSC.Client_Id);
+
          if Lookup_Completed_Response
               (Machine_State.MState.Client_Sessions (Session_Idx),
                RSC.Serial,
@@ -2243,8 +2321,11 @@ package body Raft.Node is
      (Machine_State : in out Raft_State_Machine_Leader;
       Query         : Request_Client_Query)
    is
-      pragma Unreferenced (Machine_State);
    begin
+      if Query.Client_Id /= NO_CLIENT_ID then
+         Touch_Client_Session (Machine_State.MState, Query.Client_Id);
+      end if;
+
       --  Linearizable read-only queries (book §6.4) are not implemented yet.
       Deliver_Client_Response
         (Machine_State.MState,
@@ -2255,5 +2336,72 @@ package body Raft.Node is
             Client_Id  => Query.Client_Id,
             Serial     => Query.Serial));
    end Handle_Client_Query;
+
+   procedure Handle_Client_Watchdog
+     (Machine_State : in out Raft_State_Machine_Leader;
+      Watchdog      : Request_Client_Watchdog)
+   is
+      Session_Idx : constant Natural :=
+        Find_Client_Session_Index
+          (Machine_State.MState, Watchdog.Client_Id);
+   begin
+      if Watchdog.Client_Id = NO_CLIENT_ID or else Session_Idx = 0 then
+         Deliver_Client_Response
+           (Machine_State.MState,
+            Response_Client_Watchdog'
+              (Alive      => False,
+               Not_Leader => False,
+               Error      => True,
+               Leader_Id  => Machine_State.MState.Current_Id,
+               Client_Id  => Watchdog.Client_Id));
+         return;
+      end if;
+
+      Touch_Client_Session (Machine_State.MState, Watchdog.Client_Id);
+
+      Deliver_Client_Response
+        (Machine_State.MState,
+         Response_Client_Watchdog'
+           (Alive      => True,
+            Not_Leader => False,
+            Error      => False,
+            Leader_Id  => Machine_State.MState.Current_Id,
+            Client_Id  => Watchdog.Client_Id));
+   end Handle_Client_Watchdog;
+
+   procedure Expire_Inactive_Client_Sessions
+     (Node : Raft_Node_Access; Inactivity : Duration)
+   is
+      Now : constant Time := Clock;
+   begin
+      if Node = null then
+         return;
+      end if;
+
+      for I in Node.State.Client_Sessions'Range loop
+         if Node.State.Client_Sessions (I).Active
+           and then Now - Node.State.Client_Sessions (I).Last_Activity > Inactivity
+         then
+            declare
+               Expired_Id : constant Client_Id_Type :=
+                 Node.State.Client_Sessions (I).Client_Id;
+            begin
+               Clear_Pending_For_Client (Node.State'Unchecked_Access, Expired_Id);
+               Deactivate_Client_Session (Node.State'Unchecked_Access, Expired_Id);
+            end;
+         end if;
+      end loop;
+   end Expire_Inactive_Client_Sessions;
+
+   function Client_Session_Active
+     (Node : Raft_Node_Access; Client_Id : Client_Id_Type) return Boolean
+   is
+   begin
+      if Node = null or else Client_Id = NO_CLIENT_ID then
+         return False;
+      end if;
+
+      return Find_Client_Session_Index (Node.State'Unchecked_Access, Client_Id) /= 0;
+   end Client_Session_Active;
 
 end Raft.Node;

@@ -32,6 +32,8 @@ package Network_Client is
 
    function Next_Command_Serial return Client_Serial_Type;
 
+   function Send_Watchdog return Boolean;
+
    function Audit_Report return String;
 
 end Network_Client;

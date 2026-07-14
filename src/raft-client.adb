@@ -520,4 +520,50 @@ package body Raft.Client is
       C.Pending_Command       := null;
    end Abort_In_Flight_Operation;
 
+   function Send_Watchdog (C : in out Raft_Client) return Boolean is
+   begin
+      if C.Client_Id = NO_CLIENT_ID or else C.Leader_Id = NULL_SERVER then
+         return False;
+      end if;
+
+      if C.Op_Phase /= Idle then
+         raise Client_Timeout with "client busy: operation in flight";
+      end if;
+
+      C.Send.all
+        (C.Leader_Id,
+         Request_Client_Watchdog'(Client_Id => C.Client_Id));
+
+      loop
+         declare
+            Got : Boolean;
+            M   : Message_Type'Class := Try_Dequeue (C.Inbox.all, Got);
+         begin
+            exit when not Got;
+
+            if M'Tag = Response_Client_Watchdog'Tag then
+               declare
+                  Res : constant Response_Client_Watchdog :=
+                    Response_Client_Watchdog (M);
+               begin
+                  if Res.Not_Leader
+                    and then not Res.Error
+                    and then Res.Leader_Id /= NULL_SERVER
+                  then
+                     C.Leader_Id := Res.Leader_Id;
+                  end if;
+
+                  if Res.Error or else Res.Not_Leader then
+                     return False;
+                  end if;
+
+                  return Res.Alive and then Res.Client_Id = C.Client_Id;
+               end;
+            end if;
+         end;
+      end loop;
+
+      return False;
+   end Send_Watchdog;
+
 end Raft.Client;

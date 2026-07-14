@@ -96,8 +96,9 @@ procedure Raft_Client is
    exception
       when Cluster_Unreachable =>
          Put_Line
-           ("send failed: cluster unreachable"
-            & " (start the cluster with ./launch.sh start)");
+           ("send failed: TCP to cluster failed"
+            & " (check ./launch.sh start;"
+            & " after load test try ./launch.sh stop && ./launch.sh start)");
       when Client_Timeout =>
          if Is_Registered and then Known_Leader_Id /= NULL_SERVER then
             Put_Line
@@ -149,8 +150,9 @@ procedure Raft_Client is
    exception
       when Cluster_Unreachable =>
          Put_Line
-           ("send failed: cluster unreachable"
-            & " (start the cluster with ./launch.sh start)");
+           ("send failed: TCP to cluster failed"
+            & " (check ./launch.sh start;"
+            & " after load test try ./launch.sh stop && ./launch.sh start)");
          Disconnect_Session;
       when Client_Timeout =>
          if Is_Registered and then Known_Leader_Id /= NULL_SERVER then
@@ -214,6 +216,33 @@ procedure Raft_Client is
                      & " (start the cluster with ./launch.sh start)");
             end;
 
+         when Watchdog =>
+            begin
+               if not Ensure_Registered then
+                  Put_Line
+                    ("watchdog failed: not registered"
+                     & " (cluster unreachable or no leader)");
+                  return;
+               end if;
+
+               if Send_Watchdog then
+                  Put_Line
+                    ("watchdog ok client_id="
+                     & Client_Id_Type'Image (Registered_Client_Id)
+                     & " leader="
+                     & ServerID_Type'Image (Known_Leader_Id));
+               else
+                  Put_Line
+                    ("watchdog failed: session expired or leader rejected"
+                     & " (use register to open a new session)");
+               end if;
+            exception
+               when Cluster_Unreachable =>
+                  Put_Line
+                    ("watchdog failed: cluster unreachable"
+                     & " (start the cluster with ./launch.sh start)");
+            end;
+
          when Send =>
             if Interactive then
                begin
@@ -238,7 +267,8 @@ procedure Raft_Client is
                           ("send failed: timed out waiting for commit"
                            & " (leader="
                            & ServerID_Type'Image (Known_Leader_Id)
-                           & "; check logs/node-*.log for replication errors)");
+                           & "; check logs/node-*.log"
+                           & " for replication errors)");
                      else
                         Put_Line ("send failed: timed out waiting for leader");
                      end if;

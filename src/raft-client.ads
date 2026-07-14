@@ -126,6 +126,9 @@ package Raft.Client is
    --  Drop an in-flight register/send without clearing Client_Id / Leader_Id.
    procedure Abort_In_Flight_Operation (C : in out Raft_Client);
 
+   --  Keep-alive for an open session on the leader (ClientWatchdog RPC).
+   function Send_Watchdog (C : in out Raft_Client) return Boolean;
+
 private
 
    type Response_Inbox is limited record

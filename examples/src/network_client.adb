@@ -167,6 +167,9 @@ package body Network_Client is
          delay Loop_Interval;
       end loop;
       return Register_Complete (Client);
+   exception
+      when Cluster_Unreachable =>
+         return False;
    end Register_With_Cluster;
 
    function Is_Registered return Boolean is
@@ -256,6 +259,16 @@ package body Network_Client is
    begin
       return Raft.Client.Next_Command_Serial (Client);
    end Next_Command_Serial;
+
+   function Send_Watchdog return Boolean is
+   begin
+      return Raft.Client.Send_Watchdog (Client);
+   exception
+      when Client_Timeout =>
+         return False;
+      when Cluster_Unreachable =>
+         return False;
+   end Send_Watchdog;
 
    function Audit_Report return String is
       Audit_State : constant Audit_State_Access := Audit (Hub);

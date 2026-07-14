@@ -80,6 +80,19 @@ package Raft.Messages is
       Serial     : Client_Serial_Type := Client_Serial_Type'First;
    end record;
 
+   --  ClientWatchdog RPC: keep-alive for leader session slots (examples).
+   type Request_Client_Watchdog is new Request_Message_Type with record
+      Client_Id : Client_Id_Type := NO_CLIENT_ID;
+   end record;
+
+   type Response_Client_Watchdog is new Response_Message_Type with record
+      Alive      : Boolean := False;
+      Not_Leader : Boolean := False;
+      Error      : Boolean := False;
+      Leader_Id  : ServerID_Type := NULL_SERVER;
+      Client_Id  : Client_Id_Type := NO_CLIENT_ID;
+   end record;
+
    type Install_Snapshot_Request is new Request_Message_Type with record
       Leader_Term           : Term_Type;
       Leader_ID             : ServerID_Type;

@@ -85,6 +85,7 @@ Supported client RPC types today:
 |---------|----------|------------|
 | `Request_Register_Client` | `Response_Register_Client` | §6.3 RegisterClient |
 | `Request_Send_Command` | `Response_Send_Command` | §6.2 ClientRequest |
+| `Request_Client_Watchdog` | `Response_Client_Watchdog` | Session keep-alive (examples) |
 
 `Request_Client_Query` / `Response_Client_Query` (§6.4) exist in the protocol
 but linearizable queries are **not implemented** on the leader yet.
@@ -146,6 +147,48 @@ times out.
 In the examples application, each committed `Test_Command` adds its integer
 `Value` to a replicated `Sum` on all nodes.
 
+### ClientWatchdog — `Request_Client_Watchdog`
+
+Keep-alive for an open session. Use this when a client stays registered but
+sends no commands for a while (interactive shell, long-lived worker).
+
+| Field | Meaning |
+|-------|---------|
+| `Client_Id` | Registered session id |
+
+**Success** (`Response_Client_Watchdog`):
+
+| Field | Meaning |
+|-------|---------|
+| `Alive` | `True` — session still known on the leader |
+| `Client_Id` | Echo of request |
+| `Leader_Id` | Current leader |
+| `Not_Leader`, `Error` | `False` |
+
+**Expired or unknown session**:
+
+| Field | Meaning |
+|-------|---------|
+| `Alive` | `False` |
+| `Error` | `True` |
+
+**Redirect** (follower): same pattern as register — `Not_Leader = True`,
+`Leader_Id` set.
+
+CLI: `watchdog` (interactive or one-shot). Requires a prior `register`.
+
+### Session expiry (leader)
+
+The leader removes client sessions that receive **no** `register`, `send`, or
+`watchdog` activity for **10 seconds**
+(`Example_Config.Client_Session_Inactivity_S`, same default as
+`Client_Timeout_S`). Expired sessions free one of the **16** session slots
+(`MAX_CLIENT_SESSIONS`). Pending commands for an expired session are dropped.
+
+Any RPC listed above refreshes the session timer. One-shot CLI invocations that
+`register` → `send` → `disconnect` do not need watchdogs; long-lived sessions
+should call `watchdog` before the inactivity window elapses.
+
 ---
 
 ## Client identity (`--name`)
@@ -201,6 +244,7 @@ CLIENT_NAME=client-b ./client.sh send 100
 |---------|-------------|
 | `register` | Find leader, open session, print `client_id` / `leader` / `next_serial` |
 | `reconnect` | Rediscover leader after election; keep or renew session |
+| `watchdog` | Tell the leader the session is still alive (refreshes 10 s expiry) |
 | `send <int> [ <int> ... ]` | Send one or more test commands (increasing serial) |
 | `status` | Print local session state |
 | `audit` | Print TCP audit counters |
@@ -268,6 +312,7 @@ Limits:
 | Limit | Value |
 |-------|-------|
 | Active client sessions per leader | 16 (`MAX_CLIENT_SESSIONS`) |
+| Session inactivity timeout | **10 s** (`Client_Session_Inactivity_S`) |
 | Pending client commands | table size in `raft-node.ads` |
 
 For load testing, prefer moderate **concurrency** (see `send_load_dual_clients.sh`)

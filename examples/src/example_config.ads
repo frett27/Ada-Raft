@@ -10,6 +10,9 @@ package Example_Config is
 
    Client_Timeout_S : constant Duration := 10.0;
 
+   --  Leader drops client sessions with no RPC activity for this long.
+   Client_Session_Inactivity_S : constant Duration := 10.0;
+
    --  Max concurrent client sync TCP handlers on the leader before refusing
    --  new connections (protects Raft replication from client overload).
    Max_Client_In_Flight : constant Natural := 8;

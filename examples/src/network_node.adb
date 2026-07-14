@@ -178,6 +178,30 @@ package body Network_Node is
       return Message_Type'Class'Input (Request_MB'Access);
    end Pending_Request_Message;
 
+   function Parse_Client_Request
+     (Request : Stream_Element_Array; Request_Last : Stream_Element_Offset)
+      return Message_Type'Class
+   is
+      Request_MB : aliased Message_Buffer_Type;
+   begin
+      if Request_Last = 0 then
+         return Request_Register_Client'(null record);
+      end if;
+      From_Stream_Element_Array (Request (1 .. Request_Last), Request_MB);
+      return Message_Type'Class'Input (Request_MB'Access);
+   end Parse_Client_Request;
+
+   function Leader_Hint_Id return ServerID_Type is
+   begin
+      if Node = null then
+         return NULL_SERVER;
+      end if;
+      if Node.State.Current_Raft_State = LEADER then
+         return Node.State.Current_Id;
+      end if;
+      return Node.State.Known_Leader_Id;
+   end Leader_Hint_Id;
+
    Lock_Directory : constant String := "run";
    Lock_Path      : String (1 .. 128);
    Lock_Path_Len  : Natural := 0;
@@ -457,6 +481,19 @@ package body Network_Node is
                   & ")");
             end if;
          end;
+      elsif M'Tag = Request_Client_Watchdog'Tag then
+         declare
+            Watchdog : constant Request_Client_Watchdog :=
+              Request_Client_Watchdog (M);
+         begin
+            if Verbose_Logging then
+               Node_Log
+                 ("<- client "
+                  & Sender
+                  & " watchdog id="
+                  & Trim (Client_Id_Type'Image (Watchdog.Client_Id), Left));
+            end if;
+         end;
       end if;
    end Log_Client_Request;
 
@@ -502,6 +539,23 @@ package body Network_Node is
                   & " (#"
                   & Natural'Image (Client_Responses_Sent)
                   & ")");
+            end if;
+         end;
+      elsif M'Tag = Response_Client_Watchdog'Tag then
+         declare
+            Res : constant Response_Client_Watchdog :=
+              Response_Client_Watchdog (M);
+         begin
+            if Verbose_Logging then
+               Node_Log
+                 ("-> client "
+                  & Remote_Image
+                  & " watchdog id="
+                  & Trim (Client_Id_Type'Image (Res.Client_Id), Left)
+                  & " alive="
+                  & Boolean'Image (Res.Alive)
+                  & " error="
+                  & Boolean'Image (Res.Error));
             end if;
          end;
       end if;
@@ -594,6 +648,22 @@ package body Network_Node is
 
       return Null_Unbounded_String;
    end Find_Client_Route;
+
+   procedure Purge_Stale_Client_Routes is
+   begin
+      if Node = null then
+         return;
+      end if;
+
+      for I in Client_Routes'Range loop
+         if Client_Routes (I).Client_Id /= NO_CLIENT_ID
+           and then
+             not Client_Session_Active (Node, Client_Routes (I).Client_Id)
+         then
+            Client_Routes (I) := (others => <>);
+         end if;
+      end loop;
+   end Purge_Stale_Client_Routes;
 
    Server_Message_Box_Size : constant := 8192;
    Max_Drain_Rounds     : constant Positive := 16;
@@ -950,6 +1020,8 @@ package body Network_Node is
          return Response_Send_Command (M).Client_Id;
       elsif M'Tag = Response_Register_Client'Tag then
          return Response_Register_Client (M).Client_Id;
+      elsif M'Tag = Response_Client_Watchdog'Tag then
+         return Response_Client_Watchdog (M).Client_Id;
       elsif M'Tag = Response_Client_Query'Tag then
          return Response_Client_Query (M).Client_Id;
       else
@@ -978,6 +1050,15 @@ package body Network_Node is
          begin
             if Req.Client_Id /= NO_CLIENT_ID then
                Set_Client_Route (Req.Client_Id, Sender);
+            end if;
+         end;
+      elsif M'Tag = Request_Client_Watchdog'Tag then
+         declare
+            Watchdog : constant Request_Client_Watchdog :=
+              Request_Client_Watchdog (M);
+         begin
+            if Watchdog.Client_Id /= NO_CLIENT_ID then
+               Set_Client_Route (Watchdog.Client_Id, Sender);
             end if;
          end;
       elsif M'Tag = Request_Client_Query'Tag then
@@ -1161,6 +1242,43 @@ package body Network_Node is
 
    procedure Run_Epoch_Step is
    begin
+      if Node /= null
+        and then Node.State.Current_Raft_State = LEADER
+      then
+         declare
+            Expired_Before : Natural := 0;
+         begin
+            for I in Node.State.Client_Sessions'Range loop
+               if Node.State.Client_Sessions (I).Active then
+                  Expired_Before := Expired_Before + 1;
+               end if;
+            end loop;
+
+            Expire_Inactive_Client_Sessions
+              (Node, Client_Session_Inactivity_S);
+            Purge_Stale_Client_Routes;
+
+            if Verbose_Logging then
+               declare
+                  Active_After : Natural := 0;
+               begin
+                  for I in Node.State.Client_Sessions'Range loop
+                     if Node.State.Client_Sessions (I).Active then
+                        Active_After := Active_After + 1;
+                     end if;
+                  end loop;
+                  if Active_After < Expired_Before then
+                     Node_Log
+                       ("expired "
+                        & Natural'Image (Expired_Before - Active_After)
+                        & " inactive client session(s), active="
+                        & Natural'Image (Active_After));
+                  end if;
+               end;
+            end if;
+         end;
+      end if;
+
       for Timer in Timer_Type loop
          if Timers (Timer) > 0 then
             Timers (Timer) := Timers (Timer) - 1;
@@ -1199,6 +1317,9 @@ package body Network_Node is
               and then Res.Serial = Req.Serial
               and then Res.Command_Committed;
          end;
+
+      elsif Request_Msg'Tag = Request_Client_Watchdog'Tag then
+         return Response_Msg'Tag = Response_Client_Watchdog'Tag;
       end if;
 
       return True;
@@ -1244,6 +1365,93 @@ package body Network_Node is
          Response_Last := Stream_Element_Offset (Bytes'Length);
       end;
    end Serialize_Client_Response;
+
+   procedure Serialize_Error_Response
+     (Req             : Message_Type'Class;
+      Response        : out Stream_Element_Array;
+      Response_Last   : out Stream_Element_Offset;
+      Not_Leader_Node : Boolean)
+   is
+      Leader : constant ServerID_Type := Leader_Hint_Id;
+   begin
+      if Req'Tag = Request_Register_Client'Tag then
+         Serialize_Client_Response
+           (Response_Register_Client'
+              (Client_Id  => NO_CLIENT_ID,
+               Not_Leader => Not_Leader_Node,
+               Error      => True,
+               Leader_Id  => Leader),
+            Response,
+            Response_Last);
+      elsif Req'Tag = Request_Send_Command'Tag then
+         declare
+            R : constant Request_Send_Command := Request_Send_Command (Req);
+         begin
+            Serialize_Client_Response
+              (Response_Send_Command'
+                 (Command_Committed => False,
+                  Not_Leader        => Not_Leader_Node,
+                  Error             => True,
+                  Leader_Id         => Leader,
+                  Client_Id         => R.Client_Id,
+                  Serial            => R.Serial,
+                  Log_Index         => TransactionLogIndex_Type'First),
+               Response,
+               Response_Last);
+         end;
+      elsif Req'Tag = Request_Client_Watchdog'Tag then
+         declare
+            W : constant Request_Client_Watchdog :=
+              Request_Client_Watchdog (Req);
+         begin
+            Serialize_Client_Response
+              (Response_Client_Watchdog'
+                 (Alive      => False,
+                  Not_Leader => Not_Leader_Node,
+                  Error      => True,
+                  Leader_Id  => Leader,
+                  Client_Id  => W.Client_Id),
+               Response,
+               Response_Last);
+         end;
+      else
+         raise Constraint_Error
+           with "unsupported client request for error response";
+      end if;
+   end Serialize_Error_Response;
+
+   procedure Build_Server_Error_Response (Work : in out Client_Work_State) is
+      Req : constant Message_Type'Class := Pending_Request_Message (Work);
+   begin
+      Serialize_Error_Response
+        (Req,
+         Work.Response,
+         Work.Response_Last,
+         Node /= null
+           and then Node.State.Current_Raft_State /= LEADER);
+   end Build_Server_Error_Response;
+
+   function Build_Error_Response
+     (Request       : Stream_Element_Array;
+      Response      : out Stream_Element_Array;
+      Response_Last : out Stream_Element_Offset) return Boolean
+   is
+      Req : constant Message_Type'Class :=
+        Parse_Client_Request
+          (Request, Stream_Element_Offset (Request'Length));
+   begin
+      Serialize_Error_Response
+        (Req,
+         Response,
+         Response_Last,
+         Node /= null
+           and then Node.State.Current_Raft_State /= LEADER);
+      return True;
+   exception
+      when others =>
+         Response_Last := 0;
+         return False;
+   end Build_Error_Response;
 
    procedure Return_Client_Inbox (M : Message_Type'Class) is
    begin
@@ -1319,8 +1527,13 @@ package body Network_Node is
       end if;
 
       if Clock >= Work.Deadline then
+         Node_Log
+           ("client work timed out for "
+            & To_String (Work.Sender)
+            & " (returning error response)");
+         Build_Server_Error_Response (Work);
+         Work.Found := True;
          Work.Ready := True;
-         Work.Found := False;
          return;
       end if;
 
@@ -1350,7 +1563,19 @@ package body Network_Node is
       if Track_Load then
          Client_Load_Guard.Try_Accept (Accepted);
          if not Accepted then
-            Found := False;
+            if Build_Error_Response (Request, Full_Response, Response_Last) then
+               Found := True;
+               if Response_Last > Response'Length then
+                  raise Constraint_Error with "sync response too large";
+               end if;
+               if Response_Last > 0 then
+                  Response
+                    (Response'First .. Response'First + Response_Last - 1) :=
+                    Full_Response (1 .. Response_Last);
+               end if;
+            else
+               Found := False;
+            end if;
             if Verbose_Logging
               or else
                 Client_Load_Guard.Rejected_Total mod Client_Send_Log_Sample = 1
