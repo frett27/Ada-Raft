@@ -6,13 +6,15 @@ package Example_Config is
    --  One server loop iteration (Process_Inbound + Run_Epoch_Step) = 1 epoch.
 
    -- these parameters permit to test on some specific load stress
-   Epoch_Interval : constant Duration := 0.05;
+   Epoch_Interval : constant Duration := 0.005;
    Loop_Interval  : constant Duration := Epoch_Interval;
 
    Client_Timeout_S : constant Duration := 2.0;
 
    --  Per-server TCP timeout while probing for registration/reconnect.
-   Client_Probe_Timeout_S : constant Duration := 10.0;
+   --  Must stay well below Client_Timeout_S so one hung probe cannot exceed
+   --  the outer register deadline (previously 10s blocked past a 2s deadline).
+   Client_Probe_Timeout_S : constant Duration := 0.4;
 
    --  Leader drops client sessions with no RPC activity for this long.
    Client_Session_Inactivity_S : constant Duration := 10.0;

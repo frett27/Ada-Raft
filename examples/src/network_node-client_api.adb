@@ -15,7 +15,8 @@ package body Network_Node.Client_API is
    --  Bound shared-inbox polling per client work step (avoids wedging).
    Max_Poll_Inbox_Rounds : constant Positive := 128;
 
-   type Client_Slot_State is (Free, Queued, Response_Ready);
+   --  Abandoned: TCP waiter gave up; Raft may still deliver — discard then Free.
+   type Client_Slot_State is (Free, Queued, Response_Ready, Abandoned);
 
    type Client_Slot_Record is record
       State         : Client_Slot_State := Free;
@@ -197,6 +198,27 @@ package body Network_Node.Client_API is
          end loop;
       end Attach_Request;
 
+      procedure Abandon_Slot (Slot : Natural) is
+         S : Positive;
+      begin
+         if Slot not in Client_Slots'Range then
+            return;
+         end if;
+         S := Positive (Slot);
+         case Client_Slots (S).State is
+            when Free =>
+               null;
+            when Response_Ready =>
+               --  Response arrived after the TCP waiter left: discard.
+               Client_Slots (S).State := Free;
+               Client_Slots (S).Response_Last := 0;
+               Client_Slots (S).Resp_Found := False;
+            when Queued | Abandoned =>
+               --  Still queued or already abandoned: Raft deliver will Free.
+               Client_Slots (S).State := Abandoned;
+         end case;
+      end Abandon_Slot;
+
       entry Await_Client_Response
         (Slot          : Natural;
          Response      : out Stream_Element_Array;
@@ -238,6 +260,12 @@ package body Network_Node.Client_API is
             Client_Raft_Head := Client_Raft_Head + 1;
          end if;
          Client_Raft_Count := Client_Raft_Count - 1;
+
+         if Client_Slots (S).State = Abandoned then
+            Client_Slots (S).State := Free;
+            requeue Client_Pipeline.Take_Raft_Request with abort;
+         end if;
+
          Slot := S;
          Sender := Client_Slots (S).Sender;
          Request := Client_Slots (S).Request;
@@ -257,6 +285,15 @@ package body Network_Node.Client_API is
          declare
             S : constant Positive := Positive (Slot);
          begin
+            if Client_Slots (S).State = Abandoned
+              or else Client_Slots (S).State = Free
+            then
+               --  TCP waiter already gave up (or slot recycled): drop reply.
+               Client_Slots (S).State := Free;
+               Client_Slots (S).Response_Last := 0;
+               Client_Slots (S).Resp_Found := False;
+               return;
+            end if;
             if Response_Last > Response'Last
               or else Response_Last > Client_Slots (S).Response'Last
             then
@@ -313,23 +350,30 @@ package body Network_Node.Client_API is
       is
          S : Positive;
       begin
-         if Client_Raft_Count = 0 then
-            Taken := False;
-            return;
-         end if;
+         Taken := False;
+         Slot := 0;
+         loop
+            exit when Client_Raft_Count = 0;
 
-         S := Client_Raft_Queue (Client_Raft_Head);
-         if Client_Raft_Head = Client_Raft_Queue'Last then
-            Client_Raft_Head := Client_Raft_Queue'First;
-         else
-            Client_Raft_Head := Client_Raft_Head + 1;
-         end if;
-         Client_Raft_Count := Client_Raft_Count - 1;
-         Slot := S;
-         Sender := Client_Slots (S).Sender;
-         Request := Client_Slots (S).Request;
-         Request_Last := Client_Slots (S).Request_Last;
-         Taken := True;
+            S := Client_Raft_Queue (Client_Raft_Head);
+            if Client_Raft_Head = Client_Raft_Queue'Last then
+               Client_Raft_Head := Client_Raft_Queue'First;
+            else
+               Client_Raft_Head := Client_Raft_Head + 1;
+            end if;
+            Client_Raft_Count := Client_Raft_Count - 1;
+
+            if Client_Slots (S).State = Abandoned then
+               Client_Slots (S).State := Free;
+            else
+               Slot := S;
+               Sender := Client_Slots (S).Sender;
+               Request := Client_Slots (S).Request;
+               Request_Last := Client_Slots (S).Request_Last;
+               Taken := True;
+               return;
+            end if;
+         end loop;
       end Try_Take_Raft_Request;
 
    end Client_Pipeline;
@@ -930,7 +974,26 @@ package body Network_Node.Client_API is
                end loop;
 
                if not Ready then
-                  Found := False;
+                  --  Do not leave the depth-1 slot wedged: abandon so later
+                  --  clients are not permanently Busy, and return Busy so the
+                  --  TCP client gets a framed reply instead of a hang/close.
+                  Client_Pipeline.Abandon_Slot (Slot);
+                  if Build_Busy_Response
+                       (Request, Full_Response, Response_Last)
+                  then
+                     Found := True;
+                     if Response_Last > Response'Length then
+                        raise Constraint_Error with "sync response too large";
+                     end if;
+                     if Response_Last > 0 then
+                        Response
+                          (Response'First ..
+                           Response'First + Response_Last - 1) :=
+                          Full_Response (1 .. Response_Last);
+                     end if;
+                  else
+                     Found := False;
+                  end if;
                elsif Response_Last > Response'Length then
                   raise Constraint_Error with "sync response too large";
                elsif Response_Last > 0 then

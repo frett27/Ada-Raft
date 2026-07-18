@@ -598,8 +598,11 @@ package body Network_Node.Engine is
          & Natural'Image (Count_Active_Client_Sessions));
       Put_Line ("app_sum=" & Integer'Image (Application_Sum));
       Put_Line ("application_state=" & Application_State_Image);
-      Put_Line ("udp_audit=" & Audit_Report);
-      Put_Line ("tcp_audit=" & Client_Audit_Report);
+      --  Hub byte counters since process start (not the monitor/audit TCP
+      --  query size). raft_udp = inter-server heartbeats/AE; client_tcp =
+      --  client API on raft_port+200.
+      Put_Line ("raft_udp=" & Audit_Report);
+      Put_Line ("client_tcp=" & Client_Audit_Report);
       return To_String (Result);
    end Status_Report;
 
@@ -773,11 +776,13 @@ package body Network_Node.Engine is
          if Client_Load_Limited then
             --  Always advance/deliver in-flight waiters. On backlog only pause
             --  Fill (no Abort): aborting mid-commit forced Error and re-register.
-            Step_All_Client_Work;
-            Deliver_Completed_Client_Work;
+            --  Fill before Step so a newly attached request is handled in this
+            --  loop iteration instead of waiting an extra Poll_Interval.
             if Client_Work_Allowed then
                Fill_Client_Work_Slots;
             end if;
+            Step_All_Client_Work;
+            Deliver_Completed_Client_Work;
          else
             Abort_All_Client_Work;
             Deliver_Completed_Client_Work;

@@ -7,6 +7,7 @@ with Ada.Calendar.Formatting; use Ada.Calendar.Formatting;
 with Ada.Strings;       use Ada.Strings;
 with Ada.Strings.Fixed; use Ada.Strings.Fixed;
 with Ada.Exceptions;    use Ada.Exceptions;
+with GNAT.Sockets;      use GNAT.Sockets;
 
 with Raft;               use Raft;
 with Raft.Comm;           use Raft.Comm;
@@ -15,6 +16,17 @@ with Communication.TCP;  use Communication.TCP;
 with Cluster_Config;    use Cluster_Config;
 with Cluster_Health;    use Cluster_Health;
 with Example_Config;    use Example_Config;
+
+--  Read-only cluster health viewer.
+--
+--  Each poll opens a short-lived TCP connection to every node's audit port
+--  (raft_port + 300, e.g. 9401) and fetches one ~0.5–1 KB status string.
+--  That monitor traffic is tiny compared with the counters embedded in the
+--  status text:
+--    raft_udp=…    cumulative inter-server UDP (heartbeats / AppendEntries)
+--    client_tcp=…  cumulative client API TCP (raft_port + 200, e.g. 9301)
+--  Node log lines "audit: messages=…" are the same raft_udp hub counters,
+--  printed locally every Audit_Interval_Epochs — not this monitor's I/O.
 
 procedure Raft_Monitor is
 
@@ -26,6 +38,7 @@ procedure Raft_Monitor is
    Interval    : Duration := 2.0;
    Run_Once    : Boolean := False;
    Show_Raw    : Boolean := False;
+   Legend_Shown : Boolean := False;
 
    Hub        : aliased TcpHub;
    Hub_Access : Net_Hub_Wide_Access := Hub'Unchecked_Access;
@@ -46,8 +59,104 @@ procedure Raft_Monitor is
       Put_Line ("options:");
       Put_Line ("  -i SECONDS   poll interval (default 2)");
       Put_Line ("  --once       single snapshot then exit");
-      Put_Line ("  --raw        print full audit text per node");
+      Put_Line ("  --raw        print full status text per node");
+      Put_Line ("");
+      Put_Line ("Polls audit TCP (raft_port+300). Status fields raft_udp /");
+      Put_Line ("client_tcp are cumulative Raft-UDP / client-TCP hub counters,");
+      Put_Line ("not the size of these monitor queries.");
    end Print_Usage;
+
+   procedure Print_Legend (Config : Cluster_Configuration) is
+      First : constant Node_Config := Find_Node (Config, 1);
+      Audit : constant String :=
+        Trim (Port_Type'Image (Node_Audit_Port (First)), Left);
+      Client : constant String :=
+        Trim (Port_Type'Image (Client_API_Port (First.Port)), Left);
+      Every : constant String :=
+        Trim (Duration'Image (Interval), Left);
+   begin
+      Put_Line
+        ("legend: monitor polls audit TCP port "
+         & Audit
+         & "+ every "
+         & Every
+         & "s (~KB/query).");
+      Put_Line
+        ("  raft_udp = inter-server UDP; client_tcp = client API TCP "
+         & Client
+         & "+ (not monitor traffic).");
+   end Print_Legend;
+
+   --  Annotate traffic counter lines in --raw dumps so MB/s rates are not
+   --  mistaken for monitor API volume.
+   procedure Put_Raw_Status (Text : String) is
+      Line_First : Positive := Text'First;
+      Line_Last  : Natural;
+      Line_Start : Positive;
+
+      function Next_Line
+        (S : String; First : in out Positive; Last : out Natural)
+         return Boolean
+      is
+         I : Positive;
+      begin
+         if First > S'Last then
+            return False;
+         end if;
+         I := First;
+         while I <= S'Last and then S (I) /= ASCII.LF loop
+            I := I + 1;
+         end loop;
+         Last := I - 1;
+         if I <= S'Last then
+            First := I + 1;
+         else
+            First := S'Last + 1;
+         end if;
+         return True;
+      end Next_Line;
+   begin
+      while Line_First <= Text'Last loop
+         Line_Start := Line_First;
+         exit when not Next_Line (Text, Line_First, Line_Last);
+         if Line_Last < Line_Start then
+            Put_Line ("");
+         else
+            declare
+               Line : constant String := Text (Line_Start .. Line_Last);
+            begin
+               if Line'Length >= 9
+                 and then Line (Line'First .. Line'First + 8) = "raft_udp="
+               then
+                  Put_Line
+                    ("raft_udp (inter-server UDP heartbeats/AE, cumulative)="
+                     & Line (Line'First + 9 .. Line'Last));
+               elsif Line'Length >= 11
+                 and then Line (Line'First .. Line'First + 10) = "client_tcp="
+               then
+                  Put_Line
+                    ("client_tcp (client API TCP, cumulative)="
+                     & Line (Line'First + 11 .. Line'Last));
+               elsif Line'Length >= 10
+                 and then Line (Line'First .. Line'First + 9) = "udp_audit="
+               then
+                  --  Older binaries before the rename.
+                  Put_Line
+                    ("raft_udp (was udp_audit; inter-server UDP)="
+                     & Line (Line'First + 10 .. Line'Last));
+               elsif Line'Length >= 10
+                 and then Line (Line'First .. Line'First + 9) = "tcp_audit="
+               then
+                  Put_Line
+                    ("client_tcp (was tcp_audit; client API TCP)="
+                     & Line (Line'First + 10 .. Line'Last));
+               else
+                  Put_Line (Line);
+               end if;
+            end;
+         end if;
+      end loop;
+   end Put_Raw_Status;
 
    procedure Set_Config_Path (Value : String) is
    begin
@@ -167,6 +276,11 @@ procedure Raft_Monitor is
         (others => <>);
       Leader_App_Sum : Integer := 0;
    begin
+      if not Legend_Shown then
+         Print_Legend (Config);
+         Legend_Shown := True;
+      end if;
+
       for SID in ServerID_Type range 1 .. Config.Server_Count loop
          declare
             Text : constant String := Query_Node (SID);
@@ -182,7 +296,7 @@ procedure Raft_Monitor is
 
             if Show_Raw then
                Put_Line ("--- node " & Trim (SID'Image, Left) & " ---");
-               Put_Line (Text);
+               Put_Raw_Status (Text);
             end if;
          end;
       end loop;
@@ -231,6 +345,51 @@ procedure Raft_Monitor is
                   if Reason'Length > 0 then
                      Put_Line
                        ("  hint: " & Reason);
+                  end if;
+               end;
+
+               --  Pull traffic counter rates from the raw status so the
+               --  compact view names them clearly (not "monitor I/O").
+               declare
+                  Raw : constant String := S.Raw (1 .. S.Raw_Length);
+
+                  function Field_After (Key : String) return String is
+                     Idx : Natural;
+                  begin
+                     Idx := Index (Raw, Key);
+                     if Idx = 0 then
+                        return "";
+                     end if;
+                     declare
+                        Start : constant Positive := Idx + Key'Length;
+                        Stop  : Natural := Start;
+                     begin
+                        while Stop <= Raw'Last
+                          and then Raw (Stop) /= ASCII.LF
+                        loop
+                           Stop := Stop + 1;
+                        end loop;
+                        if Start > Raw'Last or else Stop <= Start then
+                           return "";
+                        end if;
+                        return Raw (Start .. Stop - 1);
+                     end;
+                  end Field_After;
+
+                  Raft_Udp   : constant String := Field_After ("raft_udp=");
+                  Client_Tcp : constant String := Field_After ("client_tcp=");
+                  Legacy_Udp : constant String := Field_After ("udp_audit=");
+                  Legacy_Tcp : constant String := Field_After ("tcp_audit=");
+               begin
+                  if Raft_Udp'Length > 0 then
+                     Put_Line ("  raft_udp: " & Raft_Udp);
+                  elsif Legacy_Udp'Length > 0 then
+                     Put_Line ("  raft_udp: " & Legacy_Udp);
+                  end if;
+                  if Client_Tcp'Length > 0 then
+                     Put_Line ("  client_tcp: " & Client_Tcp);
+                  elsif Legacy_Tcp'Length > 0 then
+                     Put_Line ("  client_tcp: " & Legacy_Tcp);
                   end if;
                end;
 

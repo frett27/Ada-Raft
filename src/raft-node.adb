@@ -179,10 +179,13 @@ package body Raft.Node is
    end Find_Client_Session_Index;
 
    procedure Create_Client_Session
-     (MState : RaftNodeStruct_Access; Client_Id : Client_Id_Type)
+     (MState : RaftNodeStruct_Access; Client_Id : Client_Id_Type;
+      Created : out Boolean)
    is
    begin
+      Created := False;
       if Find_Client_Session_Index (MState, Client_Id) /= 0 then
+         Created := True;
          return;
       end if;
 
@@ -193,6 +196,7 @@ package body Raft.Node is
                Client_Id     => Client_Id,
                Last_Activity => Clock,
                Completed     => (others => <>));
+            Created := True;
             return;
          end if;
       end loop;
@@ -2328,12 +2332,26 @@ package body Raft.Node is
      (Machine_State : in out Raft_State_Machine_Leader)
    is
       Assigned_Id : Client_Id_Type;
+      Created     : Boolean;
    begin
       Assigned_Id := Machine_State.MState.Next_Client_Id;
+
+      Create_Client_Session (Machine_State.MState, Assigned_Id, Created);
+      if not Created then
+         --  Session table full: do not burn an id the client cannot use.
+         Deliver_Client_Response
+           (Machine_State.MState,
+            Response_Register_Client'
+              (Client_Id  => NO_CLIENT_ID,
+               Not_Leader => False,
+               Error      => False,
+               Busy       => True,
+               Leader_Id  => Machine_State.MState.Current_Id));
+         return;
+      end if;
+
       Machine_State.MState.Next_Client_Id :=
         Client_Id_Type'Succ (Assigned_Id);
-
-      Create_Client_Session (Machine_State.MState, Assigned_Id);
 
       Deliver_Client_Response
         (Machine_State.MState,
@@ -2341,7 +2359,7 @@ package body Raft.Node is
            (Client_Id  => Assigned_Id,
             Not_Leader => False,
             Error      => False,
-                  Busy       => False,
+            Busy       => False,
             Leader_Id  => Machine_State.MState.Current_Id));
    end Handle_Register_Client;
 

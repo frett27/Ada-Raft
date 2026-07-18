@@ -274,12 +274,12 @@ package body Raft.Client is
    is
    begin
       if Res.Busy then
-         --  Leader overloaded: keep probing the same server.
+         --  Leader overloaded: keep probing the same server, but let the
+         --  outer register loop pace retries (avoid an immediate probe storm).
          if Res.Leader_Id /= NULL_SERVER then
             C.Leader_Id    := Res.Leader_Id;
             C.Probe_Server := Res.Leader_Id;
          end if;
-         Send_Register_Probe (C);
          return False;
       end if;
 

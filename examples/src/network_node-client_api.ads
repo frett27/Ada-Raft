@@ -43,6 +43,9 @@ package Network_Node.Client_API is
         (Sender  : Unbounded_String;
          Request : Stream_Element_Array;
          Slot    : out Natural);
+      --  TCP sync waiter timed out: free or mark abandoned so the depth-1
+      --  pipeline cannot stay wedged after Found=False.
+      procedure Abandon_Slot (Slot : Natural);
       entry Await_Client_Response
         (Slot          : Natural;
          Response      : out Stream_Element_Array;
