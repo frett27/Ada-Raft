@@ -38,6 +38,11 @@ package Network_Client is
 
    function Next_Command_Serial return Client_Serial_Type;
 
+   --  Last send attempt diagnostics (after Client_Timeout / abort).
+   function Last_Attempt_Value return Integer;
+   function Last_Aborted_Serial_Valid return Boolean;
+   function Last_Aborted_Serial return Client_Serial_Type;
+
    function Send_Watchdog return Boolean;
 
    function Audit_Report return String;

@@ -1102,6 +1102,7 @@ package body Test_Raft is
          "leader should apply the command exactly once");
 
       --  Client retries the same (Client_Id, Serial); leader must not re-execute.
+      Allow_Immediate_Retry (Client);
       Retry_Pending_Command (Client);
 
       for Round in 1 .. 20 loop

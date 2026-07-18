@@ -236,7 +236,8 @@ package body Network_Node.Engine is
             end loop;
 
             Expire_Inactive_Client_Sessions
-              (Node, Client_Session_Inactivity_S);
+              (Node, Client_Session_Inactivity_Epochs);
+            Advance_Logical_Epoch (Node);
             Purge_Stale_Client_Routes;
 
             if Verbose_Logging then

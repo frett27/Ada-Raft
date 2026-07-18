@@ -90,8 +90,20 @@ package Raft.Client is
 
    procedure Start_Send_Command (C : in out Raft_Client; Cmd : Command_Type);
 
-   --  Idempotent retry of the current in-flight command (book §6.3 dedup).
+   --  Idempotent retry of the current in-flight command when the busy/stale
+   --  holdoff epochs have elapsed (no-op while waiting for a normal commit).
    procedure Retry_Pending_Command (C : in out Raft_Client);
+
+   --  Clear Busy/commit-wait pacing so the next probe/retry may fire now
+   --  (tests / explicit recovery). Does not send by itself.
+   procedure Allow_Immediate_Retry (C : in out Raft_Client);
+
+   --  Advance client-local epoch counters used for Busy/retry pacing.
+   --  Deterministic: no wall clock. Call once per cluster step / loop tick.
+   procedure Advance_Client_Epoch (C : in out Raft_Client);
+
+   --  True when a register probe or pending-command retry may be sent now.
+   function Retry_Due (C : Raft_Client) return Boolean;
 
    --  Drain the inbox for the current operation. Returns True when Idle.
    function Poll (C : in out Raft_Client) return Boolean;
@@ -131,7 +143,13 @@ package Raft.Client is
    function Is_Registered (C : Raft_Client) return Boolean;
 
    --  Drop an in-flight register/send without clearing Client_Id / Leader_Id.
+   --  When a send was in flight, records Last_Aborted_Serial for diagnostics.
    procedure Abort_In_Flight_Operation (C : in out Raft_Client);
+
+   --  Serial of the last aborted in-flight send (valid after Abort while
+   --  Last_Aborted_Serial_Valid). Used by example shell / stress logs.
+   function Last_Aborted_Serial_Valid (C : Raft_Client) return Boolean;
+   function Last_Aborted_Serial (C : Raft_Client) return Client_Serial_Type;
 
    --  Keep-alive for an open session on the leader (ClientWatchdog RPC).
    function Send_Watchdog (C : in out Raft_Client) return Boolean;
@@ -143,19 +161,25 @@ private
    end record;
 
    type Raft_Client is limited record
-      Server_Count    : ServerID_Type;
-      Send            : Send_To_Server;
-      Inbox           : access Response_Inbox;
-      On_Step         : Cluster_Step_Procedure;
-      Client_Id       : Client_Id_Type;
-      Next_Serial     : Client_Serial_Type;
-      Leader_Id       : ServerID_Type;
-      Op_Phase        : Client_Phase;
-      Probe_Server    : ServerID_Type;
-      Pending_Serial  : Client_Serial_Type;
-      Pending_Command : Command_Type;
-      Last_Send_Result : Response_Send_Command;
+      Server_Count          : ServerID_Type;
+      Send                  : Send_To_Server;
+      Inbox                 : access Response_Inbox;
+      On_Step               : Cluster_Step_Procedure;
+      Client_Id             : Client_Id_Type;
+      Next_Serial           : Client_Serial_Type;
+      Leader_Id             : ServerID_Type;
+      Op_Phase              : Client_Phase;
+      Probe_Server          : ServerID_Type;
+      Pending_Serial        : Client_Serial_Type;
+      Pending_Command       : Command_Type;
+      Last_Send_Result      : Response_Send_Command;
       Resume_After_Register : Boolean := False;
+      --  Epoch-based Busy / commit-wait pacing (no wall clock).
+      Retry_Holdoff_Epochs  : Natural := 0;
+      Busy_Backoff_Epochs   : Natural := 1;
+      --  Diagnostics: last send aborted by Abort_In_Flight_Operation.
+      Last_Aborted_Serial_Ok : Boolean := False;
+      Last_Aborted_Serial_V  : Client_Serial_Type := Client_Serial_Type'First;
    end record;
 
 end Raft.Client;

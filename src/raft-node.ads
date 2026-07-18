@@ -1,5 +1,3 @@
-with Ada.Calendar;
-
 with Communication;         use Communication;
 with Raft.Messages;         use Raft.Messages;
 with Raft.Log_Storage;      use Raft.Log_Storage;
@@ -72,11 +70,10 @@ package Raft.Node is
      array (1 .. MAX_SESSION_COMPLETED) of Completed_Client_Command;
 
    type Client_Session_Entry is record
-      Active        : Boolean := False;
-      Client_Id     : Client_Id_Type := NO_CLIENT_ID;
-      Last_Activity : Ada.Calendar.Time :=
-        Ada.Calendar.Time_Of (Year => 1901, Month => 1, Day => 1, Seconds => 0.0);
-      Completed     : Completed_Client_Command_Table := (others => <>);
+      Active               : Boolean := False;
+      Client_Id            : Client_Id_Type := NO_CLIENT_ID;
+      Last_Activity_Epoch  : Natural := 0;
+      Completed            : Completed_Client_Command_Table := (others => <>);
    end record;
 
    type Client_Session_Table is
@@ -113,6 +110,10 @@ package Raft.Node is
         (others => <>);
       Client_Sessions         : Client_Session_Table := (others => <>);
       Next_Client_Id : Client_Id_Type := Client_Id_Type (1);
+
+      --  Host-advanced logical epoch for deterministic session inactivity
+      -- (examples tick once per wall-clock epoch; tests tick per Run_Steps).
+      Logical_Epoch : Natural := 0;
 
       --  Volatile client interaction state (book §6.2).
       Known_Leader_Id : ServerID_Type := NULL_SERVER;
@@ -315,9 +316,13 @@ package Raft.Node is
    with
      Pre => Machine_State.MState.Current_Raft_State = LEADER;
 
-   --  Drop client sessions with no register/send/watchdog activity.
+   --  Advance Logical_Epoch on this node (call once per host epoch / test step).
+   procedure Advance_Logical_Epoch (Node : Raft_Node_Access);
+
+   --  Drop client sessions with no register/send/watchdog activity for
+   --  Inactivity_Epochs logical epochs (deterministic; no wall clock).
    procedure Expire_Inactive_Client_Sessions
-     (Node : Raft_Node_Access; Inactivity : Duration);
+     (Node : Raft_Node_Access; Inactivity_Epochs : Natural);
 
    function Client_Session_Active
      (Node : Raft_Node_Access; Client_Id : Client_Id_Type) return Boolean;

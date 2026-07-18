@@ -11,6 +11,7 @@ package body Network_Client.Session is
    Server_Num  : ServerID_Type := 0;
    Ready       : Boolean := False;
    Probe_Round : Natural := 0;
+   Last_Value  : Integer := 0;
 
    procedure Advance_Probe is
    begin
@@ -37,11 +38,13 @@ package body Network_Client.Session is
                pragma Unreferenced (Done);
             end;
 
+            --  Retry_Due / Busy holdoff live in Raft.Client (epoch-based).
             if Phase (Client) = Registering then
                Send_Register_Probe (Client);
             end if;
 
             delay Loop_Interval;
+            Advance_Client_Epoch (Client);
          end loop;
       exception
          when others =>
@@ -160,6 +163,8 @@ package body Network_Client.Session is
       Deadline : constant Time := Clock + Client_Timeout_S;
       Cmd      : constant Command_Type := Make_Command (Value);
    begin
+      Last_Value := Value;
+
       if not Ensure_Registered then
          raise Client_No_Leader;
       end if;
@@ -188,7 +193,10 @@ package body Network_Client.Session is
          end if;
 
          delay Loop_Interval;
+         Advance_Client_Epoch (Client);
 
+         --  Only resends when Busy / commit-wait holdoff epochs have elapsed
+         --  (no mid-wait TCP storm while awaiting a normal commit).
          if Phase (Client) = Sending then
             Retry_Pending_Command (Client);
          end if;
@@ -215,6 +223,21 @@ package body Network_Client.Session is
    begin
       return Raft.Client.Next_Command_Serial (Client);
    end Next_Command_Serial;
+
+   function Last_Attempt_Value return Integer is
+   begin
+      return Last_Value;
+   end Last_Attempt_Value;
+
+   function Last_Aborted_Serial_Valid return Boolean is
+   begin
+      return Raft.Client.Last_Aborted_Serial_Valid (Client);
+   end Last_Aborted_Serial_Valid;
+
+   function Last_Aborted_Serial return Client_Serial_Type is
+   begin
+      return Raft.Client.Last_Aborted_Serial (Client);
+   end Last_Aborted_Serial;
 
    function Send_Watchdog return Boolean is
    begin

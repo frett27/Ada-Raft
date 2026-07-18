@@ -19,6 +19,11 @@ package Network_Client.Session is
    function Registered_Client_Id return Client_Id_Type;
    function Next_Command_Serial return Client_Serial_Type;
 
+   --  Last send attempt diagnostics (valid after Client_Timeout / abort).
+   function Last_Attempt_Value return Integer;
+   function Last_Aborted_Serial_Valid return Boolean;
+   function Last_Aborted_Serial return Client_Serial_Type;
+
    --  Hooks retained for Raft.Client Create (On_Step); currently no-ops.
    procedure Process_Inbound_Messages;
    procedure Run_Step;

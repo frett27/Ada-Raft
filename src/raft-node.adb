@@ -3,7 +3,6 @@ with Ada.Text_IO; use Ada.Text_IO;
 with Ada.Text_IO.Text_Streams;
 with Ada.Strings.Fixed; use Ada.Strings.Fixed;
 with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
-with Ada.Calendar;          use Ada.Calendar;
 
 with Ada.Tags; use Ada.Tags;
 
@@ -192,10 +191,10 @@ package body Raft.Node is
       for I in MState.Client_Sessions'Range loop
          if not MState.Client_Sessions (I).Active then
             MState.Client_Sessions (I) :=
-              (Active        => True,
-               Client_Id     => Client_Id,
-               Last_Activity => Clock,
-               Completed     => (others => <>));
+              (Active              => True,
+               Client_Id           => Client_Id,
+               Last_Activity_Epoch => MState.Logical_Epoch,
+               Completed           => (others => <>));
             Created := True;
             return;
          end if;
@@ -208,7 +207,7 @@ package body Raft.Node is
       Idx : constant Natural := Find_Client_Session_Index (MState, Client_Id);
    begin
       if Idx /= 0 then
-         MState.Client_Sessions (Idx).Last_Activity := Clock;
+         MState.Client_Sessions (Idx).Last_Activity_Epoch := MState.Logical_Epoch;
       end if;
    end Touch_Client_Session;
 
@@ -2417,18 +2416,33 @@ package body Raft.Node is
             Client_Id  => Watchdog.Client_Id));
    end Handle_Client_Watchdog;
 
-   procedure Expire_Inactive_Client_Sessions
-     (Node : Raft_Node_Access; Inactivity : Duration)
-   is
-      Now : constant Time := Clock;
+   procedure Advance_Logical_Epoch (Node : Raft_Node_Access) is
    begin
       if Node = null then
          return;
       end if;
 
+      if Node.State.Logical_Epoch < Natural'Last then
+         Node.State.Logical_Epoch := Node.State.Logical_Epoch + 1;
+      end if;
+   end Advance_Logical_Epoch;
+
+   procedure Expire_Inactive_Client_Sessions
+     (Node : Raft_Node_Access; Inactivity_Epochs : Natural)
+   is
+      Current : Natural;
+   begin
+      if Node = null or else Inactivity_Epochs = 0 then
+         return;
+      end if;
+
+      Current := Node.State.Logical_Epoch;
+
       for I in Node.State.Client_Sessions'Range loop
          if Node.State.Client_Sessions (I).Active
-           and then Now - Node.State.Client_Sessions (I).Last_Activity > Inactivity
+           and then Current > Node.State.Client_Sessions (I).Last_Activity_Epoch
+           and then Current - Node.State.Client_Sessions (I).Last_Activity_Epoch
+                     > Inactivity_Epochs
          then
             declare
                Expired_Id : constant Client_Id_Type :=

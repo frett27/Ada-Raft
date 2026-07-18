@@ -16,8 +16,9 @@ package Example_Config is
    --  the outer register deadline (previously 10s blocked past a 2s deadline).
    Client_Probe_Timeout_S : constant Duration := 0.4;
 
-   --  Leader drops client sessions with no RPC activity for this long.
-   Client_Session_Inactivity_S : constant Duration := 10.0;
+   --  Leader drops client sessions with no RPC activity for this many epochs.
+   --  (~10s at Epoch_Interval = 5ms).
+   Client_Session_Inactivity_Epochs : constant Natural := 2_000;
 
    --  Max concurrent client sync TCP handlers on the leader before refusing
    --  new connections (protects Raft replication from client overload).

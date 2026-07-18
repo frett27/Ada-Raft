@@ -84,6 +84,21 @@ package body Network_Client is
       return Session.Next_Command_Serial;
    end Next_Command_Serial;
 
+   function Last_Attempt_Value return Integer is
+   begin
+      return Session.Last_Attempt_Value;
+   end Last_Attempt_Value;
+
+   function Last_Aborted_Serial_Valid return Boolean is
+   begin
+      return Session.Last_Aborted_Serial_Valid;
+   end Last_Aborted_Serial_Valid;
+
+   function Last_Aborted_Serial return Client_Serial_Type is
+   begin
+      return Session.Last_Aborted_Serial;
+   end Last_Aborted_Serial;
+
    function Send_Watchdog return Boolean is
    begin
       return Session.Send_Watchdog;

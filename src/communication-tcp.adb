@@ -1,5 +1,6 @@
 with Ada.Streams;           use Ada.Streams;
 with Ada.Strings.Unbounded; use Ada.Strings.Unbounded;
+with Ada.Strings.Fixed;     use Ada.Strings.Fixed;
 with Ada.Text_IO;           use Ada.Text_IO;
 with Ada.Exceptions;        use Ada.Exceptions;
 with Interfaces;            use Interfaces;
@@ -381,6 +382,8 @@ package body Communication.TCP is
    end Log_Network_Error;
 
    Incoming_Read_Timeout : constant Duration := 1.0;
+   --  Between keep-alive client RPCs on the same socket (idle wait).
+   Client_Keepalive_Idle_Timeout : constant Duration := 30.0;
    Max_Sync_Frame        : constant Stream_Element_Offset := 16_384;
 
    procedure Read_Frame
@@ -436,6 +439,7 @@ package body Communication.TCP is
       Response    : Stream_Element_Array (1 .. Max_Sync_Frame);
       Resp_Last   : Stream_Element_Offset;
       Found       : Boolean;
+      Keep_Alive  : Boolean := False;
    begin
       if Client = No_Socket then
          return;
@@ -453,26 +457,37 @@ package body Communication.TCP is
       if Is_Client_Endpoint (Hub.all, Sender)
         and then Hub.Sync_Handler /= null
       then
-         Hub.Sync_Handler.all
-           (Sender,
-            Frame (Pay_Start .. Frame_Last),
-            Response,
-            Resp_Last,
-            Found);
-         if Found then
-            declare
-               Encoded : constant Stream_Element_Array :=
-                 Encode_Frame (Hub.Local_Hostname, Response (1 .. Resp_Last));
-            begin
-               Send_Full (Client, Encoded);
-               if Hub.Audit_State /= null then
-                  Record_Send
-                    (Hub.Audit_State.all, Natural (Encoded'Length));
-               end if;
-            end;
-         end if;
-         Safe_Close (Client);
-         return;
+         Keep_Alive := True;
+         loop
+            Hub.Sync_Handler.all
+              (Sender,
+               Frame (Pay_Start .. Frame_Last),
+               Response,
+               Resp_Last,
+               Found);
+            if Found then
+               declare
+                  Encoded : constant Stream_Element_Array :=
+                    Encode_Frame
+                      (Hub.Local_Hostname, Response (1 .. Resp_Last));
+               begin
+                  Send_Full (Client, Encoded);
+                  if Hub.Audit_State /= null then
+                     Record_Send
+                       (Hub.Audit_State.all, Natural (Encoded'Length));
+                  end if;
+               end;
+            end if;
+
+            --  Wait for the next RPC on this connection (stress keep-alive).
+            Apply_IO_Timeouts (Client, Client_Keepalive_Idle_Timeout);
+            Read_Frame (Client, Frame, Frame_Last);
+            Decode_Frame (Frame (1 .. Frame_Last), Sender, Pay_Start);
+            if Hub.Audit_State /= null then
+               Record_Receive (Hub.Audit_State.all, Natural (Frame_Last));
+            end if;
+            Apply_IO_Timeouts (Client, Incoming_Read_Timeout);
+         end loop;
       end if;
 
       Callback := Find_Callback (Hub, Hub.Local_Hostname);
@@ -496,11 +511,30 @@ package body Communication.TCP is
    exception
       when E : others =>
          Safe_Close (Client);
-         Put_Line
-           ("TCP network: receive from "
-            & Image (Peer)
-            & " failed: "
-            & Exception_Information (E));
+         --  Clean EOF / idle timeout on keep-alive is expected; avoid noise.
+         if Keep_Alive then
+            declare
+               Msg : constant String := Exception_Message (E);
+            begin
+               if Index (Msg, "closed") = 0
+                 and then Index (Msg, "Resource temporarily unavailable") = 0
+                 and then Index (Msg, "timed out") = 0
+                 and then Index (Msg, "SOCKET_ERROR") = 0
+               then
+                  Put_Line
+                    ("TCP network: receive from "
+                     & Image (Peer)
+                     & " failed: "
+                     & Exception_Information (E));
+               end if;
+            end;
+         else
+            Put_Line
+              ("TCP network: receive from "
+               & Image (Peer)
+               & " failed: "
+               & Exception_Information (E));
+         end if;
    end Handle_Connection;
 
    task body Listener_Task is
@@ -687,6 +721,18 @@ package body Communication.TCP is
    begin
       Stop_Requested := True;
       H.Active       := False;
+      for I in H.Sync_Cache'Range loop
+         if H.Sync_Cache (I).Open then
+            begin
+               Close_Socket (H.Sync_Cache (I).Socket);
+            exception
+               when others =>
+                  null;
+            end;
+            H.Sync_Cache (I).Open := False;
+            H.Sync_Cache (I).Socket := No_Socket;
+         end if;
+      end loop;
       --  Give idle listener/worker tasks time to exit when Start was never
       --  called (client-only hubs that only use Send_Sync).
       delay 0.15;
@@ -711,6 +757,54 @@ package body Communication.TCP is
       H.Sync_Handler := Handler;
    end Set_Sync_Request_Handler;
 
+   function Find_Sync_Cache_Slot
+     (L : in out TcpHub; Hostname : Unbounded_String) return Positive
+   is
+   begin
+      for I in L.Sync_Cache'Range loop
+         if L.Sync_Cache (I).Open
+           and then L.Sync_Cache (I).Hostname = Hostname
+         then
+            return I;
+         end if;
+      end loop;
+
+      for I in L.Sync_Cache'Range loop
+         if not L.Sync_Cache (I).Open then
+            L.Sync_Cache (I).Hostname := Hostname;
+            return I;
+         end if;
+      end loop;
+
+      --  All slots busy with other hosts: evict the first.
+      if L.Sync_Cache (1).Open then
+         begin
+            Close_Socket (L.Sync_Cache (1).Socket);
+         exception
+            when others =>
+               null;
+         end;
+         L.Sync_Cache (1).Open := False;
+         L.Sync_Cache (1).Socket := No_Socket;
+      end if;
+      L.Sync_Cache (1).Hostname := Hostname;
+      return 1;
+   end Find_Sync_Cache_Slot;
+
+   procedure Close_Sync_Cache_Slot (L : in out TcpHub; Slot : Positive) is
+   begin
+      if L.Sync_Cache (Slot).Open then
+         begin
+            Close_Socket (L.Sync_Cache (Slot).Socket);
+         exception
+            when others =>
+               null;
+         end;
+         L.Sync_Cache (Slot).Open := False;
+         L.Sync_Cache (Slot).Socket := No_Socket;
+      end if;
+   end Close_Sync_Cache_Slot;
+
    procedure Send_Sync
      (L             : in out TcpHub;
       Sender        : Net_Link;
@@ -723,8 +817,6 @@ package body Communication.TCP is
       Dest      : constant Node_Address := Find_Address (L, To.HostName);
       Frame     : constant Stream_Element_Array :=
         Encode_Frame (Sender.HostName, Request);
-      Client    : Socket_Type;
-      Client_Open : Boolean := False;
       Endpoint  : constant Sock_Addr_Type :=
         Network_Socket_Address (Host_To_Inet_Addr (Dest.Host), Dest.Port);
       Pay_Start     : Stream_Element_Offset;
@@ -733,43 +825,55 @@ package body Communication.TCP is
       Frame_Last    : Stream_Element_Offset;
       Payload_Len   : Stream_Element_Offset;
       Dest_Name     : constant String := To_String (To.HostName);
+      Slot          : constant Positive :=
+        Find_Sync_Cache_Slot (L, To.HostName);
+      Attempt       : Natural := 0;
    begin
-      Create_Socket (Client);
-      Client_Open := True;
-      Apply_IO_Timeouts (Client, Timeout);
-      Connect_With_Timeout (Client, Endpoint, Timeout);
-      Send_Full (Client, Frame);
+      loop
+         Attempt := Attempt + 1;
+         begin
+            if not L.Sync_Cache (Slot).Open then
+               Create_Socket (L.Sync_Cache (Slot).Socket);
+               L.Sync_Cache (Slot).Open := True;
+               Apply_IO_Timeouts (L.Sync_Cache (Slot).Socket, Timeout);
+               Connect_With_Timeout
+                 (L.Sync_Cache (Slot).Socket, Endpoint, Timeout);
+            else
+               Apply_IO_Timeouts (L.Sync_Cache (Slot).Socket, Timeout);
+            end if;
 
-      Read_Frame (Client, Frame_Buffer, Frame_Last);
-      Decode_Frame (Frame_Buffer (1 .. Frame_Last), Sender_Name, Pay_Start);
-      Payload_Len := Frame_Last - Pay_Start + 1;
-      if Payload_Len > Response'Length then
-         raise Network_IO_Error with "response buffer too small";
-      end if;
-      Response (Response'First .. Response'First + Payload_Len - 1) :=
-        Frame_Buffer (Pay_Start .. Frame_Last);
-      Response_Last := Payload_Len;
+            Send_Full (L.Sync_Cache (Slot).Socket, Frame);
+            Read_Frame
+              (L.Sync_Cache (Slot).Socket, Frame_Buffer, Frame_Last);
+            Decode_Frame
+              (Frame_Buffer (1 .. Frame_Last), Sender_Name, Pay_Start);
+            Payload_Len := Frame_Last - Pay_Start + 1;
+            if Payload_Len > Response'Length then
+               raise Network_IO_Error with "response buffer too small";
+            end if;
+            Response
+              (Response'First .. Response'First + Payload_Len - 1) :=
+              Frame_Buffer (Pay_Start .. Frame_Last);
+            Response_Last := Payload_Len;
 
-      Close_Socket (Client);
-
-      if L.Audit_State /= null then
-         Record_Send (L.Audit_State.all, Natural (Frame'Length));
-         Record_Receive (L.Audit_State.all, Natural (Frame_Last));
-      end if;
-   exception
-      when E : others =>
-         if Client_Open then
-            begin
-               Close_Socket (Client);
-            exception
-               when others => null;
-            end;
-         end if;
-         raise Network_IO_Error
-           with "sync send to "
-                & Dest_Name
-                & " failed: "
-                & Exception_Information (E);
+            if L.Audit_State /= null then
+               Record_Send (L.Audit_State.all, Natural (Frame'Length));
+               Record_Receive (L.Audit_State.all, Natural (Frame_Last));
+            end if;
+            return;
+         exception
+            when E : others =>
+               Close_Sync_Cache_Slot (L, Slot);
+               if Attempt >= 2 then
+                  raise Network_IO_Error
+                    with "sync send to "
+                         & Dest_Name
+                         & " failed: "
+                         & Exception_Information (E);
+               end if;
+               --  One reconnect retry on a stale keep-alive socket.
+         end;
+      end loop;
    end Send_Sync;
 
    overriding

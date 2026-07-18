@@ -46,7 +46,9 @@ package Communication.TCP is
    procedure Set_Sync_Request_Handler
      (H : in out TcpHub; Handler : Sync_Request_Handler);
 
-   --  Connect, send one request frame, read one response frame (client path).
+   --  Connect, send one request frame, read one response frame.
+   --  Reuses a persistent socket per destination when possible (stress
+   --  keep-alive); reconnects automatically after I/O errors.
    procedure Send_Sync
      (L             : in out TcpHub;
       Sender        : Net_Link;
@@ -97,6 +99,15 @@ private
 
    type Address_Table is array (1 .. Max_Nodes) of Address_Entry;
 
+   --  Client-side persistent sockets for Send_Sync (one per destination).
+   type Sync_Cache_Slot is record
+      Hostname : Unbounded_String;
+      Socket   : Socket_Type := No_Socket;
+      Open     : Boolean := False;
+   end record;
+
+   type Sync_Cache_Table is array (1 .. Max_Nodes) of Sync_Cache_Slot;
+
    type TcpHub is new Net_Hub with record
       Last           : Natural := 0;
       Entries        : Hub_Entry_Array (1 .. Max_Nodes);
@@ -109,6 +120,7 @@ private
       Client_Endpoint      : Unbounded_String :=
         To_Unbounded_String ("client");
       Sync_Handler         : Sync_Request_Handler := null;
+      Sync_Cache           : Sync_Cache_Table;
    end record;
 
 end Communication.TCP;

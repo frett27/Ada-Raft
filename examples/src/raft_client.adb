@@ -59,32 +59,77 @@ procedure Raft_Client is
    begin
       Put_Line
         ("send serial="
-         & Client_Serial_Type'Image (Res.Serial)
+         & Trim (Client_Serial_Type'Image (Res.Serial), Both)
          & " committed="
          & Boolean'Image (Res.Command_Committed)
          & " leader="
-         & ServerID_Type'Image (Res.Leader_Id)
+         & Trim (ServerID_Type'Image (Res.Leader_Id), Both)
          & " index="
-         & TransactionLogIndex_Type'Image (Res.Log_Index));
+         & Trim (TransactionLogIndex_Type'Image (Res.Log_Index), Both));
+      Flush;
    end Print_Send_Result;
 
    procedure Print_Registration is
    begin
       Put_Line
         ("registered client id="
-         & Client_Id_Type'Image (Registered_Client_Id)
+         & Trim (Client_Id_Type'Image (Registered_Client_Id), Both)
          & " leader="
-         & ServerID_Type'Image (Known_Leader_Id)
+         & Trim (ServerID_Type'Image (Known_Leader_Id), Both)
          & " next_serial="
-         & Client_Serial_Type'Image (Next_Command_Serial));
+         & Trim (Client_Serial_Type'Image (Next_Command_Serial), Both));
+      Flush;
    end Print_Registration;
+
+   function Field_Or_Dash (Present : Boolean; Image : String) return String is
+   begin
+      if Present then
+         return Trim (Image, Both);
+      end if;
+      return "-";
+   end Field_Or_Dash;
+
+   --  Machine-readable failure line for stress / load scripts:
+   --  send failed: reason=R serial=S client_id=C leader=L value=V
+   procedure Print_Send_Failed (Reason : String; Value : Integer) is
+      Serial_Img : constant String :=
+        Field_Or_Dash
+          (Last_Aborted_Serial_Valid,
+           Client_Serial_Type'Image (Last_Aborted_Serial));
+      Client_Img : constant String :=
+        Field_Or_Dash
+          (Registered_Client_Id /= NO_CLIENT_ID,
+           Client_Id_Type'Image (Registered_Client_Id));
+      Leader_Img : constant String :=
+        Field_Or_Dash
+          (Known_Leader_Id /= NULL_SERVER,
+           ServerID_Type'Image (Known_Leader_Id));
+   begin
+      Put_Line
+        ("send failed: reason="
+         & Reason
+         & " serial="
+         & Serial_Img
+         & " client_id="
+         & Client_Img
+         & " leader="
+         & Leader_Img
+         & " value="
+         & Trim (Integer'Image (Value), Both));
+      Flush;
+   end Print_Send_Failed;
+
+   procedure Print_Registration_Failed (Reason : String) is
+   begin
+      Put_Line ("registration failed: reason=" & Reason);
+      Flush;
+   end Print_Registration_Failed;
 
    procedure Execute_One_Shot_Send (Cmd : Client_Args) is
       Res : Response_Send_Command;
    begin
       if not Register_With_Cluster then
-         Put_Line
-           ("registration failed (cluster unreachable or no leader)");
+         Print_Registration_Failed ("no_leader");
          return;
       end if;
 
@@ -95,23 +140,16 @@ procedure Raft_Client is
       Disconnect_Session;
    exception
       when Cluster_Unreachable =>
-         Put_Line
-           ("send failed: TCP to cluster failed"
-            & " (check ./launch.sh start;"
-            & " after load test try ./launch.sh stop && ./launch.sh start)");
+         Print_Send_Failed ("unreachable", Cmd.Send_Value);
       when Client_Timeout =>
          if Is_Registered and then Known_Leader_Id /= NULL_SERVER then
-            Put_Line
-              ("send failed: timed out waiting for commit"
-               & " (leader="
-               & ServerID_Type'Image (Known_Leader_Id)
-               & "; check logs/node-*.log for replication errors)");
+            Print_Send_Failed ("commit_timeout", Cmd.Send_Value);
          else
-            Put_Line ("send failed: timed out waiting for leader");
+            Print_Send_Failed ("leader_timeout", Cmd.Send_Value);
          end if;
          Disconnect_Session;
       when Client_No_Leader =>
-         Put_Line ("send failed: no leader known");
+         Print_Send_Failed ("no_leader", Cmd.Send_Value);
          Disconnect_Session;
    end Execute_One_Shot_Send;
 
@@ -134,8 +172,7 @@ procedure Raft_Client is
       Res : Response_Send_Command;
    begin
       if not Register_With_Cluster then
-         Put_Line
-           ("registration failed (cluster unreachable or no leader)");
+         Print_Registration_Failed ("no_leader");
          return;
       end if;
 
@@ -149,24 +186,17 @@ procedure Raft_Client is
       Disconnect_Session;
    exception
       when Cluster_Unreachable =>
-         Put_Line
-           ("send failed: TCP to cluster failed"
-            & " (check ./launch.sh start;"
-            & " after load test try ./launch.sh stop && ./launch.sh start)");
+         Print_Send_Failed ("unreachable", Last_Attempt_Value);
          Disconnect_Session;
       when Client_Timeout =>
          if Is_Registered and then Known_Leader_Id /= NULL_SERVER then
-            Put_Line
-              ("send failed: timed out waiting for commit"
-               & " (leader="
-               & ServerID_Type'Image (Known_Leader_Id)
-               & "; check logs/node-*.log for replication errors)");
+            Print_Send_Failed ("commit_timeout", Last_Attempt_Value);
          else
-            Put_Line ("send failed: timed out waiting for leader");
+            Print_Send_Failed ("leader_timeout", Last_Attempt_Value);
          end if;
          Disconnect_Session;
       when Client_No_Leader =>
-         Put_Line ("send failed: no leader known");
+         Print_Send_Failed ("no_leader", Last_Attempt_Value);
          Disconnect_Session;
    end Execute_Batch_Sends;
 
@@ -177,22 +207,13 @@ procedure Raft_Client is
          when Register =>
             begin
                if Register_With_Cluster then
-                  Put_Line
-                    ("registered client id="
-                     & Client_Id_Type'Image (Registered_Client_Id)
-                     & " leader="
-                     & ServerID_Type'Image (Known_Leader_Id)
-                     & " next_serial="
-                     & Client_Serial_Type'Image (Next_Command_Serial));
+                  Print_Registration;
                else
-                  Put_Line
-                    ("registration failed (cluster unreachable or no leader)");
+                  Print_Registration_Failed ("no_leader");
                end if;
             exception
                when Cluster_Unreachable =>
-                  Put_Line
-                    ("registration failed: cluster unreachable"
-                     & " (start the cluster with ./launch.sh start)");
+                  Print_Registration_Failed ("unreachable");
             end;
 
          when Reconnect =>
@@ -200,84 +221,68 @@ procedure Raft_Client is
                if Reconnect_To_Leader then
                   Put_Line
                     ("reconnected client id="
-                     & Client_Id_Type'Image (Registered_Client_Id)
+                     & Trim (Client_Id_Type'Image (Registered_Client_Id), Both)
                      & " leader="
-                     & ServerID_Type'Image (Known_Leader_Id)
+                     & Trim (ServerID_Type'Image (Known_Leader_Id), Both)
                      & " next_serial="
-                     & Client_Serial_Type'Image (Next_Command_Serial));
+                     & Trim
+                         (Client_Serial_Type'Image (Next_Command_Serial), Both));
+                  Flush;
                else
-                  Put_Line
-                    ("reconnect failed (cluster unreachable or no leader)");
+                  Print_Registration_Failed ("reconnect_no_leader");
                end if;
             exception
                when Cluster_Unreachable =>
-                  Put_Line
-                    ("reconnect failed: cluster unreachable"
-                     & " (start the cluster with ./launch.sh start)");
+                  Print_Registration_Failed ("unreachable");
             end;
 
          when Watchdog =>
             begin
                if not Ensure_Registered then
-                  Put_Line
-                    ("watchdog failed: not registered"
-                     & " (cluster unreachable or no leader)");
+                  Put_Line ("watchdog failed: reason=not_registered");
+                  Flush;
                   return;
                end if;
 
                if Send_Watchdog then
                   Put_Line
                     ("watchdog ok client_id="
-                     & Client_Id_Type'Image (Registered_Client_Id)
+                     & Trim (Client_Id_Type'Image (Registered_Client_Id), Both)
                      & " leader="
-                     & ServerID_Type'Image (Known_Leader_Id));
+                     & Trim (ServerID_Type'Image (Known_Leader_Id), Both));
+                  Flush;
                else
-                  Put_Line
-                    ("watchdog failed: session expired or leader rejected"
-                     & " (use register to open a new session)");
+                  Put_Line ("watchdog failed: reason=rejected_or_expired");
+                  Flush;
                end if;
             exception
                when Cluster_Unreachable =>
-                  Put_Line
-                    ("watchdog failed: cluster unreachable"
-                     & " (start the cluster with ./launch.sh start)");
+                  Put_Line ("watchdog failed: reason=unreachable");
+                  Flush;
             end;
 
          when Send =>
-            if Interactive then
-               begin
-                  if not Ensure_Registered then
-                     Put_Line
-                       ("send failed: not registered"
-                        & " (cluster unreachable or no leader)");
-                     return;
-                  end if;
+            begin
+               if not Ensure_Registered then
+                  Print_Send_Failed ("not_registered", Cmd.Send_Value);
+                  return;
+               end if;
 
-                  Res := Send_Command (Cmd.Send_Value);
-                  Print_Send_Result (Res);
-               exception
-                  when Cluster_Unreachable =>
-                     Put_Line
-                       ("send failed: cluster unreachable"
-                        & " (start the cluster with ./launch.sh start)");
-                  when Client_Timeout =>
-                     if Is_Registered and then Known_Leader_Id /= NULL_SERVER
-                     then
-                        Put_Line
-                          ("send failed: timed out waiting for commit"
-                           & " (leader="
-                           & ServerID_Type'Image (Known_Leader_Id)
-                           & "; check logs/node-*.log"
-                           & " for replication errors)");
-                     else
-                        Put_Line ("send failed: timed out waiting for leader");
-                     end if;
-                  when Client_No_Leader =>
-                     Put_Line ("send failed: no leader known");
-               end;
-            else
-               Execute_One_Shot_Send (Cmd);
-            end if;
+               Res := Send_Command (Cmd.Send_Value);
+               Print_Send_Result (Res);
+            exception
+               when Cluster_Unreachable =>
+                  Print_Send_Failed ("unreachable", Cmd.Send_Value);
+               when Client_Timeout =>
+                  if Is_Registered and then Known_Leader_Id /= NULL_SERVER
+                  then
+                     Print_Send_Failed ("commit_timeout", Cmd.Send_Value);
+                  else
+                     Print_Send_Failed ("leader_timeout", Cmd.Send_Value);
+                  end if;
+               when Client_No_Leader =>
+                  Print_Send_Failed ("no_leader", Cmd.Send_Value);
+            end;
 
          when Status =>
             Print_Session_Status;

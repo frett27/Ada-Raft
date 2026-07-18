@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
-"""Parallel cluster load via raft_client batch sends.
+"""Parallel cluster load via raft_client.
 
-Each worker runs one command line of the form:
+Default (--keep-connection): one long-lived raft_client per --name that
+registers once and reuses the TCP connection for every send.
+
+Legacy batch mode (--no-keep-connection): many short raft_client invocations
+of the form:
   ./bin/raft_client -c cluster.toml --name D send 100 101 102 ...
 
 Different --name values run in parallel (up to CONCURRENCY). The same --name
@@ -13,12 +17,10 @@ Usage:
   ./scripts/send_load_dual_clients.py
 
 Examples:
-  NUM_CLIENTS=4 COMMANDS_PER_CLIENT=1000 BATCH_SIZE=3 ./scripts/send_load_dual_clients.py
+  NUM_CLIENTS=4 COMMANDS_PER_CLIENT=1000 ./scripts/send_load_dual_clients.py
   ./scripts/send_load_dual_clients.py --num-clients 4 --commands-per-client 1000
+  KEEP_CONNECTION=0 BATCH_SIZE=3 ./scripts/send_load_dual_clients.py
   CLIENT_NAMES="A B C D" CONCURRENCY=8 ./scripts/send_load_dual_clients.py
-  PROGRESS_INTERVAL=5 ./scripts/send_load_dual_clients.py
-  PROGRESS_INTERVAL=0 ./scripts/send_load_dual_clients.py   # disable live tx/s
-  ERROR_BACKOFF_S=1 BATCH_RETRIES=8 ./scripts/send_load_dual_clients.py
 """
 
 from __future__ import annotations
@@ -47,9 +49,22 @@ except ImportError:  # pragma: no cover - non-Unix
 DEFAULT_BATCH = 3
 MAX_BATCH = 32
 COMMITTED_RE = re.compile(r"committed=TRUE")
-# One match per failing line (avoid double-counting "send failed: ... cluster unreachable").
+# Structured failures from raft_client (preferred):
+#   send failed: reason=commit_timeout serial=12 client_id=3 leader=1 value=100042
+#   registration failed: reason=no_leader
+# Legacy prose lines still match for older binaries.
 FAILURE_LINE_RE = re.compile(
-    r"(?:send failed:|registration failed|cluster unreachable)"
+    r"^(?:send failed:|registration failed:|registration failed )"
+)
+STRUCTURED_SEND_FAIL_RE = re.compile(
+    r"^send failed: reason=(?P<reason>\S+)"
+    r" serial=(?P<serial>-|\d+)"
+    r" client_id=(?P<client_id>-|\d+)"
+    r" leader=(?P<leader>-|\d+)"
+    r" value=(?P<value>-|\d+)\s*$"
+)
+STRUCTURED_REG_FAIL_RE = re.compile(
+    r"^registration failed: reason=(?P<reason>\S+)\s*$"
 )
 REGISTERED_RE = re.compile(r"registered client id=")
 
@@ -74,6 +89,7 @@ class Config:
     error_backoff_max_s: float
     batch_retries: int
     client_bin: Path
+    keep_connection: bool
 
     @property
     def total(self) -> int:
@@ -218,6 +234,15 @@ def parse_args(root: Path) -> Config:
         default=env_int("BATCH_RETRIES", 5),
         help="Retries per failed batch after backoff (env: BATCH_RETRIES)",
     )
+    parser.add_argument(
+        "--keep-connection",
+        action=argparse.BooleanOptionalAction,
+        default=env_str("KEEP_CONNECTION", "1") not in ("0", "false", "False", "no"),
+        help=(
+            "One long-lived raft_client per identity (register once, keep TCP); "
+            "disable with --no-keep-connection (env: KEEP_CONNECTION=0)"
+        ),
+    )
     args = parser.parse_args()
 
     if args.batch_size > MAX_BATCH:
@@ -258,6 +283,7 @@ def parse_args(root: Path) -> Config:
         error_backoff_max_s=args.error_backoff_max,
         batch_retries=args.batch_retries,
         client_bin=root / "bin" / "raft_client",
+        keep_connection=bool(args.keep_connection),
     )
 
 
@@ -327,6 +353,36 @@ def count_committed(text: str) -> int:
 
 def count_failures(text: str) -> int:
     return sum(1 for line in text.splitlines() if FAILURE_LINE_RE.search(line))
+
+
+def parse_failure_details(text: str) -> list[dict[str, str]]:
+    """Extract structured send/registration failures for summaries."""
+    details: list[dict[str, str]] = []
+    for line in text.splitlines():
+        m = STRUCTURED_SEND_FAIL_RE.match(line.strip())
+        if m:
+            details.append({"kind": "send", **m.groupdict()})
+            continue
+        m = STRUCTURED_REG_FAIL_RE.match(line.strip())
+        if m:
+            details.append({"kind": "registration", **m.groupdict()})
+            continue
+        if FAILURE_LINE_RE.search(line):
+            details.append({"kind": "legacy", "reason": "unparsed", "line": line})
+    return details
+
+
+def summarize_failure_reasons(text: str) -> str:
+    counts: dict[str, int] = {}
+    for d in parse_failure_details(text):
+        key = d.get("reason", "unknown")
+        if d.get("kind") == "registration":
+            key = f"reg:{key}"
+        counts[key] = counts.get(key, 0) + 1
+    if not counts:
+        return ""
+    parts = [f"{k}={v}" for k, v in sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))]
+    return " ".join(parts)
 
 
 def count_file(path: Path, counter) -> int:
@@ -564,6 +620,178 @@ def run_batch_with_backoff(
     return last
 
 
+def run_streamed_client(
+    cmd: list[str],
+    cwd: Path,
+    script: str,
+    logfile: Path,
+    timeout: float | None,
+    throttle: Throttle | None = None,
+) -> tuple[int, str]:
+    """Run raft_client, append stdout/stderr to logfile as lines arrive.
+
+    Keep-alive progress monitoring reads the logfile while the process is still
+    running; capture_output=True would hide all commits until exit.
+    """
+    chunks: list[str] = []
+    timed_out = False
+    with logfile.open("w", encoding="utf-8") as fh:
+        proc = subprocess.Popen(
+            cmd,
+            cwd=cwd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        assert proc.stdin is not None
+        assert proc.stdout is not None
+        try:
+            proc.stdin.write(script)
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
+
+        deadline = None if timeout is None else (time.monotonic() + timeout)
+        try:
+            while True:
+                if deadline is not None and time.monotonic() >= deadline:
+                    timed_out = True
+                    proc.kill()
+                    break
+                line = proc.stdout.readline()
+                if line == "":
+                    break
+                chunks.append(line)
+                fh.write(line)
+                fh.flush()
+                if throttle is not None and COMMITTED_RE.search(line):
+                    throttle.after_commands(1)
+        finally:
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+
+        try:
+            wait_timeout = None
+            if timed_out:
+                wait_timeout = 5.0
+            elif deadline is not None:
+                wait_timeout = max(0.1, deadline - time.monotonic())
+            rc = proc.wait(timeout=wait_timeout)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            rc = proc.wait()
+            timed_out = True
+
+    out = "".join(chunks)
+    if timed_out:
+        note = f"\n[load] keep-alive timed out after {timeout}s\n"
+        out += note
+        with logfile.open("a", encoding="utf-8") as fh:
+            fh.write(note)
+        return 124, out
+    return rc if rc is not None else 1, out
+
+
+def run_identity_keepalive(
+    cfg: Config,
+    name: str,
+    base: int,
+    count: int,
+    throttle: Throttle,
+    backoff: ErrorBackoff,
+    name_gate: ClientNameGate,
+) -> bool:
+    """One long-lived raft_client: register once, send all values, keep TCP."""
+    label = f"client-{name}"
+    logfile = client_log_path(cfg.log_dir, name)
+    cmd = [
+        str(cfg.client_bin),
+        "-c",
+        cfg.config_path,
+        "--name",
+        name,
+    ]
+    script = "register\n" + "".join(
+        f"send {base + i}\n" for i in range(count)
+    ) + "quit\n"
+    timeout = None if cfg.batch_timeout <= 0 else max(
+        cfg.batch_timeout, float(count) * 2.0 + 60.0
+    )
+
+    last_out = ""
+    last_rc = 1
+    with name_gate.exclusive(name):
+        for attempt in range(cfg.batch_retries + 1):
+            try:
+                last_rc, last_out = run_streamed_client(
+                    cmd, cfg.root, script, logfile, timeout, throttle
+                )
+            except OSError as exc:
+                last_out = f"[load] failed to start raft_client: {exc}\n"
+                last_rc = 1
+                logfile.write_text(last_out, encoding="utf-8")
+
+            committed = count_committed(last_out)
+            failures = count_failures(last_out)
+            batch = BatchResult(
+                rc=last_rc,
+                committed=committed,
+                failures=failures,
+                expected=count,
+            )
+            if batch.ok:
+                backoff.on_success()
+                break
+            if attempt >= cfg.batch_retries:
+                break
+            if committed > 0:
+                log(
+                    f"partial keep-alive for --name {name}: "
+                    f"committed={committed}/{count}; not retrying whole stream"
+                )
+                break
+            backoff.sleep_after_error(name, batch)
+
+    text = logfile.read_text(errors="replace")
+    committed = count_committed(text)
+    failures = count_failures(text)
+    reasons = summarize_failure_reasons(text)
+    extra = f" reasons=[{reasons}]" if reasons else ""
+    print(
+        f"{label}: name={name} committed={committed}/{count} "
+        f"failures={failures}{extra} log={logfile}",
+        flush=True,
+    )
+    if committed != count:
+        print(
+            f"{label}: FAILED (expected {count} committed sends)",
+            file=sys.stderr,
+            flush=True,
+        )
+        for d in parse_failure_details(text)[-10:]:
+            if d.get("kind") == "send":
+                print(
+                    f"  serial={d.get('serial')} value={d.get('value')} "
+                    f"reason={d.get('reason')} leader={d.get('leader')}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            elif d.get("kind") == "registration":
+                print(
+                    f"  registration reason={d.get('reason')}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                print(f"  {d.get('line', '')}", file=sys.stderr, flush=True)
+        return False
+    return True
+
+
 def run_identity_load(
     cfg: Config,
     name: str,
@@ -575,6 +803,11 @@ def run_identity_load(
     name_gate: ClientNameGate,
 ) -> bool:
     """Send all values for one identity (batches serialized by ClientNameGate)."""
+    if cfg.keep_connection:
+        return run_identity_keepalive(
+            cfg, name, base, count, throttle, backoff, name_gate
+        )
+
     label = f"client-{name}"
     logfile = client_log_path(cfg.log_dir, name)
     log_lock = threading.Lock()
@@ -604,10 +837,12 @@ def run_identity_load(
     text = logfile.read_text(errors="replace")
     committed = count_committed(text)
     failures = count_failures(text)
+    reasons = summarize_failure_reasons(text)
+    extra = f" reasons=[{reasons}]" if reasons else ""
 
     print(
         f"{label}: name={name} committed={committed}/{count} "
-        f"failures={failures} log={logfile}",
+        f"failures={failures}{extra} log={logfile}",
         flush=True,
     )
     if committed != count or not batch_ok:
@@ -616,17 +851,22 @@ def run_identity_load(
             file=sys.stderr,
             flush=True,
         )
-        interesting = [
-            ln
-            for ln in text.splitlines()
-            if re.search(
-                r"send failed:|registration failed|cluster unreachable|Exception|"
-                r"batch timed out",
-                ln,
-            )
-        ]
-        for ln in interesting[-10:]:
-            print(ln, file=sys.stderr, flush=True)
+        for d in parse_failure_details(text)[-10:]:
+            if d.get("kind") == "send":
+                print(
+                    f"  serial={d.get('serial')} value={d.get('value')} "
+                    f"reason={d.get('reason')} leader={d.get('leader')}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            elif d.get("kind") == "registration":
+                print(
+                    f"  registration reason={d.get('reason')}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            else:
+                print(f"  {d.get('line', '')}", file=sys.stderr, flush=True)
         return False
     return True
 
@@ -655,6 +895,15 @@ def monitor_progress(
             f"failures={failures} "
             f"tx/s={inst_tps:.1f} (avg {avg_tps:.1f})"
         )
+        # Sample structured reasons from the largest log (cheap enough at 2s).
+        if failures > 0:
+            all_text = "".join(
+                client_log_path(cfg.log_dir, name).read_text(errors="replace")
+                for name in names
+            )
+            sample = summarize_failure_reasons(all_text)
+            if sample:
+                log(f"  failure reasons: {sample}")
         last_done = done
         last_at = now
 
@@ -686,6 +935,7 @@ def main() -> int:
     )
     log(
         f"batch_size={cfg.batch_size} concurrency={cfg.concurrency} "
+        f"keep_connection={cfg.keep_connection} "
         f"(per-name exclusive) config={cfg.config_path} "
         f"error_backoff={cfg.error_backoff_s:g}s.."
         f"{cfg.error_backoff_max_s:g}s retries={cfg.batch_retries}"
@@ -746,9 +996,15 @@ def main() -> int:
     committed = count_all_committed(cfg.log_dir, names)
     failures = count_all_failures(cfg.log_dir, names)
     avg_tps = committed / elapsed if elapsed > 0 else 0.0
+    all_text = "".join(
+        client_log_path(cfg.log_dir, name).read_text(errors="replace")
+        for name in names
+    )
+    reasons = summarize_failure_reasons(all_text)
+    reason_bit = f" reasons=[{reasons}]" if reasons else ""
     log(
         f"done in {elapsed:.1f}s committed={committed}/{cfg.total} "
-        f"failures={failures} avg tx/s={avg_tps:.1f} "
+        f"failures={failures}{reason_bit} avg tx/s={avg_tps:.1f} "
         f"(logs under {cfg.log_dir}/)"
     )
 

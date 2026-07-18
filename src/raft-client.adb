@@ -3,6 +3,42 @@ with Ada.Tags;           use Ada.Tags;
 
 package body Raft.Client is
 
+   --  Exponential Busy holdoff in client epochs (Advance_Client_Epoch / Step).
+   Busy_Backoff_Initial_Epochs : constant Positive := 1;
+   Busy_Backoff_Max_Epochs     : constant Positive := 64;
+   --  Safety idempotent resend after this many epochs without a commit reply.
+   Commit_Wait_Retry_Epochs    : constant Positive := 8;
+
+   procedure Clear_Retry_Backoff (C : in out Raft_Client) is
+   begin
+      C.Busy_Backoff_Epochs  := Busy_Backoff_Initial_Epochs;
+      C.Retry_Holdoff_Epochs := 0;
+   end Clear_Retry_Backoff;
+
+   procedure Note_Busy (C : in out Raft_Client) is
+   begin
+      C.Retry_Holdoff_Epochs := C.Busy_Backoff_Epochs;
+      C.Busy_Backoff_Epochs :=
+        Natural'Min (C.Busy_Backoff_Epochs * 2, Busy_Backoff_Max_Epochs);
+   end Note_Busy;
+
+   procedure Arm_Commit_Wait_Retry (C : in out Raft_Client) is
+   begin
+      C.Retry_Holdoff_Epochs := Commit_Wait_Retry_Epochs;
+   end Arm_Commit_Wait_Retry;
+
+   procedure Advance_Client_Epoch (C : in out Raft_Client) is
+   begin
+      if C.Retry_Holdoff_Epochs > 0 then
+         C.Retry_Holdoff_Epochs := C.Retry_Holdoff_Epochs - 1;
+      end if;
+   end Advance_Client_Epoch;
+
+   function Retry_Due (C : Raft_Client) return Boolean is
+   begin
+      return C.Retry_Holdoff_Epochs = 0;
+   end Retry_Due;
+
    procedure Create_Inbox (Inbox : out Response_Inbox) is
    begin
       Inbox.Buffer := new Message_Buffer_Type;
@@ -63,6 +99,8 @@ package body Raft.Client is
       if C.On_Step /= null then
          C.On_Step.all;
       end if;
+      --  One client epoch per cluster step (deterministic Busy / retry pacing).
+      Advance_Client_Epoch (C);
    end Step_If_Configured;
 
    procedure Reset_Session_State (C : in out Raft_Client) is
@@ -76,6 +114,8 @@ package body Raft.Client is
       C.Pending_Serial          := Client_Serial_Type'First;
       C.Last_Send_Result        := (others => <>);
       C.Resume_After_Register   := False;
+      C.Last_Aborted_Serial_Ok  := False;
+      Clear_Retry_Backoff (C);
    end Reset_Session_State;
 
    procedure Create
@@ -201,7 +241,13 @@ package body Raft.Client is
 
    procedure Send_Register_Probe (C : in out Raft_Client) is
    begin
+      if not Retry_Due (C) then
+         return;
+      end if;
+
       C.Send.all (C.Probe_Server, Request_Register_Client'(null record));
+      --  Space probes even when the leader is not Busy (avoid connect storms).
+      C.Retry_Holdoff_Epochs := Busy_Backoff_Initial_Epochs;
    end Send_Register_Probe;
 
    procedure Send_Pending_Command (C : in out Raft_Client) is
@@ -232,7 +278,9 @@ package body Raft.Client is
       C.Pending_Serial := C.Next_Serial;
       C.Next_Serial    := Client_Serial_Type'Succ (C.Pending_Serial);
       C.Op_Phase       := Sending;
+      Clear_Retry_Backoff (C);
       Send_Pending_Command (C);
+      Arm_Commit_Wait_Retry (C);
    end Resume_Pending_After_Register;
 
    procedure Prepare_Register
@@ -240,6 +288,7 @@ package body Raft.Client is
    is
    begin
       C.Op_Phase := Registering;
+      Clear_Retry_Backoff (C);
 
       if C.Leader_Id /= NULL_SERVER then
          C.Probe_Server := C.Leader_Id;
@@ -274,12 +323,12 @@ package body Raft.Client is
    is
    begin
       if Res.Busy then
-         --  Leader overloaded: keep probing the same server, but let the
-         --  outer register loop pace retries (avoid an immediate probe storm).
+         --  Leader overloaded: keep session path, exponential backoff.
          if Res.Leader_Id /= NULL_SERVER then
             C.Leader_Id    := Res.Leader_Id;
             C.Probe_Server := Res.Leader_Id;
          end if;
+         Note_Busy (C);
          return False;
       end if;
 
@@ -287,6 +336,7 @@ package body Raft.Client is
          C.Client_Id   := Res.Client_Id;
          C.Leader_Id   := Res.Leader_Id;
          C.Next_Serial := Client_Serial_Type'First;
+         Clear_Retry_Backoff (C);
 
          if C.Resume_After_Register then
             Resume_Pending_After_Register (C);
@@ -303,12 +353,14 @@ package body Raft.Client is
       then
          C.Leader_Id    := Res.Leader_Id;
          C.Probe_Server := Res.Leader_Id;
+         Clear_Retry_Backoff (C);
          Send_Register_Probe (C);
          return False;
       end if;
 
       --  Transient failure or no leader hint: try another server.
       C.Probe_Server := Try_Next_Probe_Server (C);
+      Clear_Retry_Backoff (C);
       Send_Register_Probe (C);
       return False;
    end Handle_Register_Response;
@@ -325,15 +377,16 @@ package body Raft.Client is
       if Res.Command_Committed then
          C.Last_Send_Result := Res;
          C.Op_Phase         := Idle;
+         Clear_Retry_Backoff (C);
          return True;
       end if;
 
       if Res.Busy then
-         --  Overload / backlog: keep session, retry same serial.
+         --  Overload / backlog: keep session + same serial; backoff before retry.
          if Res.Leader_Id /= NULL_SERVER then
             C.Leader_Id := Res.Leader_Id;
          end if;
-         Send_Pending_Command (C);
+         Note_Busy (C);
          return False;
       end if;
 
@@ -342,7 +395,9 @@ package body Raft.Client is
         and then Res.Leader_Id /= NULL_SERVER
       then
          C.Leader_Id := Res.Leader_Id;
+         Clear_Retry_Backoff (C);
          Send_Pending_Command (C);
+         Arm_Commit_Wait_Retry (C);
          return False;
       end if;
 
@@ -359,7 +414,7 @@ package body Raft.Client is
          return False;
       end if;
 
-      --  Still in flight: wait for commit notification or a safe idempotent retry.
+      --  Still in flight: wait for commit notification (no TCP storm).
       return False;
    end Handle_Send_Response;
 
@@ -381,15 +436,30 @@ package body Raft.Client is
       C.Pending_Serial  := C.Next_Serial;
       C.Next_Serial     := Client_Serial_Type'Succ (C.Pending_Serial);
       C.Op_Phase        := Sending;
+      C.Last_Aborted_Serial_Ok := False;
+      Clear_Retry_Backoff (C);
       Send_Pending_Command (C);
+      Arm_Commit_Wait_Retry (C);
    end Start_Send_Command;
 
    procedure Retry_Pending_Command (C : in out Raft_Client) is
    begin
-      if C.Op_Phase = Sending then
-         Send_Pending_Command (C);
+      if C.Op_Phase /= Sending then
+         return;
       end if;
+
+      if not Retry_Due (C) then
+         return;
+      end if;
+
+      Send_Pending_Command (C);
+      Arm_Commit_Wait_Retry (C);
    end Retry_Pending_Command;
+
+   procedure Allow_Immediate_Retry (C : in out Raft_Client) is
+   begin
+      Clear_Retry_Backoff (C);
+   end Allow_Immediate_Retry;
 
    function Poll (C : in out Raft_Client) return Boolean is
    begin
@@ -545,10 +615,26 @@ package body Raft.Client is
 
    procedure Abort_In_Flight_Operation (C : in out Raft_Client) is
    begin
+      if C.Op_Phase = Sending then
+         C.Last_Aborted_Serial_Ok := True;
+         C.Last_Aborted_Serial_V  := C.Pending_Serial;
+      end if;
+
       C.Op_Phase              := Idle;
       C.Resume_After_Register := False;
       C.Pending_Command       := null;
+      Clear_Retry_Backoff (C);
    end Abort_In_Flight_Operation;
+
+   function Last_Aborted_Serial_Valid (C : Raft_Client) return Boolean is
+   begin
+      return C.Last_Aborted_Serial_Ok;
+   end Last_Aborted_Serial_Valid;
+
+   function Last_Aborted_Serial (C : Raft_Client) return Client_Serial_Type is
+   begin
+      return C.Last_Aborted_Serial_V;
+   end Last_Aborted_Serial;
 
    function Send_Watchdog (C : in out Raft_Client) return Boolean is
    begin
