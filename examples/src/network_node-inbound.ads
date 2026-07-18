@@ -25,6 +25,10 @@ package Network_Node.Inbound is
    Max_Inbound_Per_Epoch       : constant Positive := 8;
    --  Extra inbound drain rounds when backlogged.
    Backlog_Drain_Rounds        : constant Positive := 4;
+   --  While a client RPC awaits commit: drain AE responses in batches and
+   --  spin briefly so commit does not wait for the next heartbeat/epoch.
+   Max_Eager_Inbound_Per_Step  : constant Positive := 16;
+   Max_Eager_Commit_Rounds     : constant Positive := 8;
 
    --  Engine registers the decoder/dispatcher used per drained frame.
    type Message_Handler_Access is access procedure

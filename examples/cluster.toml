@@ -9,7 +9,7 @@
 # inter_server_timeout_ms = 50   # one heartbeat period
 
 [cluster]
-servers = 3
+servers = 4
 
 [[nodes]]
 id = 1
@@ -28,3 +28,9 @@ id = 3
 host = "127.0.0.1"
 port = 9103
 audit_port = 9403
+
+[[nodes]]
+id = 4
+host = "127.0.0.1"
+port = 9104
+audit_port = 9404

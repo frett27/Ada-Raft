@@ -139,6 +139,7 @@ package body Cluster_Health is
    procedure Apply_Field
      (Status : in out Node_Status; Key, Value : String)
    is
+      At_Pos : Natural;
    begin
       if Key = "node" then
          Status.Node_Id :=
@@ -149,6 +150,28 @@ package body Cluster_Health is
          Status.Epoch := Parse_Natural (Value);
       elsif Key = "term" then
          Status.Term := Parse_Natural (Value);
+      elsif Key = "commit_index" then
+         Status.Commit_Index := Parse_Natural (Value);
+      elsif Key = "last_applied" then
+         Status.Last_Applied := Parse_Natural (Value);
+      elsif Key = "snapshot_index" then
+         --  Status_Report format: "<index>@<term>" (Ada Image may add spaces).
+         At_Pos := 0;
+         for I in Value'Range loop
+            if Value (I) = '@' then
+               At_Pos := I;
+               exit;
+            end if;
+         end loop;
+         if At_Pos = 0 then
+            Status.Snapshot_Index := Parse_Natural (Value);
+            Status.Snapshot_Term := 0;
+         else
+            Status.Snapshot_Index :=
+              Parse_Natural (Value (Value'First .. At_Pos - 1));
+            Status.Snapshot_Term :=
+              Parse_Natural (Value (At_Pos + 1 .. Value'Last));
+         end if;
       elsif Key = "pending_inbound" then
          Status.Pending_Inbound := Parse_Natural (Value);
       elsif Key = "client_sends" then

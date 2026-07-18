@@ -19,6 +19,10 @@ package Cluster_Health is
       Role_Length           : Natural := 0;
       Epoch                 : Natural := 0;
       Term                  : Natural := 0;
+      Commit_Index          : Natural := 0;
+      Last_Applied          : Natural := 0;
+      Snapshot_Index        : Natural := 0;
+      Snapshot_Term         : Natural := 0;
       Pending_Inbound       : Natural := 0;
       Client_Sends          : Natural := 0;
       Client_Responses      : Natural := 0;

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start a local 3-node AdaRaft cluster (cluster.toml).
+# Start a local AdaRaft cluster from cluster.toml (or $CONFIG).
 #
 # Usage:
 #   ./launch.sh run            build if needed, stream logs to console, Ctrl+C to stop
@@ -17,6 +17,8 @@
 #   pkill -f 'raft_server -c .* -s 2'   # kill node 2; supervisor restarts it
 #   tail -f logs/node-2.log               # watch [supervisor] restart lines
 #   ./launch.sh stop                      # stops supervisors and disables restart
+#
+# Node count comes from cluster.servers in the config (not hardcoded).
 
 # Environment:
 #   RAFT_NODE_VERBOSE=1   Raft debug traces + every client RPC (-v)
@@ -35,10 +37,78 @@ fi
 SERVER="$ROOT/bin/raft_server"
 LOG_DIR="$ROOT/logs"
 PID_DIR="$ROOT/run"
-NODE_IDS=(1 2 3)
+NODE_IDS=()
 
 usage() {
    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+# Populate NODE_IDS from cluster.servers in $CONFIG (ids 1 .. N).
+# Matches Cluster_Config.Load: Server_Count drives which -s ids are valid.
+load_node_ids_from_config() {
+   local servers id
+   if [[ ! -f "$CONFIG" ]]; then
+      echo "config not found: $CONFIG" >&2
+      exit 1
+   fi
+
+   servers="$(
+      awk '
+         BEGIN { in_cluster = 0 }
+         /^[[:space:]]*#/ { next }
+         /^\[/ {
+            in_cluster = ($0 ~ /^\[cluster\]/)
+            next
+         }
+         in_cluster && $0 ~ /^[[:space:]]*servers[[:space:]]*=/ {
+            line = $0
+            sub(/#.*/, "", line)
+            if (match(line, /[0-9]+/)) {
+               print substr(line, RSTART, RLENGTH)
+               exit
+            }
+         }
+      ' "$CONFIG"
+   )"
+
+   if [[ -z "${servers}" ]]; then
+      echo "cluster.servers not found in $CONFIG" >&2
+      exit 1
+   fi
+   if ! [[ "$servers" =~ ^[1-9][0-9]*$ ]]; then
+      echo "invalid cluster.servers='$servers' in $CONFIG" >&2
+      exit 1
+   fi
+
+   NODE_IDS=()
+   for ((id = 1; id <= servers; id++)); do
+      NODE_IDS+=("$id")
+   done
+}
+
+# Config ids plus any leftover run/node-*.pid (e.g. after shrinking servers).
+collect_managed_node_ids() {
+   local id path
+   load_node_ids_from_config
+   if [[ -d "$PID_DIR" ]]; then
+      for path in "$PID_DIR"/node-*.pid; do
+         [[ -e "$path" ]] || continue
+         id="${path##*/node-}"
+         id="${id%.pid}"
+         if [[ "$id" =~ ^[1-9][0-9]*$ ]]; then
+            local seen=0
+            for existing in "${NODE_IDS[@]+"${NODE_IDS[@]}"}"; do
+               if [[ "$existing" == "$id" ]]; then
+                  seen=1
+                  break
+               fi
+            done
+            if [[ "$seen" -eq 0 ]]; then
+               NODE_IDS+=("$id")
+            fi
+         fi
+      done
+   fi
 }
 
 ensure_built() {
@@ -138,10 +208,8 @@ stop_node() {
 
 start_cluster_background() {
    ensure_built
-   if [[ ! -f "$CONFIG" ]]; then
-      echo "config not found: $CONFIG" >&2
-      exit 1
-   fi
+   load_node_ids_from_config
+   echo "starting ${#NODE_IDS[@]} node(s) from $CONFIG (cluster.servers)"
 
    for id in "${NODE_IDS[@]}"; do
       start_node "$id"
@@ -150,13 +218,14 @@ start_cluster_background() {
 }
 
 stop_cluster() {
-   for id in "${NODE_IDS[@]}"; do
+   collect_managed_node_ids
+   for id in "${NODE_IDS[@]+"${NODE_IDS[@]}"}"; do
       stop_node "$id"
    done
    kill $(jobs -p) 2>/dev/null || true
    # Orphan raft_server children can survive if the supervisor was killed
    # externally; ensure ports and instance locks are released.
-   for id in "${NODE_IDS[@]}"; do
+   for id in "${NODE_IDS[@]+"${NODE_IDS[@]}"}"; do
       pkill -f "raft_server -c ${CONFIG} -s ${id}" 2>/dev/null || true
       rm -f "$PID_DIR/raft-server-${id}.lock"
    done
@@ -165,10 +234,8 @@ stop_cluster() {
 run_cluster() {
    local id
    ensure_built
-   if [[ ! -f "$CONFIG" ]]; then
-      echo "config not found: $CONFIG" >&2
-      exit 1
-   fi
+   load_node_ids_from_config
+   echo "starting ${#NODE_IDS[@]} node(s) from $CONFIG (cluster.servers)"
 
    for id in "${NODE_IDS[@]}"; do
       if is_running "$id"; then
@@ -195,6 +262,11 @@ run_cluster() {
 
 show_status() {
    local any=false
+   collect_managed_node_ids
+   if [[ ${#NODE_IDS[@]} -eq 0 ]]; then
+      echo "no nodes configured or running"
+      return 1
+   fi
    for id in "${NODE_IDS[@]}"; do
       if is_running "$id"; then
          echo "node $id: running (supervisor pid $(<"$(pid_file "$id")"), auto-restart)"

@@ -658,19 +658,72 @@ package body Network_Node.Engine is
          end loop;
       end Fill_Client_Work_Slots;
 
-      procedure Step_All_Client_Work is
+      function Any_Client_Work_Waiting return Boolean is
       begin
          for I in Work_Slots'Range loop
             if Work_Slots (I).Active and then not Work_Slots (I).Ready then
-               if not Is_Empty
-                 and then not Inbound_Backlogged
-               then
-                  Process_Server_Inbound_Batch (1);
+               return True;
+            end if;
+         end loop;
+         return False;
+      end Any_Client_Work_Waiting;
+
+      --  After a client send appends + enqueues AppendEntries, drain inbound
+      --  AE responses and poll the client inbox without waiting for the
+      --  heartbeat timer / full epoch Poll_Interval.
+      procedure Step_All_Client_Work is
+         Rounds : Natural := 0;
+      begin
+         loop
+            Rounds := Rounds + 1;
+
+            if Any_Client_Work_Waiting and then not Is_Empty then
+               if Inbound_Backlogged then
+                  Process_Server_Inbound_Batch (Max_Inbound_Per_Epoch);
+               else
+                  Process_Server_Inbound_Batch (Max_Eager_Inbound_Per_Step);
                end if;
-               Step_Client_Work (Work_Slots (I));
+            end if;
+
+            --  Mid-spin refresh: if still waiting after a yield and we are
+            --  leader, push AppendEntries again (covers a dropped first AE
+            --  without waiting for Heartbeat_Timer).
+            if Rounds = 3
+              and then Any_Client_Work_Waiting
+              and then Node /= null
+              and then Node.State.Current_Raft_State = LEADER
+            then
+               Handle_Leader_Send_Append_Entries (Node.MState_Leader);
+            end if;
+
+            for I in Work_Slots'Range loop
+               if Work_Slots (I).Active and then not Work_Slots (I).Ready then
+                  Step_Client_Work (Work_Slots (I));
+               end if;
+            end loop;
+
+            exit when not Any_Client_Work_Waiting;
+            exit when Rounds >= Max_Eager_Commit_Rounds;
+
+            if Is_Empty then
+               delay Drain_Yield;
+               exit when Is_Empty;
             end if;
          end loop;
       end Step_All_Client_Work;
+
+      function Client_Commit_Poll_Interval return Duration is
+      begin
+         --  Keep the loop hot while a sync client RPC (or Raft pending
+         --  commit) is outstanding; otherwise use the normal inbox pacing.
+         if Any_Client_Work_Waiting then
+            return Drain_Yield;
+         end if;
+         if Count_Active_Pending_Client_Requests > 0 then
+            return Drain_Yield;
+         end if;
+         return Poll_Interval;
+      end Client_Commit_Poll_Interval;
 
       procedure Abort_Client_Work_Slot (Work : in out Client_Work_State) is
       begin
@@ -789,7 +842,7 @@ package body Network_Node.Engine is
             Flush_Non_Leader_Client_Pipeline;
          end if;
 
-         delay Poll_Interval;
+         delay Client_Commit_Poll_Interval;
       end loop;
    end Raft_Node_Task;
 

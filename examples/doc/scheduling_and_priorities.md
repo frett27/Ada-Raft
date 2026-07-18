@@ -118,18 +118,33 @@ loop
    end loop;
 
    if Leader then
-      Step_All_Client_Work;
-      Deliver_Completed_Client_Work;
       if Client_Work_Allowed then
          Fill_Client_Work_Slots;        -- paused when backlogged
       end if;
+      Step_All_Client_Work;             -- eager drain+poll while awaiting commit
+      Deliver_Completed_Client_Work;
    else
       Abort / flush client pipeline;    -- redirects
    end if;
 
-   delay Poll_Interval;                 -- 50 ms if inbox empty, else 1 ms
+   delay Client_Commit_Poll_Interval;   -- 1 ms while client commit pending,
+                                        -- else 50 ms if inbox empty / 1 ms if not
 end loop;
 ```
+
+### Eager client commit resolution
+
+A client `send` already triggers `Handle_Leader_Send_Append_Entries`
+immediately (no heartbeat wait). Commit still needs follower AE **responses**.
+While a sync client slot is waiting, `Step_All_Client_Work` now:
+
+1. Drains inbound in batches (`Max_Eager_Inbound_Per_Step` = 16), not one message.
+2. Spins up to `Max_Eager_Commit_Rounds` (8), yielding `Drain_Yield` (1 ms) when
+   the inbox is empty so outbound/inbound tasks can move.
+3. On round 3, refreshes AppendEntries once if still waiting (dropped first AE).
+4. Uses `Drain_Yield` for the outer `delay` while client work or pending Raft
+   client commits are outstanding — so commit polling is not paced by the
+   50 ms epoch interval.
 
 ### Implicit priority each iteration
 
@@ -138,8 +153,8 @@ end loop;
 | 1 | Priority (and bounded) inbound drain | Favours control **requests** when backlogged |
 | 2 | `Run_Epoch_Step` | At most **one** epoch per loop iteration |
 | 3 | Extra inbound batch (up to 8) | After the epoch step |
-| 4 | Client Step / Deliver / Fill | Fill skipped if not `Client_Work_Allowed` |
-| 5 | `delay` | `Poll_Interval` |
+| 4 | Client Fill / eager Step / Deliver | Fill skipped if not `Client_Work_Allowed` |
+| 5 | `delay` | Hot (1 ms) while awaiting commit; else `Poll_Interval` |
 
 There is **no** hard time-slice that guarantees heartbeats if a single
 `Handle_Leader_Send_Append_Entries` or UDP `Send` blocks for a long time.
@@ -226,7 +241,9 @@ Drain budgets (current constants):
 | `Severe_Backlog_Threshold` | 256 | Priority-only drain mode |
 | `Max_Inbound_Per_Epoch` | 8 | After each epoch step |
 | `Max_Inbound_Per_Loop` | 64 | General drain batching |
-| `Drain_Yield` | 1 ms | Used when inbox non-empty (`Poll_Interval`) |
+| `Max_Eager_Inbound_Per_Step` | 16 | Per eager-commit drain while client waits |
+| `Max_Eager_Commit_Rounds` | 8 | Max spin rounds awaiting commit reply |
+| `Drain_Yield` | 1 ms | Used when inbox non-empty (`Poll_Interval`) or client commit pending |
 
 ---
 

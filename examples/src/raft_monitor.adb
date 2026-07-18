@@ -318,6 +318,14 @@ procedure Raft_Monitor is
                   & Trim (SID'Image, Left)
                   & " role="
                   & Role_Image (S)
+                  & " term="
+                  & Natural'Image (S.Term)
+                  & " commit="
+                  & Natural'Image (S.Commit_Index)
+                  & " snap="
+                  & Trim (Natural'Image (S.Snapshot_Index), Left)
+                  & "@"
+                  & Trim (Natural'Image (S.Snapshot_Term), Left)
                   & " epoch="
                   & Natural'Image (S.Epoch)
                   & " pending="
