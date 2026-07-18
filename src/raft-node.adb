@@ -13,6 +13,18 @@ with Raft.State_Machine; use Raft.State_Machine;
 
 package body Raft.Node is
 
+   Debug_Logging : Boolean := False;
+
+   procedure Set_Debug_Logging (Enabled : Boolean) is
+   begin
+      Debug_Logging := Enabled;
+   end Set_Debug_Logging;
+
+   function Debug_Logging_Enabled return Boolean is
+   begin
+      return Debug_Logging;
+   end Debug_Logging_Enabled;
+
    function Log_Upper_Bound_Strict (NS : Raft_Node_State)
      return TransactionLogIndex_Type
    is
@@ -22,6 +34,9 @@ package body Raft.Node is
 
    procedure Debug_Put_Line (Node : Raft_Node_Access; S : String) is
    begin
+      if not Debug_Logging then
+         return;
+      end if;
       Put_Line ("[" & Node.State.Current_Id'Image & "] " & S);
    end Debug_Put_Line;
 
@@ -29,6 +44,9 @@ package body Raft.Node is
      (State_Machine : Raft_State_Machine'Class; S : String)
    is
    begin
+      if not Debug_Logging then
+         return;
+      end if;
       Put_Line ("[" & State_Machine.MState.Current_Id'Image & "] " & S);
    end Debug_Put_Line;
 
@@ -118,6 +136,7 @@ package body Raft.Node is
            (Command_Committed => False,
             Not_Leader        => True,
             Error             => Leader = NULL_SERVER,
+            Busy              => False,
             Leader_Id         => Leader,
             Client_Id         => Client_Id,
             Serial            => Serial,
@@ -291,6 +310,7 @@ package body Raft.Node is
            (Command_Committed => False,
             Not_Leader        => False,
             Error             => True,
+            Busy              => False,
             Leader_Id         => MState.Current_Id,
             Client_Id         => Client_Id,
             Serial            => Serial,
@@ -317,6 +337,7 @@ package body Raft.Node is
                    (Command_Committed => True,
                     Not_Leader        => False,
                     Error             => False,
+            Busy              => False,
                     Leader_Id         => MState.Current_Id,
                     Client_Id         => Pending.Client_Id,
                     Serial            => Pending.Serial,
@@ -1201,8 +1222,9 @@ package body Raft.Node is
       begin
 
          if M.Entries_Last_Strict = TransactionLogIndex_Type'First then
-            Put_Line
-              ("[No entries to add for " &
+            Debug_Put_Line
+              (Machine_State,
+               "[No entries to add for " &
                Id_Image (Machine_State.MState.Current_Id) & "]");
             Match_Index := M.Prev_Log_Index_Strict;
          else
@@ -1495,6 +1517,7 @@ package body Raft.Node is
                  (Client_Id  => NO_CLIENT_ID,
                   Not_Leader => True,
                   Error      => Known = NULL_SERVER,
+                  Busy       => False,
                   Leader_Id  => Known));
          end;
          return;
@@ -1523,6 +1546,7 @@ package body Raft.Node is
                  (Alive      => False,
                   Not_Leader => True,
                   Error      => Machine_State.MState.Known_Leader_Id = NULL_SERVER,
+               Busy       => False,
                   Leader_Id  => Machine_State.MState.Known_Leader_Id,
                   Client_Id  => Watchdog.Client_Id));
          end;
@@ -1912,8 +1936,9 @@ package body Raft.Node is
            (Machine_State, Install_Snapshot_Request (M));
       else
          --  unsupported message type for leader
-         Put_Line
-           ("[Unsupported message type for leader on " &
+         Debug_Put_Line
+           (Machine_State,
+            "[Unsupported message type for leader on " &
             Id_Image (Machine_State.MState.Current_Id) & "]");
       end if;
 
@@ -1974,6 +1999,7 @@ package body Raft.Node is
                  (Client_Id  => NO_CLIENT_ID,
                   Not_Leader => True,
                   Error      => Known = NULL_SERVER,
+                  Busy       => False,
                   Leader_Id  => Known));
          end;
          return;
@@ -2002,6 +2028,7 @@ package body Raft.Node is
                  (Alive      => False,
                   Not_Leader => True,
                   Error      => Machine_State.MState.Known_Leader_Id = NULL_SERVER,
+               Busy       => False,
                   Leader_Id  => Machine_State.MState.Known_Leader_Id,
                   Client_Id  => Watchdog.Client_Id));
          end;
@@ -2314,6 +2341,7 @@ package body Raft.Node is
            (Client_Id  => Assigned_Id,
             Not_Leader => False,
             Error      => False,
+                  Busy       => False,
             Leader_Id  => Machine_State.MState.Current_Id));
    end Handle_Register_Client;
 
@@ -2352,6 +2380,7 @@ package body Raft.Node is
               (Alive      => False,
                Not_Leader => False,
                Error      => True,
+               Busy       => False,
                Leader_Id  => Machine_State.MState.Current_Id,
                Client_Id  => Watchdog.Client_Id));
          return;
@@ -2365,6 +2394,7 @@ package body Raft.Node is
            (Alive      => True,
             Not_Leader => False,
             Error      => False,
+               Busy       => False,
             Leader_Id  => Machine_State.MState.Current_Id,
             Client_Id  => Watchdog.Client_Id));
    end Handle_Client_Watchdog;

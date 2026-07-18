@@ -19,7 +19,7 @@
 #   ./launch.sh stop                      # stops supervisors and disables restart
 
 # Environment:
-#   RAFT_NODE_VERBOSE=1   log every client RPC on each node (-v)
+#   RAFT_NODE_VERBOSE=1   Raft debug traces + every client RPC (-v)
 #   CONFIG                cluster TOML (default: cluster.toml)
 
 set -euo pipefail

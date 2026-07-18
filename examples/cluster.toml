@@ -2,11 +2,11 @@
 # [raft]
 # epoch_interval_ms = 50
 # election_timeout_epochs = 30   # must be >= 4 * heartbeat_interval_epochs
-# heartbeat_interval_epochs = 4
+# heartbeat_interval_epochs = 1  # ~50 ms with epoch_interval_ms = 50
 # election_jitter_epochs = 3
 # audit_interval_epochs = 100
 # compact_threshold = 100
-# inter_server_timeout_ms = 200
+# inter_server_timeout_ms = 50   # one heartbeat period
 
 [cluster]
 servers = 3

@@ -35,6 +35,8 @@ AdaRaft is tiny compared to those industrial codebases, but follows the same hab
 
 We do **not** claim aviation-grade certification. The goal is a consensus core small enough to test thoroughly, informed by Ada’s correctness culture.
 
+There are currently work on client - server communication tuning, and performance. Don't expect yet on the example folder (first networked implementation), large performances in stress, and hardened procesus.
+
 ---
 
 ## How we validate correctness
@@ -189,7 +191,8 @@ Code style (GNAT `-gnaty`, `gnatpp`): [doc/style.md](doc/style.md).
 
 No fixed dates — possible directions:
 
-- [ ] Cluster audit / metrics export
+- [x] Cluster audit / metrics export
+- [ ] Refine the client - server communication and pipeline
 - [ ] Membership changes
 - [ ] Pre-vote and replication tuning
 - [ ] Durable persistence for log and snapshots

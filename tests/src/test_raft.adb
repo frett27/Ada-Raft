@@ -883,6 +883,7 @@ package body Test_Raft is
                  (Client_Id  => 7,
                   Not_Leader => False,
                   Error      => False,
+                  Busy       => False,
                   Leader_Id  => Leader)));
          declare
             Local : Message_Type'Class :=
@@ -900,6 +901,7 @@ package body Test_Raft is
            (Client_Id  => 42,
             Not_Leader => False,
             Error      => False,
+            Busy       => False,
             Leader_Id  => Leader));
       declare
          Roundtrip : Boolean;

@@ -1,14 +1,21 @@
 with Raft;             use Raft;
 with Raft.Messages;     use Raft.Messages;
-with Raft.Client;       use Raft.Client;
 with Cluster_Config;    use Cluster_Config;
-with Example_Config;   use Example_Config;
+with Example_Config;    use Example_Config;
 
+--  Example cluster client facade.
+--
+--  Child packages (component layout):
+--    Network_Client.Transport  — TCP hub, Net_Links, sync Send_Sync I/O
+--    Network_Client.Session    — Raft.Client register / send / reconnect
+--
+--  Callers (raft_client, tests) use this root package only.
 package Network_Client is
 
    Cluster_Unreachable : exception;
+
    procedure Initialize
-     (Config : Cluster_Configuration;
+     (Config   : Cluster_Configuration;
       Settings : Client_Settings := Default_Client_Settings);
    procedure Shutdown;
 
@@ -21,7 +28,6 @@ package Network_Client is
 
    function Is_Registered return Boolean;
    function Ensure_Registered return Boolean;
-
 
    function Register_With_Cluster return Boolean;
    function Send_Command (Value : Integer) return Response_Send_Command;

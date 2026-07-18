@@ -48,6 +48,8 @@ package Raft.Messages is
       Command_Committed : Boolean := False;
       Not_Leader        : Boolean := False;
       Error             : Boolean := False;
+      --  Leader overload / backpressure: retry later, do not re-register.
+      Busy              : Boolean := False;
       Leader_Id         : ServerID_Type := NULL_SERVER;
       Client_Id         : Client_Id_Type := NO_CLIENT_ID;
       Serial            : Client_Serial_Type := Client_Serial_Type'First;
@@ -62,6 +64,7 @@ package Raft.Messages is
       Client_Id  : Client_Id_Type := NO_CLIENT_ID;
       Not_Leader : Boolean := False;
       Error      : Boolean := False;
+      Busy       : Boolean := False;
       Leader_Id  : ServerID_Type := NULL_SERVER;
    end record;
 
@@ -89,6 +92,7 @@ package Raft.Messages is
       Alive      : Boolean := False;
       Not_Leader : Boolean := False;
       Error      : Boolean := False;
+      Busy       : Boolean := False;
       Leader_Id  : ServerID_Type := NULL_SERVER;
       Client_Id  : Client_Id_Type := NO_CLIENT_ID;
    end record;

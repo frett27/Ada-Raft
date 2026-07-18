@@ -352,12 +352,6 @@ package body Cluster_Health is
                 & " node(s)";
       end if;
 
-      if Epoch_Spread > Epoch_Spread_Warning_Min then
-         return "WARNING: large epoch spread ("
-                & Natural'Image (Epoch_Spread)
-                & ")";
-      end if;
-
       return "HEALTHY: single leader, reachable="
              & Natural'Image (Reachable)
              & " epoch_spread="

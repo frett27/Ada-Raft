@@ -5,13 +5,14 @@ package Example_Config is
    --  Wall-clock timing for the UDP examples (servers and client).
    --  One server loop iteration (Process_Inbound + Run_Epoch_Step) = 1 epoch.
 
+   -- these parameters permit to test on some specific load stress
    Epoch_Interval : constant Duration := 0.05;
    Loop_Interval  : constant Duration := Epoch_Interval;
 
-   Client_Timeout_S : constant Duration := 10.0;
+   Client_Timeout_S : constant Duration := 2.0;
 
    --  Per-server TCP timeout while probing for registration/reconnect.
-   Client_Probe_Timeout_S : constant Duration := 2.0;
+   Client_Probe_Timeout_S : constant Duration := 10.0;
 
    --  Leader drops client sessions with no RPC activity for this long.
    Client_Session_Inactivity_S : constant Duration := 10.0;
@@ -64,8 +65,10 @@ package Example_Config is
       (Raft_Port + Port_Type (Audit_TCP_Port_Offset));
 
    --  Raft timers in epochs (decremented once per Run_Epoch_Step).
+   --  Heartbeat ≈ one epoch (50 ms). Election stays ~1.5 s wall-clock
+   --  (30 epochs), well above Election_Heartbeat_Ratio.
    Election_Heartbeat_Ratio  : constant Positive := 4;
-   Heartbeat_Interval_Epochs : constant Positive := 4;   -- 0.2 s
+   Heartbeat_Interval_Epochs : constant Positive := 1;   -- ~0.05 s
    Election_Timeout_Epochs   : constant Positive := 30;  -- >= ratio * heartbeat
    Election_Jitter_Epochs    : constant Positive := 3;   -- 0.15 s max
 

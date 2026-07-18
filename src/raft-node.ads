@@ -255,6 +255,11 @@ package Raft.Node is
 
    type Raft_Node_Access is access all Raft_Node;
 
+   --  Hot-path Put_Line traces (heartbeats, every RPC). Off by default —
+   --  enable with Set_Debug_Logging or RAFT_NODE_VERBOSE on the examples server.
+   procedure Set_Debug_Logging (Enabled : Boolean);
+   function Debug_Logging_Enabled return Boolean;
+
    procedure Handle_Message
      (Machine : Raft_Node_Access; M : Message_Type'Class);
 

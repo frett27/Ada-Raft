@@ -8,6 +8,46 @@ The reference implementation is `examples/bin/raft_client` (wrapper: `client.sh`
 Inter-node Raft traffic (AppendEntries, RequestVote, …) uses **UDP** on ports
 `9101–9103`. The **client API** uses **synchronous TCP** on separate ports.
 
+Client library layout (`Network_Client` and children):
+
+| Unit | File | Role |
+|------|------|------|
+| `Network_Client` | `network_client.ads/.adb` | Public facade (`raft_client`, tests) |
+| `Network_Client.Transport` | `network_client-transport.*` | TCP hub, links, `Send_Sync` |
+| `Network_Client.Session` | `network_client-session.*` | `Raft.Client` register / send / reconnect |
+
+```mermaid
+flowchart LR
+  CLI[raft_client / tests]
+  FAC[Network_Client]
+  TR[Network_Client.Transport]
+  SE[Network_Client.Session]
+  RC[Raft.Client]
+  TCP[Communication.TCP]
+
+  CLI --> FAC
+  FAC --> TR
+  FAC --> SE
+  SE --> RC
+  SE -->|Send_To_Server callback| TR
+  TR --> TCP
+```
+
+
+## Server implementation units
+
+`Network_Node` remains the public facade. The server implementation is organized as:
+
+| Unit | Responsibility |
+|------|----------------|
+| `Network_Node.Shared` | Node-wide state, configuration, logging, and metrics |
+| `Network_Node.Inbound` | Priority inbound queue and drain/backlog accounting |
+| `Network_Node.Outbound` | Asynchronous UDP mailbox and sender task |
+| `Network_Node.Client_API` | Sync client admission, pipeline, and response handling |
+| `Network_Node.Audit` | Audit TCP listener and framed status responses |
+| `Network_Node.Engine` | Raft callbacks, timers, initialization, and main task |
+
+
 ---
 
 ## Endpoints
@@ -282,41 +322,42 @@ the process exits. The next `./client.sh send` performs a fresh registration.
 4. On send, retry on redirect; re-register if `Error` indicates unknown session.
 5. While a command is in flight, idempotent retries use the same `(Client_Id, Serial)`.
 
-Default wall-clock timeout: **10 s** (`Example_Config.Client_Timeout_S`).
+Default wall-clock timeout: **`Client_Timeout_S`** in `example_config.ads`
+(currently **2 s**).
 
 ---
 
 ## Server-side handling
 
-Each Raft node runs three cooperating tasks (`network_node.adb`):
+Each Raft node accepts client TCP on `raft_port + 200` and runs a single
+`Raft_Node_Task` that drains UDP, ticks epochs, and steps client pipeline work.
 
-| Task | Role |
-|------|------|
-| TCP listener workers | Accept client connections, read frames |
-| `Client_Comms_Task` | Hand request to Raft task, return sync response |
-| `Raft_Node_Task` | Run Raft epoch loop, process client work, replication |
+Client RPCs are **sync** end-to-end: a TCP worker attaches to
+`Client_Pipeline` (depth `Max_Client_Pipeline_Slots`, currently **1**), waits up
+to `Client_Timeout_S` (currently **2 s**), and returns one framed response.
 
-Client requests are processed **one at a time per node** through a single-slot
-mailbox (`Client_Message_Box` → `Raft_Client_Mailbox`). Concurrent TCP
-connections are accepted (up to 32 workers) but **serialized** at the Raft
-integration layer.
-
-While a client command waits for commit, the leader loop still *attempts* to
-drain inter-node UDP, tick Raft timers, and notify the client when
-`Command_Committed` is true. Under heavy retry load, outbound UDP and
-single-task scheduling can delay heartbeats and replication — see
-[scheduling_and_priorities.md](scheduling_and_priorities.md).
-
-Limits:
+Admission and overload:
 
 | Limit | Value |
 |-------|-------|
-| Active client sessions per leader | 16 (`MAX_CLIENT_SESSIONS`) |
-| Session inactivity timeout | **10 s** (`Client_Session_Inactivity_S`) |
-| Pending client commands | table size in `raft-node.ads` |
+| Concurrent sync handlers | `Max_Client_In_Flight` = **4** |
+| Pipeline slots | `Max_Client_Pipeline_Slots` = **1** |
+| Raft inbound backlog pause | pending &gt; 32 / Fill paused above 16 |
+| Active client sessions | 16 (`MAX_CLIENT_SESSIONS`) |
+| Session inactivity | **10 s** |
 
-For load testing, prefer moderate **concurrency** (see `send_load_dual_clients.sh`)
-so serialized server handling does not cause client timeouts.
+Overload rejects use **`Busy`** (retry, keep session). Unknown session uses
+**`Error`** (re-register). Non-leaders use **`Not_Leader`** redirects.
+
+Full detail on queues, main-loop ordering, zombie-leader risk, and load-harness
+rules: [client_connections_queues_load.md](client_connections_queues_load.md).
+Older heartbeat-scheduling notes:
+[scheduling_and_priorities.md](scheduling_and_priorities.md).
+
+For load testing, keep **one `raft_client` process per `--name`** (the
+`send_load_dual_clients.py` harness enforces this). High concurrency on the
+same name wedges the client TCP path even when the monitor still reports
+`HEALTHY`.
 
 ---
 
@@ -351,13 +392,15 @@ cd examples
 > quit
 ```
 
-### Load test (two identities)
+### Load test
 
 ```bash
-COMMANDS_PER_CLIENT=100 CONCURRENCY=4 ./scripts/send_load_dual_clients.sh
+./scripts/send_load_dual_clients.py --num-clients 1
+# or several distinct names; same --name is never concurrent
 ```
 
-Runs parallel batches of `./client.sh send` for `client-a` and `client-b`.
+See [doc/client_connections_queues_load.md](doc/client_connections_queues_load.md)
+for server queues and stress behaviour.
 
 ---
 
@@ -396,7 +439,9 @@ flowchart LR
 |------|------|
 | `examples/cluster.toml` | Node hosts and Raft UDP ports |
 | `examples/src/example_config.ads` | Client TCP port offset (+200), timeouts |
-| `examples/src/network_client.adb` | Client TCP hub, sync send, session API |
+| `examples/src/network_client.ads` | Client facade API (`Cluster_Unreachable`, register/send) |
+| `examples/src/network_client-transport.adb` | TCP hub, `Net_Links`, sync `Send_Sync` |
+| `examples/src/network_client-session.adb` | `Raft.Client` register / send / reconnect |
 | `examples/src/network_node.adb` | Server sync handler, tasks, mailboxes |
 | `examples/src/raft_client.adb` | CLI and one-shot / interactive behaviour |
 | `src/communication-tcp.adb` | Frame codec, `Send_Sync`, listener |

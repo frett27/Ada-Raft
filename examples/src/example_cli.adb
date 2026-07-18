@@ -96,7 +96,7 @@ package body Example_Cli is
       Put_Line ("options:");
       Put_Line ("  -c, --config PATH      cluster TOML configuration file");
       Put_Line ("  -s, --server-id ID     server id in the cluster (1..N)");
-      Put_Line ("  -v, --verbose          log every client RPC on this node");
+      Put_Line ("  -v, --verbose          Raft debug + every client RPC on this node");
       Put_Line ("  -h, --help             show this help");
    end Print_Server_Usage;
 

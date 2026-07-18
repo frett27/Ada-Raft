@@ -111,12 +111,12 @@ All keys are optional; defaults match `src/example_config.ads` and `Raft.Snapsho
 |-----|---------|---------|
 | `epoch_interval_ms` | 50 | Wall-clock duration of one server epoch |
 | `election_timeout_epochs` | 30 | Election timer (epochs); must be >= 4 × heartbeat |
-| `heartbeat_interval_epochs` | 4 | Leader heartbeat timer (epochs) |
+| `heartbeat_interval_epochs` | 1 | Leader heartbeat timer (epochs; ~50 ms) |
 | `election_jitter_epochs` | 3 | Random election jitter (epochs) |
 | `audit_interval_epochs` | 100 | Server audit log period (epochs) |
 | `compact_threshold` | 100 | Log entries before compaction/snapshot |
 | `compact_log_retention` | 0 | Committed entries kept after compact (0 = trim to commit) |
-| `inter_server_timeout_ms` | 200 (1 heartbeat) | UDP send timeout for server-to-server only |
+| `inter_server_timeout_ms` | 50 (1 heartbeat) | UDP send timeout for server-to-server only |
 
 Example:
 
@@ -178,7 +178,16 @@ raft_client -c <config.toml> --name client-a --port 9201 send <integer>
 raft_client -c <config.toml> audit
 ```
 
-See [Client shell](#client-shell) for interactive usage. Client operation timeout defaults to 10 seconds (`Client_Timeout_S` in `example_config.ads`).
+See [Client shell](#client-shell) for interactive usage. Client operation timeout
+defaults to `Client_Timeout_S` in `example_config.ads` (currently 2 seconds).
+
+## Documentation
+
+| Doc | Topic |
+|-----|--------|
+| [doc/client_api.md](doc/client_api.md) | Wire protocol, RPCs, CLI |
+| [doc/client_connections_queues_load.md](doc/client_connections_queues_load.md) | Connections, queues, load-stress behaviour |
+| [doc/scheduling_and_priorities.md](doc/scheduling_and_priorities.md) | Heartbeat / scheduling notes (partly historical) |
 
 ## Integration tests
 

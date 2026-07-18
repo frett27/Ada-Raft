@@ -273,6 +273,16 @@ package body Raft.Client is
       Res : Response_Register_Client) return Boolean
    is
    begin
+      if Res.Busy then
+         --  Leader overloaded: keep probing the same server.
+         if Res.Leader_Id /= NULL_SERVER then
+            C.Leader_Id    := Res.Leader_Id;
+            C.Probe_Server := Res.Leader_Id;
+         end if;
+         Send_Register_Probe (C);
+         return False;
+      end if;
+
       if not Res.Not_Leader and then not Res.Error then
          C.Client_Id   := Res.Client_Id;
          C.Leader_Id   := Res.Leader_Id;
@@ -318,6 +328,15 @@ package body Raft.Client is
          return True;
       end if;
 
+      if Res.Busy then
+         --  Overload / backlog: keep session, retry same serial.
+         if Res.Leader_Id /= NULL_SERVER then
+            C.Leader_Id := Res.Leader_Id;
+         end if;
+         Send_Pending_Command (C);
+         return False;
+      end if;
+
       if Res.Not_Leader
         and then not Res.Error
         and then Res.Leader_Id /= NULL_SERVER
@@ -327,7 +346,7 @@ package body Raft.Client is
          return False;
       end if;
 
-      if Res.Error and then not Res.Not_Leader then
+      if Res.Error and then not Res.Not_Leader and then not Res.Busy then
          --  Session unknown or expired on the leader: register again (book §6.3).
          C.Resume_After_Register :=
            C.Op_Phase = Sending and then C.Pending_Command /= null;
@@ -557,6 +576,10 @@ package body Raft.Client is
                   Res : constant Response_Client_Watchdog :=
                     Response_Client_Watchdog (M);
                begin
+                  if Res.Busy then
+                     return False;
+                  end if;
+
                   if Res.Not_Leader
                     and then not Res.Error
                     and then Res.Leader_Id /= NULL_SERVER
